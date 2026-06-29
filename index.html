@@ -8,6 +8,8 @@
 <!-- Leaflet map (free OSM tiles) -->
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<!-- Tap-and-hold drag to reorder stops -->
+<script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
 <!-- OCR a photo of a handwritten/printed list -->
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.0/dist/tesseract.min.js"></script>
 <!-- Read Excel (.xlsx) exported from Google Sheets -->
@@ -109,6 +111,23 @@
   .areafilter{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
   .areafilter button{min-height:38px;font-size:13px;background:var(--panel2);border:1px solid var(--line);color:var(--txt)}
   .areafilter button.on{background:var(--accent);border-color:var(--accent)}
+
+  /* Address autocomplete dropdown */
+  .acw{position:relative}
+  .ac-list{position:absolute;top:calc(100% + 4px);left:0;right:0;z-index:1200;background:var(--panel2);
+    border:1px solid var(--line);border-radius:12px;overflow:hidden;display:none;box-shadow:0 10px 26px rgba(0,0,0,.55)}
+  .ac-list.show{display:block}
+  .ac-item{padding:12px;border-bottom:1px solid var(--line);cursor:pointer;font-size:15px}
+  .ac-item:last-child{border-bottom:none}
+  .ac-item:active,.ac-item:hover{background:var(--accent);color:#fff}
+
+  /* Drag-to-reorder + ASAP priority */
+  .stop{cursor:grab}
+  .stop.sortable-chosen{cursor:grabbing;box-shadow:0 0 0 2px var(--accent)}
+  .stop.sortable-ghost{opacity:.4}
+  .stop.asap{border-left-color:var(--bad) !important;background:#241616}
+  .asaptag{font-size:11px;font-weight:800;padding:2px 8px;border-radius:999px;background:var(--bad);color:#fff;margin-left:6px}
+  #fileStatus:not(:empty){margin-top:8px;color:var(--good)}
 </style>
 </head>
 <body>
@@ -142,7 +161,7 @@
       <div class="pane on" id="pane-one">
         <label>Address (street, town)</label>
         <div class="row">
-          <input id="oneAddr" class="grow" placeholder="e.g. 8 King Road, Inglewood" />
+          <div class="acw grow"><input id="oneAddr" autocomplete="off" placeholder="e.g. 8 King Road, Inglewood" /><div class="ac-list" id="acOne"></div></div>
           <button id="oneMic" class="ghost" title="Speak the address" style="flex:0 0 auto">🎤</button>
         </div>
         <button id="oneAdd" style="margin-top:10px;width:100%">Add this stop</button>
@@ -161,12 +180,14 @@
         <label>Your saved list (Excel .xlsx, .csv or .json) — uses coords already in the file</label>
         <input type="file" id="fileInput" accept=".xlsx,.xls,.csv,.json,text/csv,application/json,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" />
         <p class="small muted">Tip: in Google Sheets choose File → Download → Microsoft Excel (.xlsx), then pick it here.</p>
+        <div id="fileStatus" class="small"></div>
       </div>
 
       <!-- Photo / OCR -->
       <div class="pane" id="pane-photo">
-        <label>Take or pick a photo of your written list</label>
-        <input type="file" id="photoInput" accept="image/*" capture="environment" />
+        <label>Upload a photo, or take one, of your written list</label>
+        <input type="file" id="photoInput" accept="image/*" />
+        <p class="small muted">Pick from your gallery, or use the camera.</p>
         <div id="ocrStatus" class="small muted" style="margin-top:8px"></div>
         <div id="ocrResult" style="display:none;margin-top:10px">
           <label>Check the lines, fix any mistakes, then add</label>
@@ -183,7 +204,7 @@
     <div id="startNow" class="small muted" style="margin-bottom:8px">Not set — defaults to New Plymouth.</div>
     <div class="row">
       <button id="useLoc" class="good grow">📍 Use my location</button>
-      <input id="startAddr" class="grow" placeholder="or type your yard / start address" />
+      <div class="acw grow"><input id="startAddr" autocomplete="off" placeholder="or type your yard / start address" /><div class="ac-list" id="acStart"></div></div>
       <button id="setStart" class="ghost" style="flex:0 0 auto">Set</button>
     </div>
     <label style="display:flex;gap:10px;align-items:center;margin-top:12px;color:var(--txt)">
@@ -241,6 +262,7 @@ let state = loadState();
 let geocache = loadJSON(GEO, {});
 let map, markerLayer, routeLayer;
 let areaFilterValue = "all";
+let oneAddrPicked = null;   // coords chosen from the Type-one autocomplete
 
 function loadJSON(k, d){ try{ return JSON.parse(localStorage.getItem(k)) || d; }catch(e){ return d; } }
 function saveJSON(k, v){
@@ -264,7 +286,15 @@ const $ = sel => document.querySelector(sel);
 const uid = () => "s" + Date.now().toString(36) + Math.random().toString(36).slice(2,6);
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 function normKey(a){ return (a||"").toLowerCase().replace(/\s+/g," ").trim(); }
-function busy(msg){ $("#busy").innerHTML = msg ? '<span class="spinner"></span> ' + msg : ""; }
+function busy(msg){ const el=$("#busy"); el.style.color=""; el.innerHTML = msg ? '<span class="spinner"></span> ' + msg : ""; }
+let flashTimer = 0;
+function flash(msg){                       // brief green confirmation in the actions area
+  const el = $("#busy"); if(!el) return;
+  clearTimeout(flashTimer);
+  el.style.color = "var(--good)"; el.innerHTML = msg;
+  flashTimer = setTimeout(()=>{ el.textContent=""; el.style.color=""; }, 6000);
+}
+function setFileStatus(msg){ const el=$("#fileStatus"); if(el) el.innerHTML = msg; }
 
 // Great-circle distance (km) — used for routing maths, always works offline.
 function haversine(a, b){
@@ -330,8 +360,8 @@ async function addAddressLines(lines){
   busy("");
 }
 
-// Add stops from a parsed JSON/CSV file (keeps coords already present).
-function addFileStops(rows){
+// Add stops from a parsed file/paste (keeps coords already present).
+function addFileStops(rows, srcName){
   let added = 0, parked = 0, toGeocode = [];
   rows.forEach(r => {
     const s = {
@@ -350,19 +380,27 @@ function addFileStops(rows){
     else if (s.street && (s.town||"").toLowerCase()!=="unknown"){ toGeocode.push(s); }
     else { state.bad.push(s); parked++; }
   });
-  save(); render();
+  state.manual = false; save(); render(); drawRoute();
+  const src = srcName ? ` from “${srcName}”` : "";
+  // Immediate confirmation so the geocoding delay never looks like nothing happened.
+  if (toGeocode.length) setFileStatus(`<span class="spinner"></span> Loaded ${added}${src} — looking up ${toGeocode.length} more…`);
   // Geocode any rows that had no coords but a usable address.
   (async () => {
-    let i=0;
+    let i=0, located=0;
     for (const s of toGeocode){
       busy(`Finding addresses ${++i} of ${toGeocode.length}…`);
       const hit = await geocode(fullAddr(s));
-      if (hit){ s.lat=hit.lat; s.lng=hit.lng; state.stops.push(s); }
+      if (hit){ s.lat=hit.lat; s.lng=hit.lng; state.stops.push(s); located++; }
       else { state.bad.push(s); }
       save(); render();
     }
     busy("");
-    alert(`Loaded ${added+ (toGeocode.length)} located, ${parked} parked in "Needs address".`);
+    const total = added + located;
+    const parkedNow = parked + (toGeocode.length - located);
+    const msg = `✓ Loaded ${total} stop${total!==1?'s':''}${src}` +
+                (parkedNow ? `, ${parkedNow} need an address below` : "") + ".";
+    setFileStatus(msg); flash(msg);
+    drawRoute();
   })();
 }
 
@@ -380,7 +418,7 @@ function parseCSV(text){
   };
   const header = split(lines[0]).map(h=>h.toLowerCase());
   // If it doesn't look like our schema, treat every line as a plain address.
-  const known = ["street","town","lat","lng","first_name","last_name","phone","area"];
+  const known = ["street","town","lat","lng","first_name","last_name","phone","area","address","name","info","latitude","longitude","appliance 1","status"];
   if (!header.some(h=>known.includes(h))) return null; // signal: plain address list
   return lines.slice(1).map(l=>{
     const cells = split(l), o={};
@@ -445,23 +483,19 @@ function routeStops(){
 }
 function startPoint(){ return state.start || NP; }
 
-function optimise(){
-  const pts = routeStops();
-  if (pts.length < 2){ render(); drawRoute(); return; }
-  const start = startPoint();
-  // Nearest-neighbour from the start point.
-  let remaining = pts.slice(), order = [], cur = start;
+// Order one group of stops by nearest-neighbour from `from`, improved with 2-opt.
+function planOrder(pts, from, closeTo){
+  if (pts.length <= 1) return pts.slice();
+  let remaining = pts.slice(), order = [], cur = from;
   while (remaining.length){
     let bi=0, bd=Infinity;
     remaining.forEach((p,i)=>{ const d=haversine(cur,p); if (d<bd){ bd=d; bi=i; } });
     cur = remaining[bi]; order.push(cur); remaining.splice(bi,1);
   }
-  // 2-opt improvement.
-  const round = state.roundTrip;
   const cost = seq => {
-    let t = haversine(start, seq[0]);
+    let t = haversine(from, seq[0]);
     for (let i=0;i<seq.length-1;i++) t += haversine(seq[i], seq[i+1]);
-    if (round) t += haversine(seq[seq.length-1], start);
+    if (closeTo) t += haversine(seq[seq.length-1], closeTo);
     return t;
   };
   let improved = true, best = order;
@@ -474,6 +508,21 @@ function optimise(){
       }
     }
   }
+  return best;
+}
+
+function optimise(){
+  const all = routeStops();
+  if (all.length < 1){ render(); drawRoute(); return; }
+  const start = startPoint();
+  const back = state.roundTrip ? start : null;
+  // ASAP stops are visited first (optimised among themselves), then the rest.
+  const prio = all.filter(s => s.priority);
+  const norm = all.filter(s => !s.priority);
+  const seqP = planOrder(prio, start, norm.length ? null : back);
+  const lastP = seqP.length ? seqP[seqP.length-1] : start;
+  const seqN = planOrder(norm, lastP, back);
+  const best = seqP.concat(seqN);
   // Re-seat optimised stops at the front of state.stops, keep DONE + others after.
   const ids = best.map(s=>s.id);
   const rest = state.stops.filter(s => !ids.includes(s.id));
@@ -586,17 +635,21 @@ function renderList(){
     const num = done ? "✓" : (s.lat!=null ? order : "!");
     const area = s.area||"";
     const tag = area ? `<span class="areatag" style="background:${AREA_HEX[area]}">${area}</span>` : "";
+    const asap = !!s.priority;
+    const asapTag = asap && !done ? `<span class="asaptag">ASAP</span>` : "";
     const apps = (s.appliances||[]).map(a=>`<span class="chip">${esc(a)}</span>`).join("");
     const callFirst = /call|text|phone|ring|txt/i.test(s.additional_info||"");
     const note = s.additional_info ? `<div class="note${callFirst?' callfirst':''}">${callFirst?'📞':'📝'} ${esc(s.additional_info)}</div>` : "";
     const phone = s.phone ? `<button class="ghost sm" onclick="callStop('${s.id}')">📞 Call</button>` : "";
+    const textBtn = s.phone ? `<button class="ghost sm" onclick="textStop('${s.id}')">💬 Text</button>` : "";
+    const prioBtn = `<button class="${asap?'bad':'ghost'} sm" onclick="togglePriority('${s.id}')" title="Make this an ASAP stop">${asap?'⭐ ASAP':'☆ ASAP'}</button>`;
     const navBtn = s.lat!=null
       ? `<button class="sm" onclick="navStop('${s.id}')">🧭 Navigate</button>` : "";
-    return `<div class="stop ${done?'done':''} ${s.id===nextId&&!done?'next':''}"
+    return `<div class="stop ${done?'done':''} ${asap&&!done?'asap':''} ${s.id===nextId&&!done?'next':''}"
         data-id="${s.id}" style="border-left-color:${AREA_COLORS[area]||AREA_COLORS['']}">
       <div class="num">${num}</div>
       <div class="stopbody">
-        <div class="name">${esc(fullName(s)) || esc(fullAddr(s))} ${tag}</div>
+        <div class="name">${esc(fullName(s)) || esc(fullAddr(s))} ${tag}${asapTag}</div>
         <div class="addr">${esc(fullAddr(s))}</div>
         ${apps?`<div class="apps">${apps}</div>`:""}
         ${note}
@@ -604,17 +657,33 @@ function renderList(){
           ${navBtn}
           <button class="${done?'warn':'good'} sm" onclick="toggleDone('${s.id}')">${done?'↺ Undo':'✓ Done'}</button>
           ${phone}
-          <div class="arrows">
-            <button class="ghost" onclick="moveStop('${s.id}',-1)">▲</button>
-            <button class="ghost" onclick="moveStop('${s.id}',1)">▼</button>
-          </div>
+          ${textBtn}
+          ${prioBtn}
           <button class="ghost sm" title="Remove this stop" onclick="delStop('${s.id}')" style="margin-left:auto">✕</button>
         </div>
       </div>
     </div>`;
   }).join("");
 
-  wrap.innerHTML = `<div class="sectitle">Today's run ${state.manual?'(manual order)':''}</div>` + rows;
+  wrap.innerHTML = `<div class="sectitle">Today's run ${state.manual?'· manual order':''} · hold &amp; drag to reorder</div>` + rows;
+
+  // Tap-and-hold to drag a card; correct even when an area filter hides some stops.
+  if (window.Sortable){
+    Sortable.create(wrap, {
+      draggable:".stop", animation:150,
+      delay:180, delayOnTouchOnly:true, touchStartThreshold:8,
+      onEnd: () => {
+        const visIds = [...wrap.querySelectorAll(".stop")].map(el=>el.dataset.id);
+        const visSet = new Set(visIds);
+        const byId = new Map(state.stops.map(s=>[s.id,s]));
+        const newVis = visIds.map(id=>byId.get(id)).filter(Boolean);
+        let vi = 0;
+        // Slot the reordered visible stops back in; leave filtered-out stops untouched.
+        state.stops = state.stops.map(s => visSet.has(s.id) ? newVis[vi++] : s);
+        state.manual = true; save(); render(); drawRoute();   // refresh map after reorder
+      }
+    });
+  }
 }
 
 function renderBad(){
@@ -653,11 +722,12 @@ window.toggleDone = id => {
   const s = state.stops.find(x=>x.id===id); if(!s) return;
   s.status = s.status==="DONE" ? "NEW" : "DONE"; save(); render(); drawRoute();
 };
-window.moveStop = (id,dir) => {
-  const i = state.stops.findIndex(s=>s.id===id); if(i<0) return;
-  const j = i+dir; if(j<0||j>=state.stops.length) return;
-  [state.stops[i],state.stops[j]] = [state.stops[j],state.stops[i]];
-  state.manual = true; save(); render(); drawRoute();
+window.textStop = id => { const s=state.stops.find(x=>x.id===id); if(s&&s.phone) location.href="sms:"+s.phone.replace(/\s+/g,""); };
+window.togglePriority = id => {
+  const s = state.stops.find(x=>x.id===id); if(!s) return;
+  s.priority = !s.priority;
+  // Re-plan so an ASAP stop jumps to the front of the run right away.
+  if (routeStops().length>1) optimise(); else { save(); render(); drawRoute(); }
 };
 window.navStop = id => {
   const s = state.stops.find(x=>x.id===id); if(!s||s.lat==null) return;
@@ -703,6 +773,12 @@ document.querySelectorAll(".tabs button").forEach(b=>{
 // Type one
 $("#oneAdd").onclick = async () => {
   const v = $("#oneAddr").value.trim(); if(!v) return;
+  $("#acOne").classList.remove("show");
+  if (oneAddrPicked){   // exact spot chosen from suggestions — skip the lookup
+    const s = stopFromAddress(v); s.lat=oneAddrPicked.lat; s.lng=oneAddrPicked.lng;
+    state.stops.push(s); state.manual=false; oneAddrPicked=null;
+    $("#oneAddr").value=""; save(); render(); drawRoute(); flash("✓ Added "+v); return;
+  }
   $("#oneAddr").value = ""; await addAddressLines([v]);
 };
 // Voice add (Web Speech API — optional, hands-free)
@@ -721,7 +797,7 @@ $("#oneMic").onclick = () => {
 $("#pasteAdd").onclick = async () => {
   const text = $("#pasteBox").value;
   const csv = parseCSV(text);
-  if (csv && csv.length){ $("#pasteBox").value=""; addFileStops(csv); return; }
+  if (csv && csv.length){ $("#pasteBox").value=""; addFileStops(normalizeRows(csv), "pasted list"); return; }
   $("#pasteBox").value="";
   await addAddressLines(text.split(/\r?\n/));
 };
@@ -730,20 +806,22 @@ $("#pasteAdd").onclick = async () => {
 $("#fileInput").onchange = e => {
   const f = e.target.files[0]; if(!f) return;
   const name = f.name.toLowerCase();
+  setFileStatus(`<span class="spinner"></span> Selected “${esc(f.name)}” — reading…`);   // instant feedback
 
   // Excel (.xlsx/.xls): parse with SheetJS, map the headers, then add.
   if (/\.xls[xm]?$/i.test(name)){
-    if (!window.XLSX){ alert("Excel reader didn't load — check your connection, or save the sheet as CSV."); e.target.value=""; return; }
+    if (!window.XLSX){ setFileStatus("Excel reader didn't load — check your connection, or save the sheet as CSV."); e.target.value=""; return; }
     const reader = new FileReader();
     reader.onload = () => {
       try{
         const wb = XLSX.read(reader.result, { type:"array" });
         const ws = wb.Sheets[wb.SheetNames[0]];
         const raw = XLSX.utils.sheet_to_json(ws, { defval:"" });
-        if (!raw.length){ alert("That spreadsheet's first tab looks empty."); return; }
-        addFileStops(normalizeRows(raw));
-      }catch(err){ alert("Couldn't read that Excel file — try File → Download → CSV instead."); }
+        if (!raw.length){ setFileStatus("That spreadsheet's first tab looks empty."); return; }
+        addFileStops(normalizeRows(raw), f.name);
+      }catch(err){ setFileStatus("Couldn't read that Excel file — try File → Download → CSV instead."); }
     };
+    reader.onerror = () => setFileStatus("Couldn't read that file.");
     reader.readAsArrayBuffer(f);
     e.target.value=""; return;
   }
@@ -756,14 +834,15 @@ $("#fileInput").onchange = e => {
       if (/\.json$/i.test(name) || text.trim().startsWith("[") || text.trim().startsWith("{")){
         let rows = JSON.parse(text);
         if (!Array.isArray(rows)) rows = [rows];
-        addFileStops(normalizeRows(rows));
+        addFileStops(normalizeRows(rows), f.name);
       } else {
         const csv = parseCSV(text);
-        if (csv) addFileStops(normalizeRows(csv));
-        else addAddressLines(text.split(/\r?\n/));   // plain address list
+        if (csv) addFileStops(normalizeRows(csv), f.name);
+        else { setFileStatus(`Reading “${esc(f.name)}” as a plain address list…`); addAddressLines(text.split(/\r?\n/)); }
       }
-    }catch(err){ alert("Couldn't read that file — make sure it's the Excel/CSV/JSON export."); }
+    }catch(err){ setFileStatus("Couldn't read that file — make sure it's the Excel/CSV/JSON export."); }
   };
+  reader.onerror = () => setFileStatus("Couldn't read that file.");
   reader.readAsText(f);
   e.target.value="";
 };
@@ -859,10 +938,61 @@ function setBanner(sel, msg){
   el.textContent = msg; el.classList.toggle("show", !!msg);
 }
 
+/* ---------- Address autocomplete (Nominatim, debounced) ---------- */
+let lastSuggest = 0;
+async function suggestAddress(q){
+  const wait = 900 - (Date.now()-lastSuggest); if (wait>0) await sleep(wait);   // be kind to Nominatim
+  lastSuggest = Date.now();
+  const full = /taranaki|new zealand|nz/i.test(q) ? q : q + ", Taranaki, New Zealand";
+  const url = `https://nominatim.openstreetmap.org/search?format=json&addressdetails=1&countrycodes=nz&limit=6&q=${encodeURIComponent(full)}`;
+  try{
+    const res = await fetch(url, { headers:{ "Accept":"application/json" } });
+    const data = await res.json();
+    return (data||[]).map(d=>({ lat:+d.lat, lng:+d.lon, label: shortLabel(d) }));
+  }catch(e){ return []; }
+}
+function shortLabel(d){
+  const a = d.address||{};
+  const road = ((a.house_number?a.house_number+" ":"") + (a.road||"")).trim();
+  const town = a.suburb||a.town||a.village||a.city||a.county||"";
+  return [road, town].filter(Boolean).join(", ") || (d.display_name||"").split(",").slice(0,2).join(", ").trim();
+}
+function attachAutocomplete(input, listEl, onPick){
+  let t = 0, lastQ = "";
+  const close = () => { listEl.classList.remove("show"); listEl.innerHTML=""; };
+  input.addEventListener("input", () => {
+    const q = input.value.trim();
+    clearTimeout(t);
+    if (q.length < 3){ close(); return; }
+    t = setTimeout(async () => {
+      if (q === lastQ) return; lastQ = q;
+      const results = await suggestAddress(q);
+      if (!results.length || input.value.trim() !== q){ close(); return; }
+      listEl.innerHTML = results.map((r,i)=>`<div class="ac-item" data-i="${i}">${esc(r.label)}</div>`).join("");
+      listEl.classList.add("show");
+      [...listEl.querySelectorAll(".ac-item")].forEach(el=>{
+        el.addEventListener("mousedown", ev=>ev.preventDefault());   // keep input focus on tap
+        el.onclick = () => {
+          const r = results[+el.dataset.i];
+          input.value = r.label; close();
+          geocache[normKey(r.label)] = { lat:r.lat, lng:r.lng }; saveGeo();   // cache the pick
+          onPick(r);
+        };
+      });
+    }, 350);
+  });
+  input.addEventListener("blur", () => setTimeout(close, 250));
+}
+
 /* ---------- Boot ---------- */
 initMap();
 render();
 drawRoute();
+attachAutocomplete($("#oneAddr"), $("#acOne"), r => { oneAddrPicked = { lat:r.lat, lng:r.lng }; });
+attachAutocomplete($("#startAddr"), $("#acStart"), r => {
+  state.start = { lat:r.lat, lng:r.lng, label:r.label }; save(); render(); drawRoute();
+  flash("✓ Start set: " + r.label);
+});
 </script>
 </body>
 </html>
