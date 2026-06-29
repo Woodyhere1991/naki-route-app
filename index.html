@@ -10,8 +10,6 @@
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <!-- Tap-and-hold drag to reorder stops -->
 <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
-<!-- OCR a photo of a handwritten/printed list -->
-<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.0/dist/tesseract.min.js"></script>
 <!-- Read Excel (.xlsx) exported from Google Sheets -->
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 
@@ -154,7 +152,7 @@
         <button data-tab="one" class="on">Type one</button>
         <button data-tab="paste">Paste list</button>
         <button data-tab="file">Load file</button>
-        <button data-tab="photo">Photo / OCR</button>
+        <button data-tab="sheet">Google Sheet</button>
       </div>
 
       <!-- Type one -->
@@ -183,17 +181,13 @@
         <div id="fileStatus" class="small"></div>
       </div>
 
-      <!-- Photo / OCR -->
-      <div class="pane" id="pane-photo">
-        <label>Upload a photo, or take one, of your written list</label>
-        <input type="file" id="photoInput" accept="image/*" />
-        <p class="small muted">Pick from your gallery, or use the camera.</p>
-        <div id="ocrStatus" class="small muted" style="margin-top:8px"></div>
-        <div id="ocrResult" style="display:none;margin-top:10px">
-          <label>Check the lines, fix any mistakes, then add</label>
-          <textarea id="ocrText"></textarea>
-          <button id="ocrAdd" style="margin-top:8px;width:100%">Add these stops</button>
-        </div>
+      <!-- Google Sheet -->
+      <div class="pane" id="pane-sheet">
+        <label>Paste a link to your Google Sheet</label>
+        <input id="sheetUrl" autocomplete="off" placeholder="https://docs.google.com/spreadsheets/d/…" />
+        <button id="sheetLoad" style="margin-top:10px;width:100%">Load from Google Sheet</button>
+        <p class="small muted">One-off setup: in Sheets tap <b>Share → General access → Anyone with the link → Viewer</b>, then copy the link while you're on your pickups tab and paste it here. The app only reads it — nothing is changed, and it remembers the link next time.</p>
+        <div id="sheetStatus" class="small"></div>
       </div>
     </details>
   </div>
@@ -434,7 +428,7 @@ const HEADER_ALIASES = {
   street:["street","address","street address","addr","road","location"],
   town:["town","suburb","city","locality"],
   area:["area","zone","region","corridor"],
-  phone:["phone","mobile","cell","contact","phone number","ph","contact number"],
+  phone:["phone","mobile","cell","contact","phone number","contact number"],
   first_name:["first_name","first name","firstname"],
   last_name:["last_name","last name","lastname","surname"],
   name:["name","customer","full name","contact name","client"],
@@ -442,13 +436,19 @@ const HEADER_ALIASES = {
   lat:["lat","latitude"],
   lng:["lng","lon","long","longitude"],
   status:["status","state"],
-  submission_id:["submission_id","sub id","submission id","id","ref"]
+  submission_id:["submission_id","sub id","submission id"]
 };
 function mapRow(raw){
   const low = {};
   Object.keys(raw||{}).forEach(k => { low[String(k).toLowerCase().trim()] = raw[k]; });
   const pick = field => {
-    for (const a of HEADER_ALIASES[field]) if (low[a]!=null && String(low[a]).trim()!=="") return low[a];
+    const aliases = HEADER_ALIASES[field];
+    // 1) exact header match (most precise)
+    for (const a of aliases) if (low[a]!=null && String(low[a]).trim()!=="") return low[a];
+    // 2) forgiving: a header that CONTAINS the alias, e.g. "Address - Street Address" -> "street"
+    for (const a of aliases)
+      for (const k of Object.keys(low))
+        if (k.includes(a) && String(low[k]).trim()!=="") return low[k];
     return "";
   };
   // Appliances: a single column, or spread across "Appliance 1".."Appliance 10".
@@ -621,7 +621,7 @@ function renderList(){
   if (!state.stops.length){
     wrap.innerHTML = `<div class="card empty">
       <b>No stops yet</b>
-      <p>Add pickups above — type one, paste your list, load your file, or snap a photo. Then tap <b>Optimise route</b> and drive.</p>
+      <p>Add pickups above — type one, paste a list, load a file, or pull from your Google Sheet. Then tap <b>Optimise route</b> and drive.</p>
     </div>`;
     return;
   }
@@ -847,26 +847,42 @@ $("#fileInput").onchange = e => {
   e.target.value="";
 };
 
-// Photo / OCR
-$("#photoInput").onchange = async e => {
-  const f = e.target.files[0]; if(!f) return;
-  $("#ocrResult").style.display="none";
-  $("#ocrStatus").innerHTML = '<span class="spinner"></span> Reading the photo… (this can take a moment)';
+// Google Sheet — read a shared sheet straight into the run (no Drive browsing, no login).
+function setSheetStatus(msg){ const el=$("#sheetStatus"); if(el) el.innerHTML = msg; }
+function sheetCsvUrl(url){
+  url = (url||"").trim(); if(!url) return null;
+  if (/output=csv|format=csv|tqx=out:csv/i.test(url)) return url;             // already a CSV link
+  const id = (url.match(/\/spreadsheets\/d\/(?:e\/)?([a-zA-Z0-9-_]+)/)||[])[1];
+  if (!id) return null;
+  const gid = (url.match(/[#&?]gid=(\d+)/)||[])[1] || "0";
+  return `https://docs.google.com/spreadsheets/d/${id}/gviz/tq?tqx=out:csv&gid=${gid}`;
+}
+async function loadFromSheet(url){
+  const csvUrl = sheetCsvUrl(url);
+  if (!csvUrl){ setSheetStatus("That doesn't look like a Google Sheet link."); return; }
+  setSheetStatus('<span class="spinner"></span> Fetching your sheet…');
+  let text;
   try{
-    const { data } = await Tesseract.recognize(f, "eng", {
-      logger: m => { if(m.status==="recognizing text") $("#ocrStatus").innerHTML =
-        `<span class="spinner"></span> Reading the photo… ${Math.round(m.progress*100)}%`; }
-    });
-    $("#ocrStatus").textContent = "Done — check the lines below.";
-    $("#ocrText").value = (data.text||"").split(/\n/).map(l=>l.trim()).filter(Boolean).join("\n");
-    $("#ocrResult").style.display="block";
-  }catch(err){ $("#ocrStatus").textContent = "Couldn't read that photo — try a clearer one or type the addresses."; }
-  e.target.value="";
-};
-$("#ocrAdd").onclick = async () => {
-  const text = $("#ocrText").value; $("#ocrResult").style.display="none"; $("#ocrStatus").textContent="";
-  await addAddressLines(text.split(/\n/));
-};
+    const res = await fetch(csvUrl);
+    if (!res.ok) throw 0;
+    text = await res.text();
+  }catch(e){
+    setSheetStatus('Couldn\'t open that sheet. In Sheets: <b>Share → Anyone with the link → Viewer</b>, then paste the link again. (Or File → Share → Publish to web → CSV and paste that.)');
+    return;
+  }
+  const parsed = parseCSV(text);
+  if (!parsed || !parsed.length){ setSheetStatus("Read the sheet but found no rows — check it has a header row (Name, Address, Town…)."); return; }
+  // Keep rows that have an address/name and aren't already collected.
+  const rows = normalizeRows(parsed).filter(r =>
+    ((r.street||"").trim() || (r.first_name||"").trim() || (r.last_name||"").trim()) &&
+    !/^(done|complete|completed|collected)$/i.test((r.status||"").trim()));
+  if (!rows.length){ setSheetStatus("No pending pickups found in that sheet."); return; }
+  state.sheetUrl = url.trim(); save();
+  setSheetStatus(`✓ Found ${rows.length} pickup${rows.length!==1?'s':''} — adding…`);
+  addFileStops(rows, "Google Sheet");
+}
+$("#sheetLoad").onclick = () => loadFromSheet($("#sheetUrl").value);
+if (state.sheetUrl) $("#sheetUrl").value = state.sheetUrl;   // remember the last sheet
 
 // Start point
 $("#useLoc").onclick = () => {
@@ -926,7 +942,7 @@ $("#clearAll").onclick = () => {
     ? `Collected ${done.length} of ${state.stops.length} stops${items?` (${items} items)`:""} today.\n\n`
     : "";
   if (confirm(`${tally}Clear the whole run? This removes all stops and progress on this phone.`)){
-    state = { stops:[], bad:[], start:null, roundTrip:false, manual:false };
+    state = { stops:[], bad:[], start:null, roundTrip:false, manual:false, sheetUrl: state.sheetUrl };
     areaFilterValue = "all";
     save(); render(); drawRoute();
   }
