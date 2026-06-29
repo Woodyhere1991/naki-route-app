@@ -1,0 +1,785 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Naki Pickup Run</title>
+
+<!-- Leaflet map (free OSM tiles) -->
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<!-- Drag-to-reorder the stop list -->
+<script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
+<!-- OCR a photo of a handwritten/printed list -->
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.0/dist/tesseract.min.js"></script>
+
+<style>
+  :root{
+    --bg:#0f1115; --panel:#171a21; --panel2:#1e222b; --line:#2b313d;
+    --txt:#eef1f6; --muted:#9aa4b2; --accent:#2f80ff; --accent2:#1c5fd6;
+    --good:#27c08a; --warn:#ffb020; --bad:#ff5c5c;
+    --north:#3ba0ff; --south:#ff8a3d; --coastal:#27c08a; --none:#8a93a3;
+    --tap:54px;
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{margin:0;padding:0;background:var(--bg);color:var(--txt);
+    font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;font-size:17px;line-height:1.4}
+  body{padding-bottom:24px}
+  h1,h2,h3{margin:0}
+  button{font-family:inherit;font-size:16px;cursor:pointer;border:none;border-radius:12px;
+    color:#fff;background:var(--accent);min-height:var(--tap);padding:0 16px;font-weight:600}
+  button:active{transform:translateY(1px)}
+  button.ghost{background:var(--panel2);color:var(--txt);border:1px solid var(--line)}
+  button.good{background:var(--good)} button.warn{background:var(--warn);color:#1a1200}
+  button.bad{background:var(--bad)} button.sm{min-height:42px;font-size:15px;padding:0 12px;border-radius:10px}
+  input,textarea,select{font-family:inherit;font-size:16px;width:100%;padding:12px;border-radius:12px;
+    border:1px solid var(--line);background:var(--panel2);color:var(--txt);min-height:var(--tap)}
+  textarea{min-height:120px;resize:vertical}
+  label{font-size:14px;color:var(--muted);display:block;margin:0 0 4px}
+  .wrap{max-width:760px;margin:0 auto;padding:0 12px}
+
+  /* Top bar: live counts */
+  header{position:sticky;top:0;z-index:1000;background:var(--panel);
+    border-bottom:1px solid var(--line);box-shadow:0 2px 8px rgba(0,0,0,.3)}
+  .topbar{display:flex;align-items:center;gap:10px;padding:10px 12px;max-width:760px;margin:0 auto}
+  .brand{font-size:18px;font-weight:800;letter-spacing:.2px}
+  .brand small{display:block;font-size:11px;color:var(--muted);font-weight:600;letter-spacing:1px}
+  .stats{margin-left:auto;display:flex;gap:14px;text-align:center}
+  .stat b{display:block;font-size:18px;line-height:1} .stat span{font-size:10px;color:var(--muted);text-transform:uppercase}
+
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:14px;margin:12px 0}
+  .row{display:flex;gap:10px;flex-wrap:wrap}
+  .row > *{flex:1 1 auto}
+  .grow{flex:1 1 200px}
+  .muted{color:var(--muted)} .small{font-size:13px}
+
+  /* Collapsible "Add pickups" */
+  details summary{list-style:none;cursor:pointer;display:flex;align-items:center;gap:8px;
+    font-weight:700;font-size:17px;padding:4px 0}
+  details summary::-webkit-details-marker{display:none}
+  summary .chev{margin-left:auto;color:var(--muted);transition:transform .15s}
+  details[open] summary .chev{transform:rotate(90deg)}
+  .tabs{display:flex;gap:6px;margin:12px 0;flex-wrap:wrap}
+  .tabs button{flex:1 1 0;min-height:46px;background:var(--panel2);color:var(--txt);border:1px solid var(--line);font-size:14px}
+  .tabs button.on{background:var(--accent);border-color:var(--accent);color:#fff}
+  .pane{display:none;margin-top:8px} .pane.on{display:block}
+
+  /* Map */
+  #map{height:300px;width:100%;border-radius:14px;border:1px solid var(--line);background:#0a0c10}
+  .leaflet-container{background:#0a0c10}
+  .pin{display:flex;align-items:center;justify-content:center;width:30px;height:30px;border-radius:50% 50% 50% 0;
+    transform:rotate(-45deg);box-shadow:0 1px 4px rgba(0,0,0,.5);border:2px solid #fff;font-weight:800;color:#fff}
+  .pin span{transform:rotate(45deg);font-size:13px}
+  .pin.start{border-radius:50%;background:#fff;color:#111}
+  .pin.start span{transform:none}
+
+  /* Stop rows */
+  .stop{display:flex;gap:12px;padding:12px;border:1px solid var(--line);border-radius:14px;
+    background:var(--panel2);margin:10px 0;align-items:flex-start;border-left-width:6px}
+  .stop.done{opacity:.55}
+  .stop.done .name,.stop.done .addr{text-decoration:line-through}
+  .stop.next{box-shadow:0 0 0 2px var(--accent);border-left-color:var(--accent)}
+  .num{flex:0 0 34px;height:34px;border-radius:9px;display:flex;align-items:center;justify-content:center;
+    font-weight:800;background:#0a0c10;color:#fff;border:1px solid var(--line);font-size:16px}
+  .stopbody{flex:1 1 auto;min-width:0}
+  .name{font-weight:700;font-size:17px}
+  .addr{color:var(--txt)} .note{color:var(--warn);font-size:14px;margin-top:4px}
+  .apps{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
+  .chip{background:#0a0c10;border:1px solid var(--line);border-radius:999px;padding:3px 10px;font-size:13px}
+  .areatag{font-size:11px;font-weight:700;padding:2px 8px;border-radius:999px;color:#06121f}
+  .stopbtns{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+  .handle{flex:0 0 24px;display:flex;align-items:center;justify-content:center;color:var(--muted);
+    cursor:grab;font-size:20px;align-self:center;touch-action:none}
+  .arrows{display:flex;flex-direction:column;gap:2px}
+  .arrows button{min-height:24px;padding:0 8px;font-size:13px;line-height:1;border-radius:8px}
+
+  .empty{text-align:center;color:var(--muted);padding:26px 14px}
+  .empty b{color:var(--txt);font-size:18px}
+  .spinner{display:inline-block;width:18px;height:18px;border:3px solid rgba(255,255,255,.3);
+    border-top-color:#fff;border-radius:50%;animation:spin .8s linear infinite;vertical-align:middle}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .banner{padding:10px 12px;border-radius:12px;margin:10px 0;font-size:14px;display:none}
+  .banner.show{display:block}
+  .banner.info{background:#15314f;border:1px solid #2f80ff55}
+  .banner.warnb{background:#3a2c0a;border:1px solid #ffb02055}
+  .badrow{display:flex;gap:10px;align-items:center;padding:10px;border:1px dashed var(--warn);
+    border-radius:12px;margin:8px 0;background:#2a210a}
+  .badrow input{flex:1 1 auto}
+  .sectitle{font-size:14px;text-transform:uppercase;letter-spacing:1px;color:var(--muted);margin:18px 0 4px}
+  footer{ text-align:center;color:var(--muted);font-size:12px;padding:20px 0 10px}
+  .areafilter{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+  .areafilter button{min-height:38px;font-size:13px;background:var(--panel2);border:1px solid var(--line);color:var(--txt)}
+  .areafilter button.on{background:var(--accent);border-color:var(--accent)}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="topbar">
+    <div class="brand">Naki Pickup Run<small>WHITEWARE COLLECTION</small></div>
+    <div class="stats">
+      <div class="stat"><b id="stCount">0</b><span>Stops</span></div>
+      <div class="stat"><b id="stKm">–</b><span>Km</span></div>
+      <div class="stat"><b id="stApp">0</b><span>Items</span></div>
+    </div>
+  </div>
+</header>
+
+<div class="wrap">
+
+  <!-- ADD PICKUPS -->
+  <div class="card">
+    <details id="addBox" open>
+      <summary>Add pickups <span class="chev">›</span></summary>
+
+      <div class="tabs">
+        <button data-tab="one" class="on">Type one</button>
+        <button data-tab="paste">Paste list</button>
+        <button data-tab="file">Load file</button>
+        <button data-tab="photo">Photo / OCR</button>
+      </div>
+
+      <!-- Type one -->
+      <div class="pane on" id="pane-one">
+        <label>Address (street, town)</label>
+        <div class="row">
+          <input id="oneAddr" class="grow" placeholder="e.g. 8 King Road, Inglewood" />
+          <button id="oneMic" class="ghost" title="Speak the address" style="flex:0 0 auto">🎤</button>
+        </div>
+        <button id="oneAdd" style="margin-top:10px;width:100%">Add this stop</button>
+      </div>
+
+      <!-- Paste list -->
+      <div class="pane" id="pane-paste">
+        <label>One address per line (CSV with a header also works)</label>
+        <textarea id="pasteBox" placeholder="12 High Street, Hawera
+11 Tasman Street, Opunake"></textarea>
+        <button id="pasteAdd" style="margin-top:10px;width:100%">Add these stops</button>
+      </div>
+
+      <!-- Load file -->
+      <div class="pane" id="pane-file">
+        <label>Your saved list (.json or .csv) — uses coords already in the file</label>
+        <input type="file" id="fileInput" accept=".json,.csv,text/csv,application/json" />
+        <p class="small muted">Tip: download your pickup export from Google Drive, then pick it here.</p>
+      </div>
+
+      <!-- Photo / OCR -->
+      <div class="pane" id="pane-photo">
+        <label>Take or pick a photo of your written list</label>
+        <input type="file" id="photoInput" accept="image/*" capture="environment" />
+        <div id="ocrStatus" class="small muted" style="margin-top:8px"></div>
+        <div id="ocrResult" style="display:none;margin-top:10px">
+          <label>Check the lines, fix any mistakes, then add</label>
+          <textarea id="ocrText"></textarea>
+          <button id="ocrAdd" style="margin-top:8px;width:100%">Add these stops</button>
+        </div>
+      </div>
+    </details>
+  </div>
+
+  <!-- START POINT -->
+  <div class="card">
+    <h3 style="margin-bottom:8px">Start point</h3>
+    <div id="startNow" class="small muted" style="margin-bottom:8px">Not set — defaults to New Plymouth.</div>
+    <div class="row">
+      <button id="useLoc" class="good grow">📍 Use my location</button>
+      <input id="startAddr" class="grow" placeholder="or type your yard / start address" />
+      <button id="setStart" class="ghost" style="flex:0 0 auto">Set</button>
+    </div>
+    <label style="display:flex;gap:10px;align-items:center;margin-top:12px;color:var(--txt)">
+      <input type="checkbox" id="roundTrip" style="width:auto;min-height:auto" />
+      End back at start (round trip)
+    </label>
+  </div>
+
+  <!-- ACTIONS -->
+  <div class="card">
+    <button id="optimise" style="width:100%;min-height:60px;font-size:19px">🧭 Optimise route</button>
+    <div class="row" style="margin-top:10px">
+      <button id="navAll" class="ghost grow">Navigate whole route</button>
+      <button id="clearAll" class="ghost grow">Clear all</button>
+    </div>
+    <div id="busy" class="small muted" style="margin-top:8px"></div>
+  </div>
+
+  <!-- BANNERS -->
+  <div id="bannerWaypoints" class="banner warnb"></div>
+  <div id="bannerOsrm" class="banner info"></div>
+
+  <!-- MAP -->
+  <div class="card" style="padding:8px"><div id="map"></div></div>
+
+  <!-- AREA FILTER -->
+  <div class="areafilter" id="areaFilter"></div>
+
+  <!-- STOP LIST -->
+  <div id="listWrap"></div>
+
+  <!-- NEEDS ADDRESS -->
+  <div id="badWrap"></div>
+
+  <footer>$0/month • Static file • No login • Everything saved on this phone</footer>
+</div>
+
+<script>
+"use strict";
+/* ============================================================
+   Naki Pickup Run — single-file route planner
+   No backend. State lives in localStorage. Free public APIs.
+   ============================================================ */
+
+const NP = { lat: -39.0556, lng: 174.0752 };          // New Plymouth default centre
+const LS = "naki_route_v1";                            // main state key
+const GEO = "naki_geocache_v1";                        // address -> {lat,lng} cache
+const UA  = "NakiPickupRun/1.0 (whiteware pickup route planner; nakiwreckremoval@gmail.com)";
+const AREA_COLORS = { North:"var(--north)", South:"var(--south)", Coastal:"var(--coastal)", "":"var(--none)" };
+const AREA_HEX    = { North:"#3ba0ff", South:"#ff8a3d", Coastal:"#27c08a", "":"#8a93a3" };
+
+/* ---------- State ---------- */
+let state = loadState();
+let geocache = loadJSON(GEO, {});
+let map, markerLayer, routeLayer;
+let areaFilterValue = "all";
+
+function loadJSON(k, d){ try{ return JSON.parse(localStorage.getItem(k)) || d; }catch(e){ return d; } }
+function saveJSON(k, v){ try{ localStorage.setItem(k, JSON.stringify(v)); }catch(e){} }
+function loadState(){
+  const s = loadJSON(LS, null);
+  if (s && Array.isArray(s.stops)) return s;
+  return { stops:[], bad:[], start:null, roundTrip:false, manual:false };
+}
+function save(){ saveJSON(LS, state); }
+function saveGeo(){ saveJSON(GEO, geocache); }
+
+/* ---------- Helpers ---------- */
+const $ = sel => document.querySelector(sel);
+const uid = () => "s" + Date.now().toString(36) + Math.random().toString(36).slice(2,6);
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+function normKey(a){ return (a||"").toLowerCase().replace(/\s+/g," ").trim(); }
+function busy(msg){ $("#busy").innerHTML = msg ? '<span class="spinner"></span> ' + msg : ""; }
+
+// Great-circle distance (km) — used for routing maths, always works offline.
+function haversine(a, b){
+  const R = 6371, toR = d => d*Math.PI/180;
+  const dLat = toR(b.lat-a.lat), dLng = toR(b.lng-a.lng);
+  const x = Math.sin(dLat/2)**2 +
+            Math.cos(toR(a.lat))*Math.cos(toR(b.lat))*Math.sin(dLng/2)**2;
+  return R * 2 * Math.atan2(Math.sqrt(x), Math.sqrt(1-x));
+}
+
+/* ---------- Geocoding (Nominatim, throttled + cached) ---------- */
+let lastGeo = 0;
+async function geocode(addr){
+  const key = normKey(addr);
+  if (!key) return null;
+  if (geocache[key]) return geocache[key];                 // cache hit — never re-fetch
+  const wait = 1100 - (Date.now() - lastGeo);              // >=1.1s between calls
+  if (wait > 0) await sleep(wait);
+  lastGeo = Date.now();
+  const q = encodeURIComponent(addr + (/taranaki|new zealand|nz/i.test(addr) ? "" : ", Taranaki, New Zealand"));
+  const url = `https://nominatim.openstreetmap.org/search?format=json&countrycodes=nz&limit=1&q=${q}`;
+  try{
+    const res = await fetch(url, { headers:{ "Accept":"application/json", "Referer":location.href, "User-Agent":UA } });
+    const data = await res.json();
+    if (data && data.length){
+      const hit = { lat:+data[0].lat, lng:+data[0].lon };
+      geocache[key] = hit; saveGeo();
+      return hit;
+    }
+  }catch(e){ /* network/CORS — treated as a miss below */ }
+  return null;
+}
+
+/* ---------- Adding stops ---------- */
+// Build a stop object from a free-text address line.
+function stopFromAddress(line){
+  const parts = line.split(",").map(s=>s.trim());
+  const street = parts[0] || line.trim();
+  const town   = parts[1] || "";
+  return { id:uid(), submission_id:uid(), first_name:"", last_name:"",
+    phone:"", street, town, area:"", appliances:[], additional_info:"",
+    lat:null, lng:null, status:"NEW", _rawAddr:line.trim() };
+}
+
+function fullAddr(s){
+  return [s.street, s.town].filter(Boolean).join(", ") || s._rawAddr || "";
+}
+
+// Add a batch of address lines: geocode each (or park as "needs address").
+async function addAddressLines(lines){
+  const clean = lines.map(l=>l.trim()).filter(Boolean)
+                     .filter(l => !/^(name|address|street|town)\b/i.test(l)); // drop a CSV header
+  if (!clean.length){ alert("No addresses found."); return; }
+  let done = 0;
+  for (const line of clean){
+    busy(`Finding addresses ${++done} of ${clean.length}…`);
+    const s = stopFromAddress(line);
+    const hit = await geocode(fullAddr(s));
+    if (hit){ s.lat = hit.lat; s.lng = hit.lng; state.stops.push(s); }
+    else    { state.bad.push(s); }
+    state.manual = false; save(); render();
+  }
+  busy("");
+}
+
+// Add stops from a parsed JSON/CSV file (keeps coords already present).
+function addFileStops(rows){
+  let added = 0, parked = 0, toGeocode = [];
+  rows.forEach(r => {
+    const s = {
+      id: uid(),
+      submission_id: r.submission_id || uid(),
+      first_name: r.first_name||"", last_name: r.last_name||"",
+      phone: r.phone||"", street: r.street||"", town: r.town||"",
+      area: r.area||"", appliances: Array.isArray(r.appliances) ? r.appliances
+              : (r.appliances ? String(r.appliances).split(/[;|]/).map(x=>x.trim()).filter(Boolean) : []),
+      additional_info: r.additional_info||"",
+      lat: r.lat!=null && r.lat!=="" ? +r.lat : null,
+      lng: r.lng!=null && r.lng!=="" ? +r.lng : null,
+      status: (r.status==="DONE") ? "DONE" : "NEW"
+    };
+    if (s.lat!=null && s.lng!=null && !isNaN(s.lat) && !isNaN(s.lng)){ state.stops.push(s); added++; }
+    else if (s.street && s.town && s.town.toLowerCase()!=="unknown"){ toGeocode.push(s); }
+    else { state.bad.push(s); parked++; }
+  });
+  save(); render();
+  // Geocode any rows that had no coords but a usable address.
+  (async () => {
+    let i=0;
+    for (const s of toGeocode){
+      busy(`Finding addresses ${++i} of ${toGeocode.length}…`);
+      const hit = await geocode(fullAddr(s));
+      if (hit){ s.lat=hit.lat; s.lng=hit.lng; state.stops.push(s); }
+      else { state.bad.push(s); }
+      save(); render();
+    }
+    busy("");
+    alert(`Loaded ${added+ (toGeocode.length)} located, ${parked} parked in "Needs address".`);
+  })();
+}
+
+// Very small CSV parser (handles simple quoted fields).
+function parseCSV(text){
+  const lines = text.split(/\r?\n/).filter(l=>l.trim()!=="");
+  if (!lines.length) return [];
+  const split = l => {
+    const out=[]; let cur="", q=false;
+    for (let i=0;i<l.length;i++){ const c=l[i];
+      if (c==='"'){ if (q && l[i+1]==='"'){ cur+='"'; i++; } else q=!q; }
+      else if (c===',' && !q){ out.push(cur); cur=""; }
+      else cur+=c;
+    } out.push(cur); return out.map(s=>s.trim());
+  };
+  const header = split(lines[0]).map(h=>h.toLowerCase());
+  // If it doesn't look like our schema, treat every line as a plain address.
+  const known = ["street","town","lat","lng","first_name","last_name","phone","area"];
+  if (!header.some(h=>known.includes(h))) return null; // signal: plain address list
+  return lines.slice(1).map(l=>{
+    const cells = split(l), o={};
+    header.forEach((h,i)=> o[h]= cells[i]!==undefined ? cells[i] : "");
+    if (o.appliances) o.appliances = o.appliances.split(/[;|]/).map(x=>x.trim()).filter(Boolean);
+    return o;
+  });
+}
+
+/* ---------- Route optimisation (nearest-neighbour + 2-opt) ---------- */
+function routeStops(){
+  // Pending stops with coords, honouring the area filter, in current order.
+  return state.stops.filter(s => s.status!=="DONE" && s.lat!=null && s.lng!=null &&
+    (areaFilterValue==="all" || (s.area||"")===areaFilterValue));
+}
+function startPoint(){ return state.start || NP; }
+
+function optimise(){
+  const pts = routeStops();
+  if (pts.length < 2){ render(); drawRoute(); return; }
+  const start = startPoint();
+  // Nearest-neighbour from the start point.
+  let remaining = pts.slice(), order = [], cur = start;
+  while (remaining.length){
+    let bi=0, bd=Infinity;
+    remaining.forEach((p,i)=>{ const d=haversine(cur,p); if (d<bd){ bd=d; bi=i; } });
+    cur = remaining[bi]; order.push(cur); remaining.splice(bi,1);
+  }
+  // 2-opt improvement.
+  const round = state.roundTrip;
+  const cost = seq => {
+    let t = haversine(start, seq[0]);
+    for (let i=0;i<seq.length-1;i++) t += haversine(seq[i], seq[i+1]);
+    if (round) t += haversine(seq[seq.length-1], start);
+    return t;
+  };
+  let improved = true, best = order;
+  while (improved){
+    improved = false;
+    for (let i=0;i<best.length-1;i++){
+      for (let k=i+1;k<best.length;k++){
+        const cand = best.slice(0,i).concat(best.slice(i,k+1).reverse(), best.slice(k+1));
+        if (cost(cand) + 1e-9 < cost(best)){ best = cand; improved = true; }
+      }
+    }
+  }
+  // Re-seat optimised stops at the front of state.stops, keep DONE + others after.
+  const ids = best.map(s=>s.id);
+  const rest = state.stops.filter(s => !ids.includes(s.id));
+  state.stops = best.concat(rest);
+  state.manual = false;
+  save(); render(); drawRoute();
+}
+
+/* ---------- Map drawing + OSRM road line (best-effort) ---------- */
+function initMap(){
+  map = L.map("map", { zoomControl:true }).setView([NP.lat, NP.lng], 11);
+  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+    { maxZoom:19, attribution:"© OpenStreetMap" }).addTo(map);
+  markerLayer = L.layerGroup().addTo(map);
+  routeLayer  = L.layerGroup().addTo(map);
+}
+function pinIcon(label, area, isStart){
+  const bg = isStart ? "#fff" : (AREA_HEX[area]||AREA_HEX[""]);
+  const cls = "pin" + (isStart ? " start" : "");
+  return L.divIcon({ className:"", html:`<div class="${cls}" style="background:${bg}"><span>${label}</span></div>`,
+    iconSize:[30,30], iconAnchor:[15,28] });
+}
+async function drawRoute(){
+  if (!map) return;
+  markerLayer.clearLayers(); routeLayer.clearLayers();
+  const pts = routeStops();
+  const start = startPoint();
+  const bounds = [];
+  // Start marker.
+  L.marker([start.lat,start.lng], { icon: pinIcon("S","",true) })
+    .bindPopup("Start").addTo(markerLayer);
+  bounds.push([start.lat,start.lng]);
+  // Numbered stop markers.
+  pts.forEach((s,i)=>{
+    L.marker([s.lat,s.lng], { icon: pinIcon(i+1, s.area, false) })
+      .bindPopup(`<b>${i+1}. ${fullName(s)||fullAddr(s)}</b><br>${fullAddr(s)}`)
+      .addTo(markerLayer);
+    bounds.push([s.lat,s.lng]);
+  });
+  if (bounds.length) map.fitBounds(bounds, { padding:[30,30], maxZoom:13 });
+  if (!pts.length){ updateStats(0); return; }
+
+  // Try OSRM for a real road line + distance; fall back to straight lines.
+  const seq = [start, ...pts];
+  if (state.roundTrip) seq.push(start);
+  const coords = seq.map(p=>`${p.lng},${p.lat}`).join(";");
+  setBanner("#bannerOsrm","");
+  let drewRoad = false;
+  try{
+    const url = `https://router.project-osrm.org/route/v1/driving/${coords}?overview=full&geometries=geojson`;
+    const res = await fetch(url);
+    const data = await res.json();
+    if (data && data.routes && data.routes[0]){
+      const r = data.routes[0];
+      L.geoJSON({ type:"Feature", geometry:r.geometry },
+        { style:{ color:"#2f80ff", weight:5, opacity:.85 } }).addTo(routeLayer);
+      updateStats(r.distance/1000, r.duration/60);
+      drewRoad = true;
+    }
+  }catch(e){ /* OSRM down or rate-limited — fall through */ }
+  if (!drewRoad){
+    // Straight-line fallback + great-circle distance estimate.
+    L.polyline(seq.map(p=>[p.lat,p.lng]),
+      { color:"#2f80ff", weight:4, opacity:.6, dashArray:"6 8" }).addTo(routeLayer);
+    let km=0; for (let i=0;i<seq.length-1;i++) km += haversine(seq[i],seq[i+1]);
+    updateStats(km, null);
+    setBanner("#bannerOsrm","Showing straight-line distance (road routing unavailable right now). Navigation still works.");
+  }
+}
+
+/* ---------- Rendering the stop list ---------- */
+function fullName(s){ return [s.first_name,s.last_name].filter(Boolean).join(" ").trim(); }
+
+function updateStats(km, mins){
+  const pending = state.stops.filter(s=>s.status!=="DONE");
+  $("#stCount").textContent = pending.length;
+  $("#stApp").textContent = pending.reduce((n,s)=>n + (s.appliances?s.appliances.length:0), 0);
+  if (km==null){ $("#stKm").textContent = "–"; return; }
+  $("#stKm").textContent = Math.round(km);
+}
+
+function render(){
+  renderAreaFilter();
+  renderList();
+  renderBad();
+  renderStart();
+  updateStats(null);
+  $("#roundTrip").checked = !!state.roundTrip;
+  // Waypoint-cap warning for whole-route nav.
+  const n = routeStops().length;
+  if (n > 9) setBanner("#bannerWaypoints",
+    `Heads up: Google Maps only takes 9 stops at once. "Navigate whole route" will route the first 9 — use each stop's Navigate button for the rest.`);
+  else setBanner("#bannerWaypoints","");
+}
+
+function renderList(){
+  const wrap = $("#listWrap");
+  const pending = state.stops.filter(s => s.status!=="DONE");
+  const visible = state.stops.filter(s => areaFilterValue==="all" || (s.area||"")===areaFilterValue);
+
+  if (!state.stops.length){
+    wrap.innerHTML = `<div class="card empty">
+      <b>No stops yet</b>
+      <p>Add pickups above — type one, paste your list, load your file, or snap a photo. Then tap <b>Optimise route</b> and drive.</p>
+    </div>`;
+    return;
+  }
+
+  // First not-done stop = the "next" highlight.
+  const nextId = (pending.find(s => s.lat!=null) || pending[0] || {}).id;
+  let order = 0;
+  const rows = visible.map(s => {
+    const done = s.status==="DONE";
+    if (!done && s.lat!=null) order++;
+    const num = done ? "✓" : (s.lat!=null ? order : "!");
+    const area = s.area||"";
+    const tag = area ? `<span class="areatag" style="background:${AREA_HEX[area]}">${area}</span>` : "";
+    const apps = (s.appliances||[]).map(a=>`<span class="chip">${esc(a)}</span>`).join("");
+    const note = s.additional_info ? `<div class="note">📝 ${esc(s.additional_info)}</div>` : "";
+    const phone = s.phone ? `<button class="ghost sm" onclick="callStop('${s.id}')">📞 Call</button>` : "";
+    const navBtn = s.lat!=null
+      ? `<button class="sm" onclick="navStop('${s.id}')">🧭 Navigate</button>` : "";
+    return `<div class="stop ${done?'done':''} ${s.id===nextId&&!done?'next':''}"
+        data-id="${s.id}" style="border-left-color:${AREA_COLORS[area]||AREA_COLORS['']}">
+      <div class="handle" title="Drag to reorder">⠿</div>
+      <div class="num">${num}</div>
+      <div class="stopbody">
+        <div class="name">${esc(fullName(s)) || esc(fullAddr(s))} ${tag}</div>
+        <div class="addr">${esc(fullAddr(s))}</div>
+        ${apps?`<div class="apps">${apps}</div>`:""}
+        ${note}
+        <div class="stopbtns">
+          ${navBtn}
+          <button class="${done?'warn':'good'} sm" onclick="toggleDone('${s.id}')">${done?'↺ Undo':'✓ Done'}</button>
+          ${phone}
+          <div class="arrows">
+            <button class="ghost" onclick="moveStop('${s.id}',-1)">▲</button>
+            <button class="ghost" onclick="moveStop('${s.id}',1)">▼</button>
+          </div>
+        </div>
+      </div>
+    </div>`;
+  }).join("");
+
+  wrap.innerHTML = `<div class="sectitle">Today's run ${state.manual?'(manual order)':''}</div>` + rows;
+
+  // Enable drag-to-reorder.
+  const listEl = wrap.querySelector(".sectitle").parentNode;
+  if (window.Sortable){
+    Sortable.create(wrap, { handle:".handle", animation:150, draggable:".stop",
+      onEnd: () => {
+        const ids = [...wrap.querySelectorAll(".stop")].map(el=>el.dataset.id);
+        // Reorder state.stops to match the visible DOM order.
+        const map = new Map(state.stops.map(s=>[s.id,s]));
+        const reordered = ids.map(id=>map.get(id)).filter(Boolean);
+        const others = state.stops.filter(s=>!ids.includes(s.id));
+        state.stops = reordered.concat(others);
+        state.manual = true; save(); render(); drawRoute();
+      }
+    });
+  }
+}
+
+function renderBad(){
+  const wrap = $("#badWrap");
+  if (!state.bad.length){ wrap.innerHTML=""; return; }
+  const rows = state.bad.map((s,i)=>`
+    <div class="badrow">
+      <input value="${esc(fullAddr(s))}" data-bad="${i}" placeholder="Fix the address" />
+      <button class="good sm" onclick="retryBad(${i})">Find</button>
+      <button class="ghost sm" onclick="dropBad(${i})">✕</button>
+    </div>`).join("");
+  wrap.innerHTML = `<div class="sectitle" style="color:var(--warn)">Needs address (${state.bad.length})</div>
+    <p class="small muted" style="margin:2px 0 6px">Couldn't locate these. Fix the address and tap Find.</p>${rows}`;
+}
+
+function renderStart(){
+  const el = $("#startNow");
+  if (state.start){
+    el.textContent = "Start: " + (state.start.label || `${state.start.lat.toFixed(4)}, ${state.start.lng.toFixed(4)}`);
+  } else el.textContent = "Not set — defaults to New Plymouth.";
+}
+
+function renderAreaFilter(){
+  const areas = [...new Set(state.stops.map(s=>s.area||"").filter(Boolean))];
+  const el = $("#areaFilter");
+  if (areas.length < 2){ el.innerHTML=""; return; }
+  const btn = (v,label)=>`<button class="${areaFilterValue===v?'on':''}" onclick="setAreaFilter('${v}')">${label}</button>`;
+  el.innerHTML = btn("all","All areas") + areas.map(a=>btn(a,a)).join("");
+}
+
+function esc(s){ return String(s==null?"":s).replace(/[&<>"]/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
+
+/* ---------- Per-stop actions (exposed for inline onclick) ---------- */
+window.setAreaFilter = v => { areaFilterValue=v; render(); drawRoute(); };
+window.toggleDone = id => {
+  const s = state.stops.find(x=>x.id===id); if(!s) return;
+  s.status = s.status==="DONE" ? "NEW" : "DONE"; save(); render(); drawRoute();
+};
+window.moveStop = (id,dir) => {
+  const i = state.stops.findIndex(s=>s.id===id); if(i<0) return;
+  const j = i+dir; if(j<0||j>=state.stops.length) return;
+  [state.stops[i],state.stops[j]] = [state.stops[j],state.stops[i]];
+  state.manual = true; save(); render(); drawRoute();
+};
+window.navStop = id => {
+  const s = state.stops.find(x=>x.id===id); if(!s||s.lat==null) return;
+  window.open(`https://www.google.com/maps/dir/?api=1&travelmode=driving&destination=${s.lat},${s.lng}`,"_blank");
+};
+window.callStop = id => { const s=state.stops.find(x=>x.id===id); if(s&&s.phone) location.href="tel:"+s.phone.replace(/\s+/g,""); };
+window.retryBad = async i => {
+  const inp = document.querySelector(`[data-bad="${i}"]`); const addr = inp ? inp.value : "";
+  busy("Finding address…");
+  const hit = await geocode(addr);
+  busy("");
+  if (hit){
+    const s = state.bad[i]; const parts = addr.split(",").map(x=>x.trim());
+    s.street = parts[0]||s.street; s.town = parts[1]||s.town;
+    s.lat = hit.lat; s.lng = hit.lng;
+    state.bad.splice(i,1); state.stops.push(s); save(); render(); drawRoute();
+  } else alert("Still couldn't find that address — try adding the town.");
+};
+window.dropBad = i => { state.bad.splice(i,1); save(); render(); };
+
+/* ---------- Wire up the UI ---------- */
+// Tabs
+document.querySelectorAll(".tabs button").forEach(b=>{
+  b.onclick = () => {
+    document.querySelectorAll(".tabs button").forEach(x=>x.classList.remove("on"));
+    document.querySelectorAll(".pane").forEach(x=>x.classList.remove("on"));
+    b.classList.add("on"); $("#pane-"+b.dataset.tab).classList.add("on");
+  };
+});
+
+// Type one
+$("#oneAdd").onclick = async () => {
+  const v = $("#oneAddr").value.trim(); if(!v) return;
+  $("#oneAddr").value = ""; await addAddressLines([v]);
+};
+// Voice add (Web Speech API — optional, hands-free)
+$("#oneMic").onclick = () => {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR){ alert("Voice input isn't supported in this browser."); return; }
+  const rec = new SR(); rec.lang="en-NZ"; rec.interimResults=false;
+  $("#oneMic").textContent="🔴";
+  rec.onresult = e => { $("#oneAddr").value = e.results[0][0].transcript; };
+  rec.onerror = () => { $("#oneMic").textContent="🎤"; };
+  rec.onend = () => { $("#oneMic").textContent="🎤"; };
+  rec.start();
+};
+
+// Paste list
+$("#pasteAdd").onclick = async () => {
+  const text = $("#pasteBox").value;
+  const csv = parseCSV(text);
+  if (csv && csv.length){ $("#pasteBox").value=""; addFileStops(csv); return; }
+  $("#pasteBox").value="";
+  await addAddressLines(text.split(/\r?\n/));
+};
+
+// Load file (.json or .csv)
+$("#fileInput").onchange = e => {
+  const f = e.target.files[0]; if(!f) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    const text = reader.result;
+    try{
+      if (/\.json$/i.test(f.name) || text.trim().startsWith("[") || text.trim().startsWith("{")){
+        let rows = JSON.parse(text);
+        if (!Array.isArray(rows)) rows = [rows];
+        addFileStops(rows);
+      } else {
+        const csv = parseCSV(text);
+        if (csv) addFileStops(csv);
+        else addAddressLines(text.split(/\r?\n/));   // plain address list
+      }
+    }catch(err){ alert("Couldn't read that file — make sure it's the JSON/CSV export."); }
+  };
+  reader.readAsText(f);
+  e.target.value="";
+};
+
+// Photo / OCR
+$("#photoInput").onchange = async e => {
+  const f = e.target.files[0]; if(!f) return;
+  $("#ocrResult").style.display="none";
+  $("#ocrStatus").innerHTML = '<span class="spinner"></span> Reading the photo… (this can take a moment)';
+  try{
+    const { data } = await Tesseract.recognize(f, "eng", {
+      logger: m => { if(m.status==="recognizing text") $("#ocrStatus").innerHTML =
+        `<span class="spinner"></span> Reading the photo… ${Math.round(m.progress*100)}%`; }
+    });
+    $("#ocrStatus").textContent = "Done — check the lines below.";
+    $("#ocrText").value = (data.text||"").split(/\n/).map(l=>l.trim()).filter(Boolean).join("\n");
+    $("#ocrResult").style.display="block";
+  }catch(err){ $("#ocrStatus").textContent = "Couldn't read that photo — try a clearer one or type the addresses."; }
+  e.target.value="";
+};
+$("#ocrAdd").onclick = async () => {
+  const text = $("#ocrText").value; $("#ocrResult").style.display="none"; $("#ocrStatus").textContent="";
+  await addAddressLines(text.split(/\n/));
+};
+
+// Start point
+$("#useLoc").onclick = () => {
+  if (!navigator.geolocation){ alert("Location isn't available. Type your start address instead."); return; }
+  busy("Getting your location…");
+  navigator.geolocation.getCurrentPosition(
+    pos => { state.start = { lat:pos.coords.latitude, lng:pos.coords.longitude, label:"My location" };
+      busy(""); save(); render(); drawRoute(); },
+    err => { busy(""); alert("Couldn't get location (needs https + permission). Type your start address instead."); },
+    { enableHighAccuracy:true, timeout:10000 }
+  );
+};
+$("#setStart").onclick = async () => {
+  const v = $("#startAddr").value.trim(); if(!v) return;
+  busy("Finding start…");
+  const hit = await geocode(v); busy("");
+  if (hit){ state.start = { lat:hit.lat, lng:hit.lng, label:v }; $("#startAddr").value="";
+    save(); render(); drawRoute(); }
+  else alert("Couldn't find that address — add the town and try again.");
+};
+$("#roundTrip").onchange = e => { state.roundTrip = e.target.checked; save(); drawRoute(); };
+
+// Big actions
+$("#optimise").onclick = () => {
+  if (!routeStops().length){ alert("Add some stops first."); return; }
+  busy("Working out the shortest run…");
+  setTimeout(()=>{ optimise(); busy(""); $("#addBox").open=false;
+    document.getElementById("map").scrollIntoView({behavior:"smooth",block:"start"}); }, 30);
+};
+$("#navAll").onclick = () => {
+  const pts = routeStops();
+  if (!pts.length){ alert("No stops to navigate."); return; }
+  const start = startPoint();
+  const cap = pts.slice(0, 9);                    // Google ~9 waypoint cap
+  const dest = cap[cap.length-1];
+  const waypoints = cap.slice(0,-1).map(p=>`${p.lat},${p.lng}`).join("|");
+  let url = `https://www.google.com/maps/dir/?api=1&travelmode=driving&origin=${start.lat},${start.lng}&destination=${dest.lat},${dest.lng}`;
+  if (waypoints) url += `&waypoints=${encodeURIComponent(waypoints)}`;
+  if (pts.length > 9) alert(`Google Maps takes 9 stops max. Navigating the first 9 — use each stop's Navigate button for the rest.`);
+  window.open(url,"_blank");
+};
+$("#clearAll").onclick = () => {
+  if (confirm("Clear the whole run? This removes all stops and progress on this phone.")){
+    state = { stops:[], bad:[], start:null, roundTrip:false, manual:false };
+    save(); render(); drawRoute();
+  }
+};
+
+/* ---------- Banner helper ---------- */
+function setBanner(sel, msg){
+  const el = $(sel); if(!el) return;
+  el.textContent = msg; el.classList.toggle("show", !!msg);
+}
+
+/* ---------- Boot ---------- */
+initMap();
+render();
+drawRoute();
+</script>
+</body>
+</html>
