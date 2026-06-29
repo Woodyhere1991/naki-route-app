@@ -8,8 +8,6 @@
 <!-- Leaflet map (free OSM tiles) -->
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<!-- Drag-to-reorder the stop list -->
-<script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
 <!-- OCR a photo of a handwritten/printed list -->
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.0/dist/tesseract.min.js"></script>
 
@@ -84,14 +82,13 @@
   .stopbody{flex:1 1 auto;min-width:0}
   .name{font-weight:700;font-size:17px}
   .addr{color:var(--txt)} .note{color:var(--warn);font-size:14px;margin-top:4px}
+  .note.callfirst{color:#fff;background:var(--bad);border-radius:8px;padding:4px 8px;font-weight:700;display:inline-block}
   .apps{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
   .chip{background:#0a0c10;border:1px solid var(--line);border-radius:999px;padding:3px 10px;font-size:13px}
   .areatag{font-size:11px;font-weight:700;padding:2px 8px;border-radius:999px;color:#06121f}
   .stopbtns{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
-  .handle{flex:0 0 24px;display:flex;align-items:center;justify-content:center;color:var(--muted);
-    cursor:grab;font-size:20px;align-self:center;touch-action:none}
-  .arrows{display:flex;flex-direction:column;gap:2px}
-  .arrows button{min-height:24px;padding:0 8px;font-size:13px;line-height:1;border-radius:8px}
+  .arrows{display:flex;flex-direction:row;gap:6px}
+  .arrows button{min-height:40px;min-width:44px;padding:0 10px;font-size:16px;line-height:1;border-radius:10px}
 
   .empty{text-align:center;color:var(--muted);padding:26px 14px}
   .empty b{color:var(--txt);font-size:18px}
@@ -196,15 +193,16 @@
   <!-- ACTIONS -->
   <div class="card">
     <button id="optimise" style="width:100%;min-height:60px;font-size:19px">🧭 Optimise route</button>
+    <button id="optimiseHere" class="ghost" style="width:100%;margin-top:10px">📍 Optimise from where I am</button>
     <div class="row" style="margin-top:10px">
-      <button id="navAll" class="ghost grow">Navigate whole route</button>
+      <button id="navAll" class="good grow">🧭 Navigate to next stop</button>
       <button id="clearAll" class="ghost grow">Clear all</button>
     </div>
     <div id="busy" class="small muted" style="margin-top:8px"></div>
   </div>
 
   <!-- BANNERS -->
-  <div id="bannerWaypoints" class="banner warnb"></div>
+  <div id="bannerSave" class="banner warnb"></div>
   <div id="bannerOsrm" class="banner info"></div>
 
   <!-- MAP -->
@@ -243,7 +241,14 @@ let map, markerLayer, routeLayer;
 let areaFilterValue = "all";
 
 function loadJSON(k, d){ try{ return JSON.parse(localStorage.getItem(k)) || d; }catch(e){ return d; } }
-function saveJSON(k, v){ try{ localStorage.setItem(k, JSON.stringify(v)); }catch(e){} }
+function saveJSON(k, v){
+  try{ localStorage.setItem(k, JSON.stringify(v)); }
+  catch(e){
+    // Storage full: prune the geocode cache once and retry, else warn loudly.
+    try{ localStorage.removeItem(GEO); geocache = {}; localStorage.setItem(k, JSON.stringify(v)); }
+    catch(e2){ setBanner("#bannerSave","⚠ Couldn't save to this phone — storage may be full. Finish or Clear stops, or free up space."); }
+  }
+}
 function loadState(){
   const s = loadJSON(LS, null);
   if (s && Array.isArray(s.stops)) return s;
@@ -280,7 +285,7 @@ async function geocode(addr){
   const q = encodeURIComponent(addr + (/taranaki|new zealand|nz/i.test(addr) ? "" : ", Taranaki, New Zealand"));
   const url = `https://nominatim.openstreetmap.org/search?format=json&countrycodes=nz&limit=1&q=${q}`;
   try{
-    const res = await fetch(url, { headers:{ "Accept":"application/json", "Referer":location.href, "User-Agent":UA } });
+    const res = await fetch(url, { headers:{ "Accept":"application/json" } });
     const data = await res.json();
     if (data && data.length){
       const hit = { lat:+data[0].lat, lng:+data[0].lon };
@@ -340,7 +345,7 @@ function addFileStops(rows){
       status: (r.status==="DONE") ? "DONE" : "NEW"
     };
     if (s.lat!=null && s.lng!=null && !isNaN(s.lat) && !isNaN(s.lng)){ state.stops.push(s); added++; }
-    else if (s.street && s.town && s.town.toLowerCase()!=="unknown"){ toGeocode.push(s); }
+    else if (s.street && (s.town||"").toLowerCase()!=="unknown"){ toGeocode.push(s); }
     else { state.bad.push(s); parked++; }
   });
   save(); render();
@@ -386,7 +391,7 @@ function parseCSV(text){
 /* ---------- Route optimisation (nearest-neighbour + 2-opt) ---------- */
 function routeStops(){
   // Pending stops with coords, honouring the area filter, in current order.
-  return state.stops.filter(s => s.status!=="DONE" && s.lat!=null && s.lng!=null &&
+  return state.stops.filter(s => s.status!=="DONE" && isFinite(s.lat) && isFinite(s.lng) &&
     (areaFilterValue==="all" || (s.area||"")===areaFilterValue));
 }
 function startPoint(){ return state.start || NP; }
@@ -508,11 +513,6 @@ function render(){
   renderStart();
   updateStats(null);
   $("#roundTrip").checked = !!state.roundTrip;
-  // Waypoint-cap warning for whole-route nav.
-  const n = routeStops().length;
-  if (n > 9) setBanner("#bannerWaypoints",
-    `Heads up: Google Maps only takes 9 stops at once. "Navigate whole route" will route the first 9 — use each stop's Navigate button for the rest.`);
-  else setBanner("#bannerWaypoints","");
 }
 
 function renderList(){
@@ -538,13 +538,13 @@ function renderList(){
     const area = s.area||"";
     const tag = area ? `<span class="areatag" style="background:${AREA_HEX[area]}">${area}</span>` : "";
     const apps = (s.appliances||[]).map(a=>`<span class="chip">${esc(a)}</span>`).join("");
-    const note = s.additional_info ? `<div class="note">📝 ${esc(s.additional_info)}</div>` : "";
+    const callFirst = /call|text|phone|ring|txt/i.test(s.additional_info||"");
+    const note = s.additional_info ? `<div class="note${callFirst?' callfirst':''}">${callFirst?'📞':'📝'} ${esc(s.additional_info)}</div>` : "";
     const phone = s.phone ? `<button class="ghost sm" onclick="callStop('${s.id}')">📞 Call</button>` : "";
     const navBtn = s.lat!=null
       ? `<button class="sm" onclick="navStop('${s.id}')">🧭 Navigate</button>` : "";
     return `<div class="stop ${done?'done':''} ${s.id===nextId&&!done?'next':''}"
         data-id="${s.id}" style="border-left-color:${AREA_COLORS[area]||AREA_COLORS['']}">
-      <div class="handle" title="Drag to reorder">⠿</div>
       <div class="num">${num}</div>
       <div class="stopbody">
         <div class="name">${esc(fullName(s)) || esc(fullAddr(s))} ${tag}</div>
@@ -559,41 +559,26 @@ function renderList(){
             <button class="ghost" onclick="moveStop('${s.id}',-1)">▲</button>
             <button class="ghost" onclick="moveStop('${s.id}',1)">▼</button>
           </div>
+          <button class="ghost sm" title="Remove this stop" onclick="delStop('${s.id}')" style="margin-left:auto">✕</button>
         </div>
       </div>
     </div>`;
   }).join("");
 
   wrap.innerHTML = `<div class="sectitle">Today's run ${state.manual?'(manual order)':''}</div>` + rows;
-
-  // Enable drag-to-reorder.
-  const listEl = wrap.querySelector(".sectitle").parentNode;
-  if (window.Sortable){
-    Sortable.create(wrap, { handle:".handle", animation:150, draggable:".stop",
-      onEnd: () => {
-        const ids = [...wrap.querySelectorAll(".stop")].map(el=>el.dataset.id);
-        // Reorder state.stops to match the visible DOM order.
-        const map = new Map(state.stops.map(s=>[s.id,s]));
-        const reordered = ids.map(id=>map.get(id)).filter(Boolean);
-        const others = state.stops.filter(s=>!ids.includes(s.id));
-        state.stops = reordered.concat(others);
-        state.manual = true; save(); render(); drawRoute();
-      }
-    });
-  }
 }
 
 function renderBad(){
   const wrap = $("#badWrap");
   if (!state.bad.length){ wrap.innerHTML=""; return; }
-  const rows = state.bad.map((s,i)=>`
+  const rows = state.bad.map(s=>`
     <div class="badrow">
-      <input value="${esc(fullAddr(s))}" data-bad="${i}" placeholder="Fix the address" />
-      <button class="good sm" onclick="retryBad(${i})">Find</button>
-      <button class="ghost sm" onclick="dropBad(${i})">✕</button>
+      <input value="${esc(fullAddr(s))}" data-bad="${s.id}" placeholder="Fix the address, or paste coordinates" />
+      <button class="good sm" onclick="retryBad('${s.id}')">Find</button>
+      <button class="ghost sm" onclick="dropBad('${s.id}')">✕</button>
     </div>`).join("");
   wrap.innerHTML = `<div class="sectitle" style="color:var(--warn)">Needs address (${state.bad.length})</div>
-    <p class="small muted" style="margin:2px 0 6px">Couldn't locate these. Fix the address and tap Find.</p>${rows}`;
+    <p class="small muted" style="margin:2px 0 6px">Couldn't locate these. Fix the address and tap Find — or paste coordinates from Google Maps (e.g. -39.45, 173.86).</p>${rows}`;
 }
 
 function renderStart(){
@@ -630,19 +615,31 @@ window.navStop = id => {
   window.open(`https://www.google.com/maps/dir/?api=1&travelmode=driving&destination=${s.lat},${s.lng}`,"_blank");
 };
 window.callStop = id => { const s=state.stops.find(x=>x.id===id); if(s&&s.phone) location.href="tel:"+s.phone.replace(/\s+/g,""); };
-window.retryBad = async i => {
-  const inp = document.querySelector(`[data-bad="${i}"]`); const addr = inp ? inp.value : "";
+window.delStop = id => { state.stops = state.stops.filter(s=>s.id!==id); save(); render(); drawRoute(); };
+window.retryBad = async id => {
+  const i = state.bad.findIndex(s=>s.id===id); if(i<0) return;
+  const inp = document.querySelector(`[data-bad="${id}"]`); const addr = inp ? inp.value.trim() : "";
+  if(!addr) return;
+  const s = state.bad[i];
+  // Allow pasting raw coordinates straight from Google Maps.
+  const m = addr.match(/^\s*(-?\d{1,2}\.\d+)\s*[, ]\s*(-?\d{2,3}\.\d+)\s*$/);
+  if (m){
+    s.lat = +m[1]; s.lng = +m[2];
+    state.bad.splice(i,1); state.stops.push(s); save(); render(); drawRoute(); return;
+  }
   busy("Finding address…");
   const hit = await geocode(addr);
   busy("");
+  // Re-find the row by id in case the list shifted while we awaited.
+  const j = state.bad.findIndex(x=>x.id===id); if(j<0) return;
   if (hit){
-    const s = state.bad[i]; const parts = addr.split(",").map(x=>x.trim());
-    s.street = parts[0]||s.street; s.town = parts[1]||s.town;
-    s.lat = hit.lat; s.lng = hit.lng;
-    state.bad.splice(i,1); state.stops.push(s); save(); render(); drawRoute();
-  } else alert("Still couldn't find that address — try adding the town.");
+    const t = state.bad[j]; const parts = addr.split(",").map(x=>x.trim());
+    t.street = parts[0]||t.street; t.town = parts[1]||t.town;
+    t.lat = hit.lat; t.lng = hit.lng;
+    state.bad.splice(j,1); state.stops.push(t); save(); render(); drawRoute();
+  } else alert("Still couldn't find that address — add the town, or paste coordinates from Google Maps.");
 };
-window.dropBad = i => { state.bad.splice(i,1); save(); render(); };
+window.dropBad = id => { const i = state.bad.findIndex(s=>s.id===id); if(i<0) return; state.bad.splice(i,1); save(); render(); };
 
 /* ---------- Wire up the UI ---------- */
 // Tabs
@@ -742,7 +739,10 @@ $("#setStart").onclick = async () => {
     save(); render(); drawRoute(); }
   else alert("Couldn't find that address — add the town and try again.");
 };
-$("#roundTrip").onchange = e => { state.roundTrip = e.target.checked; save(); drawRoute(); };
+$("#roundTrip").onchange = e => {
+  state.roundTrip = e.target.checked; save();
+  if (!state.manual && routeStops().length>1) optimise(); else drawRoute();
+};
 
 // Big actions
 $("#optimise").onclick = () => {
@@ -751,21 +751,35 @@ $("#optimise").onclick = () => {
   setTimeout(()=>{ optimise(); busy(""); $("#addBox").open=false;
     document.getElementById("map").scrollIntoView({behavior:"smooth",block:"start"}); }, 30);
 };
+// Re-plan from your current GPS position (for stops phoned in mid-route).
+$("#optimiseHere").onclick = () => {
+  if (!routeStops().length){ alert("Add some stops first."); return; }
+  if (!navigator.geolocation){ alert("Location isn't available — using your set start instead."); optimise(); return; }
+  busy("Getting your location…");
+  navigator.geolocation.getCurrentPosition(
+    pos => { state.start = { lat:pos.coords.latitude, lng:pos.coords.longitude, label:"My location" };
+      busy("Re-planning from here…"); optimise(); busy(""); $("#addBox").open=false;
+      document.getElementById("map").scrollIntoView({behavior:"smooth",block:"start"}); },
+    err => { busy(""); alert("Couldn't get location (needs https + permission). Using your set start."); optimise(); },
+    { enableHighAccuracy:true, timeout:10000 }
+  );
+};
+// Navigate to the next pending stop: Google Maps routes from your live GPS, turn-by-turn.
 $("#navAll").onclick = () => {
   const pts = routeStops();
-  if (!pts.length){ alert("No stops to navigate."); return; }
-  const start = startPoint();
-  const cap = pts.slice(0, 9);                    // Google ~9 waypoint cap
-  const dest = cap[cap.length-1];
-  const waypoints = cap.slice(0,-1).map(p=>`${p.lat},${p.lng}`).join("|");
-  let url = `https://www.google.com/maps/dir/?api=1&travelmode=driving&origin=${start.lat},${start.lng}&destination=${dest.lat},${dest.lng}`;
-  if (waypoints) url += `&waypoints=${encodeURIComponent(waypoints)}`;
-  if (pts.length > 9) alert(`Google Maps takes 9 stops max. Navigating the first 9 — use each stop's Navigate button for the rest.`);
-  window.open(url,"_blank");
+  if (!pts.length){ alert("No stops to navigate. Add stops and tap Optimise first."); return; }
+  const next = pts[0];
+  window.open(`https://www.google.com/maps/dir/?api=1&travelmode=driving&destination=${next.lat},${next.lng}`,"_blank");
 };
 $("#clearAll").onclick = () => {
-  if (confirm("Clear the whole run? This removes all stops and progress on this phone.")){
+  const done = state.stops.filter(s=>s.status==="DONE");
+  const items = done.reduce((n,s)=>n+(s.appliances?s.appliances.length:0),0);
+  const tally = done.length
+    ? `Collected ${done.length} of ${state.stops.length} stops${items?` (${items} items)`:""} today.\n\n`
+    : "";
+  if (confirm(`${tally}Clear the whole run? This removes all stops and progress on this phone.`)){
     state = { stops:[], bad:[], start:null, roundTrip:false, manual:false };
+    areaFilterValue = "all";
     save(); render(); drawRoute();
   }
 };
