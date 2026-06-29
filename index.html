@@ -10,6 +10,8 @@
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <!-- OCR a photo of a handwritten/printed list -->
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.0/dist/tesseract.min.js"></script>
+<!-- Read Excel (.xlsx) exported from Google Sheets -->
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 
 <style>
   :root{
@@ -156,9 +158,9 @@
 
       <!-- Load file -->
       <div class="pane" id="pane-file">
-        <label>Your saved list (.json or .csv) — uses coords already in the file</label>
-        <input type="file" id="fileInput" accept=".json,.csv,text/csv,application/json" />
-        <p class="small muted">Tip: download your pickup export from Google Drive, then pick it here.</p>
+        <label>Your saved list (Excel .xlsx, .csv or .json) — uses coords already in the file</label>
+        <input type="file" id="fileInput" accept=".xlsx,.xls,.csv,.json,text/csv,application/json,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" />
+        <p class="small muted">Tip: in Google Sheets choose File → Download → Microsoft Excel (.xlsx), then pick it here.</p>
       </div>
 
       <!-- Photo / OCR -->
@@ -387,6 +389,53 @@ function parseCSV(text){
     return o;
   });
 }
+
+/* ---------- Map any spreadsheet headers to our stop schema ---------- */
+// Forgiving so a Google Form / Excel export imports without jumbling columns.
+const HEADER_ALIASES = {
+  street:["street","address","street address","addr","road","location"],
+  town:["town","suburb","city","locality"],
+  area:["area","zone","region","corridor"],
+  phone:["phone","mobile","cell","contact","phone number","ph","contact number"],
+  first_name:["first_name","first name","firstname"],
+  last_name:["last_name","last name","lastname","surname"],
+  name:["name","customer","full name","contact name","client"],
+  additional_info:["additional_info","info","notes","note","details","comments","instructions","access","extra"],
+  lat:["lat","latitude"],
+  lng:["lng","lon","long","longitude"],
+  status:["status","state"],
+  submission_id:["submission_id","sub id","submission id","id","ref"]
+};
+function mapRow(raw){
+  const low = {};
+  Object.keys(raw||{}).forEach(k => { low[String(k).toLowerCase().trim()] = raw[k]; });
+  const pick = field => {
+    for (const a of HEADER_ALIASES[field]) if (low[a]!=null && String(low[a]).trim()!=="") return low[a];
+    return "";
+  };
+  // Appliances: a single column, or spread across "Appliance 1".."Appliance 10".
+  let appliances = [];
+  if (Array.isArray(low.appliances)) appliances = low.appliances.slice();
+  else if (low.appliances) appliances = String(low.appliances).split(/[;,|]/).map(x=>x.trim()).filter(Boolean);
+  Object.keys(low).forEach(k => {
+    if (k!=="appliances" && /^appliance\s*\d*$/.test(k)){ const v=String(low[k]||"").trim(); if (v) appliances.push(v); }
+  });
+  const first = pick("first_name"), last = pick("last_name"), name = pick("name");
+  return {
+    submission_id: pick("submission_id") || undefined,
+    first_name: first || (last ? "" : name),   // a single "Name" column lands here
+    last_name: last,
+    phone: pick("phone"),
+    street: pick("street"),
+    town: pick("town"),
+    area: pick("area"),
+    appliances,
+    additional_info: pick("additional_info"),
+    lat: pick("lat"), lng: pick("lng"),
+    status: pick("status")
+  };
+}
+function normalizeRows(rows){ return (rows||[]).map(mapRow); }
 
 /* ---------- Route optimisation (nearest-neighbour + 2-opt) ---------- */
 function routeStops(){
@@ -680,20 +729,40 @@ $("#pasteAdd").onclick = async () => {
 // Load file (.json or .csv)
 $("#fileInput").onchange = e => {
   const f = e.target.files[0]; if(!f) return;
+  const name = f.name.toLowerCase();
+
+  // Excel (.xlsx/.xls): parse with SheetJS, map the headers, then add.
+  if (/\.xls[xm]?$/i.test(name)){
+    if (!window.XLSX){ alert("Excel reader didn't load — check your connection, or save the sheet as CSV."); e.target.value=""; return; }
+    const reader = new FileReader();
+    reader.onload = () => {
+      try{
+        const wb = XLSX.read(reader.result, { type:"array" });
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        const raw = XLSX.utils.sheet_to_json(ws, { defval:"" });
+        if (!raw.length){ alert("That spreadsheet's first tab looks empty."); return; }
+        addFileStops(normalizeRows(raw));
+      }catch(err){ alert("Couldn't read that Excel file — try File → Download → CSV instead."); }
+    };
+    reader.readAsArrayBuffer(f);
+    e.target.value=""; return;
+  }
+
+  // JSON or CSV (text).
   const reader = new FileReader();
   reader.onload = () => {
     const text = reader.result;
     try{
-      if (/\.json$/i.test(f.name) || text.trim().startsWith("[") || text.trim().startsWith("{")){
+      if (/\.json$/i.test(name) || text.trim().startsWith("[") || text.trim().startsWith("{")){
         let rows = JSON.parse(text);
         if (!Array.isArray(rows)) rows = [rows];
-        addFileStops(rows);
+        addFileStops(normalizeRows(rows));
       } else {
         const csv = parseCSV(text);
-        if (csv) addFileStops(csv);
+        if (csv) addFileStops(normalizeRows(csv));
         else addAddressLines(text.split(/\r?\n/));   // plain address list
       }
-    }catch(err){ alert("Couldn't read that file — make sure it's the JSON/CSV export."); }
+    }catch(err){ alert("Couldn't read that file — make sure it's the Excel/CSV/JSON export."); }
   };
   reader.readAsText(f);
   e.target.value="";
