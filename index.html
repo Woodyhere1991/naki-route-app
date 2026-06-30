@@ -215,7 +215,7 @@
         <button id="clearEnd" class="ghost" style="flex:0 0 auto" title="Clear end point">✕</button>
       </div>
 
-      <label style="display:flex;gap:10px;align-items:center;margin-top:14px;color:var(--txt)">
+      <label id="roundTripRow" style="display:flex;gap:10px;align-items:center;margin-top:14px;color:var(--txt)">
         <input type="checkbox" id="roundTrip" style="width:auto;min-height:auto" />
         End back at start (round trip)
       </label>
@@ -743,6 +743,9 @@ function renderStart(){
     const to = e ? (e.label || "set point") : (state.roundTrip ? "back to start" : "open");
     sum.textContent = ` · ${from} → ${to}`;
   }
+  // Round trip and a set end point do the same job — hide the tick when an end is set.
+  const rtRow = $("#roundTripRow");
+  if (rtRow) rtRow.style.display = state.end ? "none" : "flex";
 }
 
 // Copyable lists of phone numbers + emails for bulk messaging (pending stops only).
