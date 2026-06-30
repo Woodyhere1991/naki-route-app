@@ -126,6 +126,10 @@
   .stop.asap{border-left-color:var(--bad) !important;background:#241616}
   .asaptag{font-size:11px;font-weight:800;padding:2px 8px;border-radius:999px;background:var(--bad);color:#fff;margin-left:6px}
   #fileStatus:not(:empty){margin-top:8px;color:var(--good)}
+
+  /* Collapsible Start & end summary, contacts box */
+  .se-sum{font-weight:400;color:var(--muted);font-size:13px}
+  #contactsWrap textarea{min-height:58px;font-size:14px}
 </style>
 </head>
 <body>
@@ -192,19 +196,30 @@
     </details>
   </div>
 
-  <!-- START POINT -->
+  <!-- START & END POINT -->
   <div class="card">
-    <h3 style="margin-bottom:8px">Start point</h3>
-    <div id="startNow" class="small muted" style="margin-bottom:8px">Not set — defaults to New Plymouth.</div>
-    <div class="row">
-      <button id="useLoc" class="good grow">📍 Use my location</button>
-      <div class="acw grow"><input id="startAddr" autocomplete="off" placeholder="or type your yard / start address" /><div class="ac-list" id="acStart"></div></div>
-      <button id="setStart" class="ghost" style="flex:0 0 auto">Set</button>
-    </div>
-    <label style="display:flex;gap:10px;align-items:center;margin-top:12px;color:var(--txt)">
-      <input type="checkbox" id="roundTrip" style="width:auto;min-height:auto" />
-      End back at start (round trip)
-    </label>
+    <details id="startBox" open>
+      <summary>Start &amp; end <span id="seSummary" class="se-sum"></span><span class="chev">›</span></summary>
+
+      <div id="startNow" class="small muted" style="margin:10px 0 6px">Start: not set — defaults to New Plymouth.</div>
+      <div class="row">
+        <button id="useLoc" class="good grow">📍 Use my location</button>
+        <div class="acw grow"><input id="startAddr" autocomplete="off" placeholder="type your yard / start address" /><div class="ac-list" id="acStart"></div></div>
+        <button id="setStart" class="ghost" style="flex:0 0 auto">Set</button>
+      </div>
+
+      <div id="endNow" class="small muted" style="margin:14px 0 6px">End: open run (stops anywhere).</div>
+      <div class="row">
+        <div class="acw grow"><input id="endAddr" autocomplete="off" placeholder="optional end point (e.g. the scrap yard)" /><div class="ac-list" id="acEnd"></div></div>
+        <button id="setEnd" class="ghost" style="flex:0 0 auto">Set</button>
+        <button id="clearEnd" class="ghost" style="flex:0 0 auto" title="Clear end point">✕</button>
+      </div>
+
+      <label style="display:flex;gap:10px;align-items:center;margin-top:14px;color:var(--txt)">
+        <input type="checkbox" id="roundTrip" style="width:auto;min-height:auto" />
+        End back at start (round trip)
+      </label>
+    </details>
   </div>
 
   <!-- ACTIONS -->
@@ -217,6 +232,9 @@
     </div>
     <div id="busy" class="small muted" style="margin-top:8px"></div>
   </div>
+
+  <!-- BULK MESSAGE CONTACTS -->
+  <div id="contactsWrap"></div>
 
   <!-- BANNERS -->
   <div id="bannerSave" class="banner warnb"></div>
@@ -270,7 +288,7 @@ function saveJSON(k, v){
 function loadState(){
   const s = loadJSON(LS, null);
   if (s && Array.isArray(s.stops)) return s;
-  return { stops:[], bad:[], start:null, roundTrip:false, manual:false };
+  return { stops:[], bad:[], start:null, end:null, roundTrip:false, manual:false };
 }
 function save(){ saveJSON(LS, state); }
 function saveGeo(){ saveJSON(GEO, geocache); }
@@ -329,7 +347,7 @@ function stopFromAddress(line){
   const street = parts[0] || line.trim();
   const town   = parts[1] || "";
   return { id:uid(), submission_id:uid(), first_name:"", last_name:"",
-    phone:"", street, town, area:"", appliances:[], additional_info:"",
+    phone:"", email:"", street, town, area:"", appliances:[], additional_info:"",
     lat:null, lng:null, status:"NEW", _rawAddr:line.trim() };
 }
 
@@ -362,7 +380,7 @@ function addFileStops(rows, srcName){
       id: uid(),
       submission_id: r.submission_id || uid(),
       first_name: r.first_name||"", last_name: r.last_name||"",
-      phone: r.phone||"", street: r.street||"", town: r.town||"",
+      phone: r.phone||"", email: r.email||"", street: r.street||"", town: r.town||"",
       area: r.area||"", appliances: Array.isArray(r.appliances) ? r.appliances
               : (r.appliances ? String(r.appliances).split(/[;|]/).map(x=>x.trim()).filter(Boolean) : []),
       additional_info: r.additional_info||"",
@@ -429,6 +447,7 @@ const HEADER_ALIASES = {
   town:["town","suburb","city","locality"],
   area:["area","zone","region","corridor"],
   phone:["phone","mobile","cell","contact","phone number","contact number"],
+  email:["email","e-mail","email address","mail"],
   first_name:["first_name","first name","firstname"],
   last_name:["last_name","last name","lastname","surname"],
   name:["name","customer","full name","contact name","client"],
@@ -464,6 +483,7 @@ function mapRow(raw){
     first_name: first || (last ? "" : name),   // a single "Name" column lands here
     last_name: last,
     phone: pick("phone"),
+    email: pick("email"),
     street: pick("street"),
     town: pick("town"),
     area: pick("area"),
@@ -482,6 +502,8 @@ function routeStops(){
     (areaFilterValue==="all" || (s.area||"")===areaFilterValue));
 }
 function startPoint(){ return state.start || NP; }
+function endPoint(){ return state.end || (state.roundTrip ? startPoint() : null); }
+function replanIfAuto(){ if (!state.manual && routeStops().length>1) optimise(); else drawRoute(); }
 
 // Order one group of stops by nearest-neighbour from `from`, improved with 2-opt.
 function planOrder(pts, from, closeTo){
@@ -515,7 +537,7 @@ function optimise(){
   const all = routeStops();
   if (all.length < 1){ render(); drawRoute(); return; }
   const start = startPoint();
-  const back = state.roundTrip ? start : null;
+  const back = endPoint();
   // ASAP stops are visited first (optimised among themselves), then the rest.
   const prio = all.filter(s => s.priority);
   const norm = all.filter(s => !s.priority);
@@ -562,12 +584,18 @@ async function drawRoute(){
       .addTo(markerLayer);
     bounds.push([s.lat,s.lng]);
   });
+  // End marker (only when a distinct end point is set).
+  const end = endPoint();
+  if (state.end){
+    L.marker([end.lat,end.lng], { icon: pinIcon("E","",true) }).bindPopup("End").addTo(markerLayer);
+    bounds.push([end.lat,end.lng]);
+  }
   if (bounds.length) map.fitBounds(bounds, { padding:[30,30], maxZoom:13 });
   if (!pts.length){ updateStats(0); return; }
 
   // Try OSRM for a real road line + distance; fall back to straight lines.
   const seq = [start, ...pts];
-  if (state.roundTrip) seq.push(start);
+  if (end) seq.push(end);
   const coords = seq.map(p=>`${p.lng},${p.lat}`).join(";");
   setBanner("#bannerOsrm","");
   let drewRoad = false;
@@ -607,6 +635,7 @@ function updateStats(km, mins){
 function render(){
   renderAreaFilter();
   renderList();
+  renderContacts();
   renderBad();
   renderStart();
   updateStats(null);
@@ -700,10 +729,38 @@ function renderBad(){
 }
 
 function renderStart(){
-  const el = $("#startNow");
-  if (state.start){
-    el.textContent = "Start: " + (state.start.label || `${state.start.lat.toFixed(4)}, ${state.start.lng.toFixed(4)}`);
-  } else el.textContent = "Not set — defaults to New Plymouth.";
+  const s = state.start, e = state.end;
+  $("#startNow").textContent = s
+    ? "Start: " + (s.label || `${s.lat.toFixed(4)}, ${s.lng.toFixed(4)}`)
+    : "Start: not set — defaults to New Plymouth.";
+  const endEl = $("#endNow");
+  if (endEl) endEl.textContent = e
+    ? "End: " + (e.label || `${e.lat.toFixed(4)}, ${e.lng.toFixed(4)}`)
+    : (state.roundTrip ? "End: back at start (round trip)." : "End: open run (stops anywhere).");
+  const sum = $("#seSummary");
+  if (sum){
+    const from = s ? (s.label || "set point") : "New Plymouth";
+    const to = e ? (e.label || "set point") : (state.roundTrip ? "back to start" : "open");
+    sum.textContent = ` · ${from} → ${to}`;
+  }
+}
+
+// Copyable lists of phone numbers + emails for bulk messaging (pending stops only).
+function renderContacts(){
+  const wrap = $("#contactsWrap"); if (!wrap) return;
+  const pend = state.stops.filter(s => s.status!=="DONE");
+  const nums  = [...new Set(pend.map(s=>(s.phone||"").trim()).filter(Boolean))];
+  const mails = [...new Set(pend.map(s=>(s.email||"").trim()).filter(Boolean))];
+  if (!nums.length && !mails.length){ wrap.innerHTML = ""; return; }
+  const block = (title, copyLabel, val, id) => `
+    <label style="margin-top:10px">${title}</label>
+    <textarea id="${id}" readonly onclick="this.select()">${esc(val)}</textarea>
+    <button class="ghost" style="width:100%;margin-top:6px" onclick="copyText('${id}',this)">📋 Copy ${copyLabel}</button>`;
+  wrap.innerHTML = `<div class="card"><details>
+    <summary>Bulk message<span class="se-sum"> · ${nums.length} number${nums.length!==1?'s':''}, ${mails.length} email${mails.length!==1?'s':''}</span><span class="chev">›</span></summary>
+    ${nums.length  ? block(`Phone numbers (${nums.length})`, "numbers", nums.join(", "), "numsBox") : ""}
+    ${mails.length ? block(`Emails (${mails.length})`, "emails", mails.join(", "), "mailsBox") : ""}
+  </details></div>`;
 }
 
 function renderAreaFilter(){
@@ -729,12 +786,34 @@ window.togglePriority = id => {
   // Re-plan so an ASAP stop jumps to the front of the run right away.
   if (routeStops().length>1) optimise(); else { save(); render(); drawRoute(); }
 };
+// Build a Google Maps directions URL using the real street ADDRESS when we have one,
+// so Google finds the exact house number (a pin from rough coords can land next door).
+function navAddress(s){
+  if (!s || !s.street) return "";
+  let a = [s.street, s.town].filter(Boolean).join(", ");
+  if (!/taranaki|new zealand|nz/i.test(a)) a += ", Taranaki, New Zealand";
+  return a;
+}
+function mapsDirUrl(s){
+  const addr = navAddress(s);
+  const dest = addr ? encodeURIComponent(addr)
+                    : (isFinite(s.lat) && isFinite(s.lng) ? `${s.lat},${s.lng}` : "");
+  return dest ? `https://www.google.com/maps/dir/?api=1&travelmode=driving&destination=${dest}` : "";
+}
 window.navStop = id => {
-  const s = state.stops.find(x=>x.id===id); if(!s||s.lat==null) return;
-  window.open(`https://www.google.com/maps/dir/?api=1&travelmode=driving&destination=${s.lat},${s.lng}`,"_blank");
+  const s = state.stops.find(x=>x.id===id); if(!s) return;
+  const url = mapsDirUrl(s); if (url) window.open(url, "_blank");
 };
 window.callStop = id => { const s=state.stops.find(x=>x.id===id); if(s&&s.phone) location.href="tel:"+s.phone.replace(/\s+/g,""); };
 window.delStop = id => { state.stops = state.stops.filter(s=>s.id!==id); save(); render(); drawRoute(); };
+window.copyText = (id, btn) => {
+  const el = document.getElementById(id); if(!el) return;
+  el.focus(); el.select(); el.setSelectionRange(0, 999999);
+  const ok = () => { const t = btn.textContent; btn.textContent = "✓ Copied!"; setTimeout(()=>btn.textContent=t, 1800); };
+  if (navigator.clipboard && navigator.clipboard.writeText){
+    navigator.clipboard.writeText(el.value).then(ok, ()=>{ try{ document.execCommand("copy"); ok(); }catch(e){} });
+  } else { try{ document.execCommand("copy"); ok(); }catch(e){} }
+};
 window.retryBad = async id => {
   const i = state.bad.findIndex(s=>s.id===id); if(i<0) return;
   const inp = document.querySelector(`[data-bad="${id}"]`); const addr = inp ? inp.value.trim() : "";
@@ -890,7 +969,7 @@ $("#useLoc").onclick = () => {
   busy("Getting your location…");
   navigator.geolocation.getCurrentPosition(
     pos => { state.start = { lat:pos.coords.latitude, lng:pos.coords.longitude, label:"My location" };
-      busy(""); save(); render(); drawRoute(); },
+      busy(""); save(); render(); replanIfAuto(); },
     err => { busy(""); alert("Couldn't get location (needs https + permission). Type your start address instead."); },
     { enableHighAccuracy:true, timeout:10000 }
   );
@@ -900,9 +979,19 @@ $("#setStart").onclick = async () => {
   busy("Finding start…");
   const hit = await geocode(v); busy("");
   if (hit){ state.start = { lat:hit.lat, lng:hit.lng, label:v }; $("#startAddr").value="";
-    save(); render(); drawRoute(); }
+    save(); render(); replanIfAuto(); }
   else alert("Couldn't find that address — add the town and try again.");
 };
+// End point (optional) — overrides round trip when set.
+$("#setEnd").onclick = async () => {
+  const v = $("#endAddr").value.trim(); if(!v) return;
+  busy("Finding end point…");
+  const hit = await geocode(v); busy("");
+  if (hit){ state.end = { lat:hit.lat, lng:hit.lng, label:v }; $("#endAddr").value="";
+    save(); render(); replanIfAuto(); flash("✓ End set: "+v); }
+  else alert("Couldn't find that address — add the town and try again.");
+};
+$("#clearEnd").onclick = () => { state.end = null; $("#endAddr").value=""; save(); render(); replanIfAuto(); };
 $("#roundTrip").onchange = e => {
   state.roundTrip = e.target.checked; save();
   if (!state.manual && routeStops().length>1) optimise(); else drawRoute();
@@ -912,7 +1001,7 @@ $("#roundTrip").onchange = e => {
 $("#optimise").onclick = () => {
   if (!routeStops().length){ alert("Add some stops first."); return; }
   busy("Working out the shortest run…");
-  setTimeout(()=>{ optimise(); busy(""); $("#addBox").open=false;
+  setTimeout(()=>{ optimise(); busy(""); $("#addBox").open=false; $("#startBox").open=false;
     document.getElementById("map").scrollIntoView({behavior:"smooth",block:"start"}); }, 30);
 };
 // Re-plan from your current GPS position (for stops phoned in mid-route).
@@ -922,7 +1011,7 @@ $("#optimiseHere").onclick = () => {
   busy("Getting your location…");
   navigator.geolocation.getCurrentPosition(
     pos => { state.start = { lat:pos.coords.latitude, lng:pos.coords.longitude, label:"My location" };
-      busy("Re-planning from here…"); optimise(); busy(""); $("#addBox").open=false;
+      busy("Re-planning from here…"); optimise(); busy(""); $("#addBox").open=false; $("#startBox").open=false;
       document.getElementById("map").scrollIntoView({behavior:"smooth",block:"start"}); },
     err => { busy(""); alert("Couldn't get location (needs https + permission). Using your set start."); optimise(); },
     { enableHighAccuracy:true, timeout:10000 }
@@ -932,8 +1021,7 @@ $("#optimiseHere").onclick = () => {
 $("#navAll").onclick = () => {
   const pts = routeStops();
   if (!pts.length){ alert("No stops to navigate. Add stops and tap Optimise first."); return; }
-  const next = pts[0];
-  window.open(`https://www.google.com/maps/dir/?api=1&travelmode=driving&destination=${next.lat},${next.lng}`,"_blank");
+  const url = mapsDirUrl(pts[0]); if (url) window.open(url, "_blank");
 };
 $("#clearAll").onclick = () => {
   const done = state.stops.filter(s=>s.status==="DONE");
@@ -942,7 +1030,7 @@ $("#clearAll").onclick = () => {
     ? `Collected ${done.length} of ${state.stops.length} stops${items?` (${items} items)`:""} today.\n\n`
     : "";
   if (confirm(`${tally}Clear the whole run? This removes all stops and progress on this phone.`)){
-    state = { stops:[], bad:[], start:null, roundTrip:false, manual:false, sheetUrl: state.sheetUrl };
+    state = { stops:[], bad:[], start:state.start, end:state.end, roundTrip:state.roundTrip, manual:false, sheetUrl: state.sheetUrl };
     areaFilterValue = "all";
     save(); render(); drawRoute();
   }
@@ -1006,8 +1094,12 @@ render();
 drawRoute();
 attachAutocomplete($("#oneAddr"), $("#acOne"), r => { oneAddrPicked = { lat:r.lat, lng:r.lng }; });
 attachAutocomplete($("#startAddr"), $("#acStart"), r => {
-  state.start = { lat:r.lat, lng:r.lng, label:r.label }; save(); render(); drawRoute();
+  state.start = { lat:r.lat, lng:r.lng, label:r.label }; save(); render(); replanIfAuto();
   flash("✓ Start set: " + r.label);
+});
+attachAutocomplete($("#endAddr"), $("#acEnd"), r => {
+  state.end = { lat:r.lat, lng:r.lng, label:r.label }; save(); render(); replanIfAuto();
+  flash("✓ End set: " + r.label);
 });
 </script>
 </body>
