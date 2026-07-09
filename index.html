@@ -121,9 +121,17 @@
 
   /* Drag-to-reorder + ASAP priority */
   .stop{cursor:grab}
-  .stop.sortable-chosen{cursor:grabbing;box-shadow:0 0 0 2px var(--accent)}
-  .stop.sortable-ghost{opacity:.4}
+  .stop.sortable-chosen{cursor:grabbing;box-shadow:0 0 0 3px var(--accent);opacity:.97}
+  .stop.sortable-drag{box-shadow:0 8px 24px rgba(0,0,0,.6)}
+  /* The empty slot that follows your finger — a clear "drops here" marker between cards */
+  .stop.sortable-ghost{opacity:1;background:#12233d;border:2px dashed var(--accent);position:relative}
+  .stop.sortable-ghost > *{visibility:hidden}
+  .stop.sortable-ghost::after{content:"⇩  drop here";visibility:visible;position:absolute;inset:0;
+    display:flex;align-items:center;justify-content:center;color:var(--accent);font-weight:800;font-size:14px;letter-spacing:.5px}
   .stop.asap{border-left-color:var(--bad) !important;background:#241616}
+  /* Manual note the driver types on the run */
+  .usernote{color:var(--txt);background:#12233d;border:1px solid #2f80ff55;border-radius:8px;
+    padding:5px 9px;margin-top:5px;font-size:14px;word-break:break-word}
   .asaptag{font-size:11px;font-weight:800;padding:2px 8px;border-radius:999px;background:var(--bad);color:#fff;margin-left:6px}
   #fileStatus:not(:empty){margin-top:8px;color:var(--good)}
 
@@ -478,12 +486,32 @@ function mapRow(raw){
     if (k!=="appliances" && /^appliance\s*\d*$/.test(k)){ const v=String(low[k]||"").trim(); if (v) appliances.push(v); }
   });
   const first = pick("first_name"), last = pick("last_name"), name = pick("name");
+
+  // Rescue phone/email even when a jumbled sheet has shoved them into the wrong
+  // column (Jotform shifts rows, so an email can land in "Submission ID" etc.).
+  const allVals = Object.values(low).map(v => String(v==null?"":v).trim());
+  let phone = pick("phone"), email = pick("email");
+  if (!email){
+    const m = allVals.map(v => v.match(/[^@\s,;]+@[^@\s,;]+\.[^@\s,;]+/)).find(Boolean);
+    if (m) email = m[0];
+  }
+  if (!phone){
+    // A NZ phone-shaped value: starts 0 or +64, 9–12 digits, phone characters only.
+    // The leading-0/+64 rule skips dates (2026-05-01), 2-digit totals, 19-digit
+    // submission IDs and decimal lat/lng.
+    const hit = allVals.find(v => {
+      const d = v.replace(/\D/g,"");
+      return /^(\+?64|0)[\d\s()\-]{6,}$/.test(v.trim()) && d.length>=9 && d.length<=12;
+    });
+    if (hit) phone = hit;
+  }
+
   return {
     submission_id: pick("submission_id") || undefined,
     first_name: first || (last ? "" : name),   // a single "Name" column lands here
     last_name: last,
-    phone: pick("phone"),
-    email: pick("email"),
+    phone,
+    email,
     street: pick("street"),
     town: pick("town"),
     area: pick("area"),
@@ -644,8 +672,6 @@ function render(){
 
 function renderList(){
   const wrap = $("#listWrap");
-  const pending = state.stops.filter(s => s.status!=="DONE");
-  const visible = state.stops.filter(s => areaFilterValue==="all" || (s.area||"")===areaFilterValue);
 
   if (!state.stops.length){
     wrap.innerHTML = `<div class="card empty">
@@ -655,60 +681,71 @@ function renderList(){
     return;
   }
 
+  const inArea = s => areaFilterValue==="all" || (s.area||"")===areaFilterValue;
+  const pending = state.stops.filter(s => s.status!=="DONE" && inArea(s));
+  const done    = state.stops.filter(s => s.status==="DONE" && inArea(s));
   // First not-done stop = the "next" highlight.
   const nextId = (pending.find(s => s.lat!=null) || pending[0] || {}).id;
+
   let order = 0;
-  const rows = visible.map(s => {
-    const done = s.status==="DONE";
-    if (!done && s.lat!=null) order++;
-    const num = done ? "✓" : (s.lat!=null ? order : "!");
+  const card = (s, isDone) => {
+    if (!isDone && s.lat!=null) order++;
+    const num = isDone ? "✓" : (s.lat!=null ? order : "!");
     const area = s.area||"";
     const tag = area ? `<span class="areatag" style="background:${AREA_HEX[area]}">${area}</span>` : "";
     const asap = !!s.priority;
-    const asapTag = asap && !done ? `<span class="asaptag">ASAP</span>` : "";
+    const asapTag = asap && !isDone ? `<span class="asaptag">ASAP</span>` : "";
     const apps = (s.appliances||[]).map(a=>`<span class="chip">${esc(a)}</span>`).join("");
     const callFirst = /call|text|phone|ring|txt/i.test(s.additional_info||"");
-    const note = s.additional_info ? `<div class="note${callFirst?' callfirst':''}">${callFirst?'📞':'📝'} ${esc(s.additional_info)}</div>` : "";
-    const phone = s.phone ? `<button class="ghost sm" onclick="callStop('${s.id}')">📞 Call</button>` : "";
-    const textBtn = s.phone ? `<button class="ghost sm" onclick="textStop('${s.id}')">💬 Text</button>` : "";
-    const prioBtn = `<button class="${asap?'bad':'ghost'} sm" onclick="togglePriority('${s.id}')" title="Make this an ASAP stop">${asap?'⭐ ASAP':'☆ ASAP'}</button>`;
-    const navBtn = s.lat!=null
-      ? `<button class="sm" onclick="navStop('${s.id}')">🧭 Navigate</button>` : "";
-    return `<div class="stop ${done?'done':''} ${asap&&!done?'asap':''} ${s.id===nextId&&!done?'next':''}"
+    const formNote = s.additional_info ? `<div class="note${callFirst?' callfirst':''}">${callFirst?'📞':'📝'} ${esc(s.additional_info)}</div>` : "";
+    const userNote = s.note ? `<div class="usernote">✏️ ${esc(s.note)}</div>` : "";
+    const noteBtn  = `<button class="ghost sm" onclick="editNote('${s.id}')">✏️ ${s.note?'Edit note':'Note'}</button>`;
+    const phone    = s.phone ? `<button class="ghost sm" onclick="callStop('${s.id}')">📞 Call</button>` : "";
+    const textBtn  = s.phone ? `<button class="ghost sm" onclick="textStop('${s.id}')">💬 Text</button>` : "";
+    const prioBtn  = isDone ? "" : `<button class="${asap?'bad':'ghost'} sm" onclick="togglePriority('${s.id}')" title="Make this an ASAP stop">${asap?'⭐ ASAP':'☆ ASAP'}</button>`;
+    const navBtn   = (!isDone && s.lat!=null) ? `<button class="sm" onclick="navStop('${s.id}')">🧭 Navigate</button>` : "";
+    const doneBtn  = `<button class="${isDone?'warn':'good'} sm" onclick="toggleDone('${s.id}')">${isDone?'↺ Undo':'✓ Done'}</button>`;
+    const del      = `<button class="ghost sm" title="Remove this stop" onclick="delStop('${s.id}')" style="margin-left:auto">✕</button>`;
+    const btns = isDone
+      ? `${doneBtn}${noteBtn}${del}`
+      : `${navBtn}${doneBtn}${phone}${textBtn}${noteBtn}${prioBtn}${del}`;
+    return `<div class="stop ${isDone?'done':''} ${asap&&!isDone?'asap':''} ${s.id===nextId&&!isDone?'next':''}"
         data-id="${s.id}" style="border-left-color:${AREA_COLORS[area]||AREA_COLORS['']}">
       <div class="num">${num}</div>
       <div class="stopbody">
         <div class="name">${esc(fullName(s)) || esc(fullAddr(s))} ${tag}${asapTag}</div>
         <div class="addr">${esc(fullAddr(s))}</div>
         ${apps?`<div class="apps">${apps}</div>`:""}
-        ${note}
-        <div class="stopbtns">
-          ${navBtn}
-          <button class="${done?'warn':'good'} sm" onclick="toggleDone('${s.id}')">${done?'↺ Undo':'✓ Done'}</button>
-          ${phone}
-          ${textBtn}
-          ${prioBtn}
-          <button class="ghost sm" title="Remove this stop" onclick="delStop('${s.id}')" style="margin-left:auto">✕</button>
-        </div>
+        ${formNote}
+        ${userNote}
+        <div class="stopbtns">${btns}</div>
       </div>
     </div>`;
-  }).join("");
+  };
 
-  wrap.innerHTML = `<div class="sectitle">Today's run ${state.manual?'· manual order':''} · hold &amp; drag to reorder</div>` + rows;
+  const pendRows = pending.map(s=>card(s,false)).join("");
+  const doneRows = done.map(s=>card(s,true)).join("");
 
-  // Tap-and-hold to drag a card; correct even when an area filter hides some stops.
+  wrap.innerHTML =
+    `<div class="sectitle">Today's run ${state.manual?'· manual order':''} · hold &amp; drag to reorder</div>
+     <div id="pendingList">${pendRows || `<div class="empty" style="padding:16px 8px">Nothing pending — all picked up 🎉</div>`}</div>` +
+    (done.length ? `<div class="sectitle">Completed (${done.length})</div><div id="doneList">${doneRows}</div>` : "");
+
+  // Drag only the pending list. Slot the reordered ids back into state.stops,
+  // leaving DONE stops and any area-filtered-out stops exactly where they are.
   if (window.Sortable){
-    Sortable.create(wrap, {
+    const pl = $("#pendingList");
+    Sortable.create(pl, {
       draggable:".stop", animation:150,
       delay:180, delayOnTouchOnly:true, touchStartThreshold:8,
+      forceFallback:true, fallbackTolerance:5, scroll:true, scrollSensitivity:60, scrollSpeed:12,
       onEnd: () => {
-        const visIds = [...wrap.querySelectorAll(".stop")].map(el=>el.dataset.id);
-        const visSet = new Set(visIds);
+        const ids = [...pl.querySelectorAll(".stop")].map(el=>el.dataset.id);
+        const set = new Set(ids);
         const byId = new Map(state.stops.map(s=>[s.id,s]));
-        const newVis = visIds.map(id=>byId.get(id)).filter(Boolean);
-        let vi = 0;
-        // Slot the reordered visible stops back in; leave filtered-out stops untouched.
-        state.stops = state.stops.map(s => visSet.has(s.id) ? newVis[vi++] : s);
+        const seq = ids.map(id=>byId.get(id)).filter(Boolean);
+        let i = 0;
+        state.stops = state.stops.map(s => set.has(s.id) ? seq[i++] : s);
         state.manual = true; save(); render(); drawRoute();   // refresh map after reorder
       }
     });
@@ -781,6 +818,13 @@ window.setAreaFilter = v => { areaFilterValue=v; render(); drawRoute(); };
 window.toggleDone = id => {
   const s = state.stops.find(x=>x.id===id); if(!s) return;
   s.status = s.status==="DONE" ? "NEW" : "DONE"; save(); render(); drawRoute();
+};
+// Type a free note against a pickup (access instructions, "gate round back", etc.).
+window.editNote = id => {
+  const s = state.stops.find(x=>x.id===id); if(!s) return;
+  const v = prompt("Note for this pickup:", s.note||"");
+  if (v===null) return;                       // cancelled
+  s.note = v.trim(); save(); render();
 };
 window.textStop = id => { const s=state.stops.find(x=>x.id===id); if(s&&s.phone) location.href="sms:"+s.phone.replace(/\s+/g,""); };
 window.togglePriority = id => {
