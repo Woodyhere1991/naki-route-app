@@ -15,42 +15,53 @@
 
 <style>
   :root{
-    --bg:#0f1115; --panel:#171a21; --panel2:#1e222b; --line:#2b313d;
-    --txt:#eef1f6; --muted:#9aa4b2; --accent:#2f80ff; --accent2:#1c5fd6;
-    --good:#27c08a; --warn:#ffb020; --bad:#ff5c5c;
-    --north:#3ba0ff; --south:#ff8a3d; --coastal:#27c08a; --none:#8a93a3;
+    --bg:#061d2e; --panel:#0b2a40; --panel2:#10364e; --line:#2c5b70;
+    --txt:#fff8e9; --muted:#b8cbd1; --accent:#f48722; --accent2:#d32050;
+    --good:#009ca8; --warn:#ffc13d; --bad:#d62857;
+    --north:#009ca8; --south:#f48722; --coastal:#ffc13d; --none:#8a9da6;
     --tap:54px;
   }
   *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
-  html,body{margin:0;padding:0;background:var(--bg);color:var(--txt);
+  html,body{margin:0;padding:0;background:radial-gradient(circle at 92% -12%,#f4872238,transparent 27rem),
+    radial-gradient(circle at -18% 44%,#009ca824,transparent 30rem),var(--bg);color:var(--txt);
     font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;font-size:17px;line-height:1.4}
   body{padding-bottom:24px}
   h1,h2,h3{margin:0}
-  button{font-family:inherit;font-size:16px;cursor:pointer;border:none;border-radius:12px;
-    color:#fff;background:var(--accent);min-height:var(--tap);padding:0 16px;font-weight:600}
+  button{font-family:inherit;font-size:16px;cursor:pointer;border:1px solid transparent;border-radius:12px;
+    color:#fff;background:var(--accent);min-height:var(--tap);padding:0 16px;font-weight:700;line-height:1.15;
+    box-shadow:0 2px 0 #0003}
   button:active{transform:translateY(1px)}
-  button.ghost{background:var(--panel2);color:var(--txt);border:1px solid var(--line)}
-  button.good{background:var(--good)} button.warn{background:var(--warn);color:#1a1200}
+  button.ghost{background:#113a54;color:var(--txt);border-color:var(--line)}
+  button.good{background:var(--good)} button.warn{background:var(--warn);color:#16212a}
   button.bad{background:var(--bad)} button.sm{min-height:42px;font-size:15px;padding:0 12px;border-radius:10px}
   input,textarea,select{font-family:inherit;font-size:16px;width:100%;padding:12px;border-radius:12px;
-    border:1px solid var(--line);background:var(--panel2);color:var(--txt);min-height:var(--tap)}
+    border:1px solid var(--line);background:#08283d;color:var(--txt);min-height:var(--tap)}
   textarea{min-height:120px;resize:vertical}
   label{font-size:14px;color:var(--muted);display:block;margin:0 0 4px}
   .wrap{max-width:760px;margin:0 auto;padding:0 12px}
 
   /* Top bar: live counts */
-  header{position:sticky;top:0;z-index:1000;background:var(--panel);
-    border-bottom:1px solid var(--line);box-shadow:0 2px 8px rgba(0,0,0,.3)}
+  header{position:sticky;top:0;z-index:1000;background:linear-gradient(105deg,#08273b,#103e52);
+    border-bottom:2px solid var(--accent);box-shadow:0 4px 14px rgba(0,0,0,.35)}
   .topbar{display:flex;align-items:center;gap:10px;padding:10px 12px;max-width:760px;margin:0 auto}
-  .brand{font-size:18px;font-weight:800;letter-spacing:.2px}
-  .brand small{display:block;font-size:11px;color:var(--muted);font-weight:600;letter-spacing:1px}
-  .stats{margin-left:auto;display:flex;gap:14px;text-align:center}
-  .stat b{display:block;font-size:18px;line-height:1} .stat span{font-size:10px;color:var(--muted);text-transform:uppercase}
+  .brand-logo{flex:0 0 48px;width:48px;height:48px;border-radius:50%;overflow:hidden;background:#fff8e9;
+    border:2px solid var(--warn);box-shadow:0 0 0 2px #d32050}
+  .brand-logo img{width:100%;height:100%;object-fit:cover;object-position:center 70%;display:block}
+  .brand{min-width:0;flex:1 1 auto;font-size:clamp(15px,4.5vw,18px);font-weight:800;letter-spacing:.2px;line-height:1.08;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .brand small{display:block;font-size:9px;color:#ffd36b;font-weight:800;letter-spacing:.7px;margin-top:4px;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .stats{margin-left:auto;display:flex;gap:clamp(8px,3vw,14px);text-align:center;flex:0 0 auto}
+  .stat{min-width:25px}.stat b{display:block;font-size:18px;line-height:1;color:#fff8e9} .stat span{font-size:10px;color:#b8cbd1;text-transform:uppercase}
 
-  .card{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:14px;margin:12px 0}
+  .card{background:linear-gradient(145deg,#0d3048,#0a273c);border:1px solid var(--line);border-radius:18px;padding:14px;margin:12px 0;box-shadow:0 6px 18px #0002}
   .row{display:flex;gap:10px;flex-wrap:wrap}
-  .row > *{flex:1 1 auto}
+  .row > *{flex:1 1 auto;min-width:0}
   .grow{flex:1 1 200px}
+  #oneMic{flex:0 0 54px !important;padding:0}
+  .row:has(#oneMic){flex-wrap:nowrap}
+  .row .end-address{flex:1 1 0;min-width:0}
+  #setEnd{flex:0 0 58px;padding:0 8px}
+  #clearEnd{flex:0 0 46px;padding:0}
   .muted{color:var(--muted)} .small{font-size:13px}
 
   /* Collapsible "Add pickups" */
@@ -60,13 +71,13 @@
   summary .chev{margin-left:auto;color:var(--muted);transition:transform .15s}
   details[open] summary .chev{transform:rotate(90deg)}
   .tabs{display:flex;gap:6px;margin:12px 0;flex-wrap:wrap}
-  .tabs button{flex:1 1 0;min-height:46px;background:var(--panel2);color:var(--txt);border:1px solid var(--line);font-size:14px}
+  .tabs button{flex:1 1 0;min-height:46px;background:#113a54;color:var(--txt);border:1px solid var(--line);font-size:14px;padding:6px 8px}
   .tabs button.on{background:var(--accent);border-color:var(--accent);color:#fff}
   .pane{display:none;margin-top:8px} .pane.on{display:block}
 
   /* Map */
-  #map{height:300px;width:100%;border-radius:14px;border:1px solid var(--line);background:#0a0c10}
-  .leaflet-container{background:#0a0c10}
+  #map{height:300px;width:100%;border-radius:14px;border:1px solid var(--line);background:#08283d}
+  .leaflet-container{background:#08283d}
   .pin{display:flex;align-items:center;justify-content:center;width:30px;height:30px;border-radius:50% 50% 50% 0;
     transform:rotate(-45deg);box-shadow:0 1px 4px rgba(0,0,0,.5);border:2px solid #fff;font-weight:800;color:#fff}
   .pin span{transform:rotate(45deg);font-size:13px}
@@ -75,20 +86,22 @@
 
   /* Stop rows */
   .stop{display:flex;gap:12px;padding:12px;border:1px solid var(--line);border-radius:14px;
-    background:var(--panel2);margin:10px 0;align-items:flex-start;border-left-width:6px}
+    background:#10364e;margin:10px 0;align-items:flex-start;border-left-width:6px}
   .stop.done{opacity:.55}
   .stop.done .name,.stop.done .addr{text-decoration:line-through}
   .stop.next{box-shadow:0 0 0 2px var(--accent);border-left-color:var(--accent)}
   .num{flex:0 0 34px;height:34px;border-radius:9px;display:flex;align-items:center;justify-content:center;
-    font-weight:800;background:#0a0c10;color:#fff;border:1px solid var(--line);font-size:16px}
+    font-weight:800;background:#08283d;color:#fff8e9;border:1px solid var(--line);font-size:16px}
   .stopbody{flex:1 1 auto;min-width:0}
   .name{font-weight:700;font-size:17px}
   .addr{color:var(--txt)} .note{color:var(--warn);font-size:14px;margin-top:4px}
   .note.callfirst{color:#fff;background:var(--bad);border-radius:8px;padding:4px 8px;font-weight:700;display:inline-block}
   .apps{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
-  .chip{background:#0a0c10;border:1px solid var(--line);border-radius:999px;padding:3px 10px;font-size:13px}
+  .chip{background:#08283d;border:1px solid var(--line);border-radius:999px;padding:3px 10px;font-size:13px}
   .areatag{font-size:11px;font-weight:700;padding:2px 8px;border-radius:999px;color:#06121f}
-  .stopbtns{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+  .stopbtns{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:10px}
+  .stopbtns button{width:100%;min-width:0;padding:0 7px;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .stopbtns .nav-action{grid-column:span 2}
   .arrows{display:flex;flex-direction:row;gap:6px}
   .arrows button{min-height:40px;min-width:44px;padding:0 10px;font-size:16px;line-height:1;border-radius:10px}
 
@@ -99,20 +112,20 @@
   @keyframes spin{to{transform:rotate(360deg)}}
   .banner{padding:10px 12px;border-radius:12px;margin:10px 0;font-size:14px;display:none}
   .banner.show{display:block}
-  .banner.info{background:#15314f;border:1px solid #2f80ff55}
-  .banner.warnb{background:#3a2c0a;border:1px solid #ffb02055}
+  .banner.info{background:#09384c;border:1px solid #009ca877}
+  .banner.warnb{background:#46350b;border:1px solid #ffc13d77}
   .badrow{display:flex;gap:10px;align-items:center;padding:10px;border:1px dashed var(--warn);
     border-radius:12px;margin:8px 0;background:#2a210a}
   .badrow input{flex:1 1 auto}
   .sectitle{font-size:14px;text-transform:uppercase;letter-spacing:1px;color:var(--muted);margin:18px 0 4px}
   footer{ text-align:center;color:var(--muted);font-size:12px;padding:20px 0 10px}
   .areafilter{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
-  .areafilter button{min-height:38px;font-size:13px;background:var(--panel2);border:1px solid var(--line);color:var(--txt)}
+  .areafilter button{min-height:38px;font-size:13px;background:#113a54;border:1px solid var(--line);color:var(--txt)}
   .areafilter button.on{background:var(--accent);border-color:var(--accent)}
 
   /* Address autocomplete dropdown */
   .acw{position:relative}
-  .ac-list{position:absolute;top:calc(100% + 4px);left:0;right:0;z-index:1200;background:var(--panel2);
+  .ac-list{position:absolute;top:calc(100% + 4px);left:0;right:0;z-index:1200;background:#10364e;
     border:1px solid var(--line);border-radius:12px;overflow:hidden;display:none;box-shadow:0 10px 26px rgba(0,0,0,.55)}
   .ac-list.show{display:block}
   .ac-item{padding:12px;border-bottom:1px solid var(--line);cursor:pointer;font-size:15px}
@@ -140,7 +153,7 @@
   .gms-day.closed{border-left:4px solid var(--bad)}
   .gms-day.special{background:#3a2c0a}
   .gms-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
-  .gms-actions>*{flex:1 1 160px}
+  .gms-actions>*{flex:1 1 130px;min-width:0}
   .gms-actions a{display:flex;align-items:center;justify-content:center;min-height:42px;border:1px solid var(--line);border-radius:10px;color:var(--txt);text-decoration:none;font-size:14px;font-weight:600}
   .gps-dot{width:20px;height:20px;border-radius:50%;background:#2f80ff;border:4px solid #fff;box-shadow:0 0 0 7px #2f80ff44}
   .missing-contact{padding:7px 0;border-top:1px solid var(--line);font-size:14px}
@@ -154,7 +167,7 @@
   .stop.sortable-ghost > *{visibility:hidden}
   .stop.sortable-ghost::after{content:"⇩  drop here";visibility:visible;position:absolute;inset:0;
     display:flex;align-items:center;justify-content:center;color:var(--accent);font-weight:800;font-size:14px;letter-spacing:.5px}
-  .stop.asap{border-left-color:var(--bad) !important;background:#241616}
+  .stop.asap{border-left-color:var(--bad) !important;background:#3c1730}
   /* Manual note the driver types on the run */
   .usernote{color:var(--txt);background:#12233d;border:1px solid #2f80ff55;border-radius:8px;
     padding:5px 9px;margin-top:5px;font-size:14px;word-break:break-word}
@@ -174,14 +187,14 @@
   body[data-view="add"] .view-add{display:block}
   .today-map{order:5}.today-actions{order:10}.today-filter{order:20}.today-list{order:30}.today-bad{order:40}
   #bannerSave,#bannerOsrm{order:5} footer{order:100}
-  .bottom-nav{position:fixed;left:0;right:0;bottom:0;z-index:2000;background:rgba(23,26,33,.97);
+  .bottom-nav{position:fixed;left:0;right:0;bottom:0;z-index:2000;background:rgba(7,29,46,.98);
     border-top:1px solid var(--line);padding:8px max(10px,env(safe-area-inset-right)) calc(8px + env(safe-area-inset-bottom)) max(10px,env(safe-area-inset-left));
     display:grid;grid-template-columns:repeat(3,1fr);gap:7px;box-shadow:0 -4px 16px rgba(0,0,0,.45)}
-  .bottom-nav button{min-height:52px;background:var(--panel2);border:1px solid var(--line);font-size:14px;padding:0 6px}
+  .bottom-nav button{min-height:52px;background:#10364e;border:1px solid var(--line);font-size:14px;padding:0 6px}
   .bottom-nav button.on{background:var(--accent);border-color:var(--accent)}
   .message-actions{position:sticky;bottom:72px;z-index:20;background:var(--panel);padding:10px 0 2px;
     border-top:1px solid var(--line);box-shadow:0 -8px 14px var(--panel)}
-  .message-actions .row{flex-wrap:nowrap}.message-actions .row .grow{flex:1 1 0;min-width:0;padding:0 8px}
+  .message-actions .row{flex-wrap:nowrap}.message-actions .row .grow{flex:1 1 0;min-width:0;padding:0 7px;font-size:13px}
   .recipient-list{max-height:38vh;overflow:auto}
   .view-title{font-size:19px;font-weight:800;margin:14px 2px 2px}
   .today-map details>div{padding-top:10px}
@@ -192,7 +205,8 @@
 
 <header>
   <div class="topbar">
-    <div class="brand">Naki Pickup Run<small>WHITEWARE COLLECTION</small></div>
+    <div class="brand-logo"><img src="assets/naki-wreck-removals-logo.jpg" alt="Naki Wreck Removals logo" /></div>
+    <div class="brand">Naki Pickup Run<small>NAKI WRECK REMOVALS</small></div>
     <div class="stats">
       <div class="stat"><b id="stCount">0</b><span>Stops</span></div>
       <div class="stat"><b id="stKm">–</b><span>Km</span></div>
@@ -266,7 +280,7 @@
 
       <div id="endNow" class="small muted" style="margin:14px 0 6px">End: open run (stops anywhere).</div>
       <div class="row">
-        <div class="acw grow"><input id="endAddr" autocomplete="off" placeholder="optional end point (e.g. the scrap yard)" /><div class="ac-list" id="acEnd"></div></div>
+        <div class="acw grow end-address"><input id="endAddr" autocomplete="off" placeholder="optional end point (e.g. the scrap yard)" /><div class="ac-list" id="acEnd"></div></div>
         <button id="setEnd" class="ghost" style="flex:0 0 auto">Set</button>
         <button id="clearEnd" class="ghost" style="flex:0 0 auto" title="Clear end point">✕</button>
       </div>
@@ -875,9 +889,9 @@ function renderList(){
     const textBtn  = s.phone ? `<button class="ghost sm" onclick="textStop('${s.id}')">💬 Text</button>` : "";
     const emailBtn = goodEmail(s.email) ? `<button class="ghost sm" onclick="gmailStop('${s.id}')">Email</button>` : "";
     const prioBtn  = isDone ? "" : `<button class="${asap?'bad':'ghost'} sm" onclick="togglePriority('${s.id}')" title="Make this an ASAP stop">${asap?'⭐ ASAP':'☆ ASAP'}</button>`;
-    const navBtn   = (!isDone && s.lat!=null) ? `<button class="sm" onclick="navStop('${s.id}')">🧭 Navigate</button>` : "";
+    const navBtn   = (!isDone && s.lat!=null) ? `<button class="sm nav-action" onclick="navStop('${s.id}')">🧭 Navigate</button>` : "";
     const doneBtn  = `<button class="${isDone?'warn':'good'} sm" onclick="toggleDone('${s.id}')">${isDone?'↺ Undo':'✓ Done'}</button>`;
-    const del      = `<button class="ghost sm" title="Remove this stop" onclick="delStop('${s.id}')" style="margin-left:auto">✕</button>`;
+    const del      = `<button class="ghost sm" title="Remove this stop" onclick="delStop('${s.id}')">✕</button>`;
     const btns = isDone
       ? `${doneBtn}${noteBtn}${emailBtn}${del}`
       : `${navBtn}${doneBtn}${phone}${textBtn}${emailBtn}${noteBtn}${prioBtn}${del}`;
