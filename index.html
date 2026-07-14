@@ -164,6 +164,28 @@
   /* Collapsible Start & end summary, contacts box */
   .se-sum{font-weight:400;color:var(--muted);font-size:13px}
   #contactsWrap textarea{min-height:58px;font-size:14px}
+
+  /* Simple phone navigation: one job per screen */
+  body{padding-bottom:88px}
+  .wrap{display:flex;flex-direction:column}
+  .view-panel{display:none}
+  body[data-view="today"] .view-today,
+  body[data-view="messages"] .view-messages,
+  body[data-view="add"] .view-add{display:block}
+  .today-actions{order:10}.today-filter{order:20}.today-list{order:30}.today-bad{order:40}.today-map{order:50}
+  #bannerSave,#bannerOsrm{order:5} footer{order:100}
+  .bottom-nav{position:fixed;left:0;right:0;bottom:0;z-index:2000;background:rgba(23,26,33,.97);
+    border-top:1px solid var(--line);padding:8px max(10px,env(safe-area-inset-right)) calc(8px + env(safe-area-inset-bottom)) max(10px,env(safe-area-inset-left));
+    display:grid;grid-template-columns:repeat(3,1fr);gap:7px;box-shadow:0 -4px 16px rgba(0,0,0,.45)}
+  .bottom-nav button{min-height:52px;background:var(--panel2);border:1px solid var(--line);font-size:14px;padding:0 6px}
+  .bottom-nav button.on{background:var(--accent);border-color:var(--accent)}
+  .message-actions{position:sticky;bottom:72px;z-index:20;background:var(--panel);padding:10px 0 2px;
+    border-top:1px solid var(--line);box-shadow:0 -8px 14px var(--panel)}
+  .message-actions .row{flex-wrap:nowrap}.message-actions .row .grow{flex:1 1 0;min-width:0;padding:0 8px}
+  .recipient-list{max-height:38vh;overflow:auto}
+  .view-title{font-size:19px;font-weight:800;margin:14px 2px 2px}
+  .today-map details>div{padding-top:10px}
+  @media(min-width:760px){.bottom-nav{left:50%;transform:translateX(-50%);max-width:760px;border-left:1px solid var(--line);border-right:1px solid var(--line)}}
 </style>
 </head>
 <body>
@@ -182,7 +204,7 @@
 <div class="wrap">
 
   <!-- ADD PICKUPS -->
-  <div class="card">
+  <div class="card view-panel view-add">
     <details id="addBox" open>
       <summary>Add pickups <span class="chev">›</span></summary>
 
@@ -231,8 +253,8 @@
   </div>
 
   <!-- START & END POINT -->
-  <div class="card">
-    <details id="startBox" open>
+  <div class="card view-panel view-add">
+    <details id="startBox">
       <summary>Start &amp; end <span id="seSummary" class="se-sum"></span><span class="chev">›</span></summary>
 
       <div id="startNow" class="small muted" style="margin:10px 0 6px">Start: not set — defaults to New Plymouth.</div>
@@ -258,21 +280,21 @@
   </div>
 
   <!-- ACTIONS -->
-  <div class="card">
-    <button id="optimise" style="width:100%;min-height:60px;font-size:19px">🧭 Optimise route</button>
-    <button id="optimiseHere" class="ghost" style="width:100%;margin-top:10px">📍 Optimise from where I am</button>
+  <div class="card view-panel view-today today-actions">
+    <button id="navAll" class="good" style="width:100%;min-height:60px;font-size:19px">🧭 Navigate to next stop</button>
+    <button id="optimise" style="width:100%;margin-top:10px">Optimise route</button>
     <div class="row" style="margin-top:10px">
-      <button id="navAll" class="good grow">🧭 Navigate to next stop</button>
+      <button id="optimiseHere" class="ghost grow">Optimise from where I am</button>
       <button id="clearAll" class="ghost grow">Clear all</button>
     </div>
     <div id="busy" class="small muted" style="margin-top:8px"></div>
   </div>
 
   <!-- BULK MESSAGE CONTACTS -->
-  <div id="contactsWrap"></div>
+  <div id="contactsWrap" class="view-panel view-messages"></div>
 
   <!-- WEATHER -->
-  <div class="card">
+  <div class="card view-panel view-add">
     <details id="weatherPanel">
       <summary class="live-head"><span id="weatherSummary">Weather forecast — load pickups to see towns</span><span class="chev">›</span></summary>
       <div class="live-body">
@@ -286,7 +308,7 @@
   </div>
 
   <!-- GMS HOURS -->
-  <div class="card gms-panel" id="gmsCard" data-level="ok">
+  <div class="card gms-panel view-panel view-add" id="gmsCard" data-level="ok">
     <details id="gmsPanel">
       <summary class="live-head"><span id="gmsSummary">GMS New Plymouth hours — checking…</span><span class="chev">›</span></summary>
       <div class="live-body">
@@ -306,23 +328,34 @@
   <div id="bannerOsrm" class="banner info"></div>
 
   <!-- MAP -->
-  <div class="card" style="padding:8px">
+  <div class="card view-panel view-today today-map" style="padding:10px">
+    <details id="mapPanel">
+      <summary>Map &amp; live GPS <span class="chev">›</span></summary>
+      <div style="padding-top:10px">
     <div id="map"></div>
     <button id="gpsToggle" class="ghost" style="width:100%;margin-top:8px">📍 Start live GPS</button>
     <div id="gpsStatus" class="small muted" style="padding:6px 4px 0">Shows your current position on the map.</div>
+      </div>
+    </details>
   </div>
 
   <!-- AREA FILTER -->
-  <div class="areafilter" id="areaFilter"></div>
+  <div class="areafilter view-panel view-today today-filter" id="areaFilter"></div>
 
   <!-- STOP LIST -->
-  <div id="listWrap"></div>
+  <div id="listWrap" class="view-panel view-today today-list"></div>
 
   <!-- NEEDS ADDRESS -->
-  <div id="badWrap"></div>
+  <div id="badWrap" class="view-panel view-today today-bad"></div>
 
   <footer>Only pickups you load • No login • Your run is saved on this phone</footer>
 </div>
+
+<nav class="bottom-nav" aria-label="Main sections">
+  <button data-view-button="today">Today</button>
+  <button data-view-button="messages">Messages</button>
+  <button data-view-button="add">Add &amp; setup</button>
+</nav>
 
 <script>
 "use strict";
@@ -366,6 +399,18 @@ function loadState(){
 }
 function save(){ saveJSON(LS, state); }
 function saveGeo(){ saveJSON(GEO, geocache); }
+
+function applyAppView(view){
+  if (!["today","messages","add"].includes(view)) view = state.stops.length ? "today" : "add";
+  document.body.dataset.view = view;
+  document.querySelectorAll("[data-view-button]").forEach(btn=>btn.classList.toggle("on", btn.dataset.viewButton===view));
+  if (view==="today" && map) setTimeout(()=>map.invalidateSize(), 80);
+}
+window.setAppView = view => {
+  state.appView = view; save(); applyAppView(view);
+  window.scrollTo({top:0,behavior:"smooth"});
+};
+document.querySelectorAll("[data-view-button]").forEach(btn=>btn.onclick=()=>setAppView(btn.dataset.viewButton));
 
 /* ---------- Helpers ---------- */
 const $ = sel => document.querySelector(sel);
@@ -952,7 +997,7 @@ function selectedEmails(){ return [...new Set(selectedRecipients().map(s=>(s.ema
 function renderContacts(){
   const wrap = $("#contactsWrap"); if (!wrap) return;
   const pend = state.stops.filter(s => s.status!=="DONE");
-  if (!pend.length){ wrap.innerHTML = ""; return; }
+  if (!pend.length){ wrap.innerHTML = `<div class="view-title">Messages</div><div class="card empty"><b>No customers yet</b><p>Add pickups first, then come back here to message them.</p><button onclick="setAppView('add')">Add pickups</button></div>`; return; }
   const selected = selectedRecipientIds();
   const nums = selectedNumbers(), mails = selectedEmails();
   const missing = pend.map(s => {
@@ -978,12 +1023,11 @@ function renderContacts(){
     <label style="margin-top:10px">Select customers</label>
     <p class="small muted">The same selected customers are used for both text and email.</p>
     <div style="display:flex;gap:6px;margin:6px 0"><button class="ghost sm" onclick="selectRecipients('all')">Select all</button><button class="ghost sm" onclick="selectRecipients('new')">Select new only</button><button class="ghost sm" onclick="selectRecipients('none')">Unselect all</button></div>
-    <div style="max-height:220px;overflow:auto">${recipientRows}</div>
+    <div class="recipient-list">${recipientRows}</div>
     <button class="ghost sm" style="margin-top:6px" onclick="clearMessageMarks()">Clear sent marks for this day</button>`;
-  const actions = `<div style="margin-top:10px"><b id="selectedCount">${selected.size} selected customer${selected.size!==1?'s':''}</b><br>
-    <button class="good" style="width:100%;margin-top:6px" onclick="bulkText()">Open group text</button>
-    <button class="good" style="width:100%;margin-top:6px" onclick="bulkEmail()">Open Gmail BCC email</button>
-    <button class="ghost" style="width:100%;margin-top:6px" onclick="markSelectedSent()">I sent this batch - mark selected</button></div>`;
+  const actions = `<div class="message-actions"><b id="selectedCount">${selected.size} selected customer${selected.size!==1?'s':''}</b>
+    <div class="row" style="margin-top:6px"><button class="good grow" onclick="bulkText()">Open text</button><button class="good grow" onclick="bulkEmail()">Open Gmail</button></div>
+    <button class="ghost sm" style="width:100%;margin-top:6px" onclick="markSelectedSent()">I sent this batch - mark selected</button></div>`;
   wrap.innerHTML = `<div class="card"><details open>
     <summary>Bulk message<span class="se-sum">${missing.length?` · ${missing.length} missing contact${missing.length!==1?'s':''}`:""}</span><span class="chev">›</span></summary>
     ${preview}
@@ -1528,6 +1572,7 @@ function attachAutocomplete(input, listEl, onPick){
 }
 
 /* ---------- Boot ---------- */
+applyAppView(state.appView || (state.stops.length ? "today" : "add"));
 initMap();
 render();
 drawRoute();
@@ -1535,6 +1580,9 @@ renderWeather();
 renderGms();
 refreshWeather(false);
 loadGms(false);
+$("#mapPanel").ontoggle = () => {
+  if ($("#mapPanel").open) setTimeout(()=>{ map.invalidateSize(); drawRoute(); }, 80);
+};
 attachAutocomplete($("#oneAddr"), $("#acOne"), r => { oneAddrPicked = { lat:r.lat, lng:r.lng }; });
 attachAutocomplete($("#startAddr"), $("#acStart"), r => {
   routeStartOverride=null; state.start = { lat:r.lat, lng:r.lng, label:r.label }; save(); render(); replanIfAuto();
