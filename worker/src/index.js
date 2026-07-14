@@ -1,11 +1,14 @@
 const GMS_PLACE_ID = "ChIJI-iQUfZQFG0RorGmjzvMPRE";
-const APP_ORIGIN = "https://naki-route-app.pages.dev";
+const APP_ORIGINS = new Set([
+  "https://naki-pickup-run.pages.dev",
+  "https://naki-route-app.pages.dev"
+]);
 
 function cors(request) {
   const origin = request.headers.get("Origin") || "";
-  const allowed = origin === APP_ORIGIN || /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin);
+  const allowed = APP_ORIGINS.has(origin) || /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin) || /^https:\/\/[a-z0-9]+\.naki-pickup-run\.pages\.dev$/.test(origin);
   return {
-    "Access-Control-Allow-Origin": allowed ? origin : APP_ORIGIN,
+    "Access-Control-Allow-Origin": allowed ? origin : "https://naki-pickup-run.pages.dev",
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type",
     "Vary": "Origin"
