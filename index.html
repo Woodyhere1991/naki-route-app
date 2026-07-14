@@ -178,7 +178,12 @@
   .se-sum{font-weight:400;color:var(--muted);font-size:13px}
   #contactsWrap textarea{min-height:58px;font-size:14px}
   #contactsWrap,#contactsWrap details{width:100%;max-width:100%;min-width:0}
-  #contactsWrap input[type="date"]{width:100%;max-width:100%;min-width:0;box-sizing:border-box;overflow:hidden}
+  #contactsWrap .card{min-width:0;overflow:hidden}
+  .date-field-shell{display:block;width:100%;max-width:100%;min-width:0;overflow:hidden;
+    contain:inline-size;clip-path:inset(0 round 12px)}
+  #contactsWrap input[type="date"]{display:block;width:100%;max-width:100%;min-width:0;box-sizing:border-box;
+    -webkit-appearance:none;appearance:none;inline-size:100%;min-inline-size:0;max-inline-size:100%;overflow:hidden}
+  #contactsWrap input[type="date"]::-webkit-date-and-time-value{text-align:left}
 
   /* Simple phone navigation: one job per screen */
   body{padding-bottom:88px}
@@ -1031,7 +1036,7 @@ function renderContacts(){
     </label>`;
   }).join("");
   const preview = `<label style="margin-top:10px">Collection day</label>
-    <input type="date" value="${esc(state.confirmationDate||"")}" onchange="setConfirmationDate(this.value)" />
+    <div class="date-field-shell"><input type="date" value="${esc(state.confirmationDate||"")}" onchange="setConfirmationDate(this.value)" /></div>
     <label style="margin-top:10px">Message preview</label>
     <textarea id="messagePreview" readonly onclick="this.select()" placeholder="Choose a collection day above">${esc(bulkMessage())}</textarea>
     <button class="ghost sm" style="margin-top:6px" onclick="copyText('messagePreview',this)">Copy message</button>
