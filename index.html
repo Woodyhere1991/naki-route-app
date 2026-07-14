@@ -119,6 +119,32 @@
   .ac-item:last-child{border-bottom:none}
   .ac-item:active,.ac-item:hover{background:var(--accent);color:#fff}
 
+  /* Small live-information drop-downs */
+  .live-head{display:flex;align-items:center;gap:8px;width:100%}
+  .live-head .chev{margin-left:auto}
+  .live-body{padding-top:10px}
+  .live-toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px}
+  .live-toolbar p{flex:1 1 220px;margin:0}
+  .live-toolbar button{min-height:42px;font-size:14px}
+  .weather-town{margin-top:12px}
+  .weather-town h3{font-size:16px;margin-bottom:7px}
+  .weather-days{display:grid;grid-template-columns:repeat(7,minmax(94px,1fr));gap:7px;overflow-x:auto;padding-bottom:4px}
+  .weather-day{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:8px;min-width:94px}
+  .weather-day b,.weather-day span{display:block}
+  .weather-day b{font-size:13px}.weather-day span{font-size:12px;color:var(--muted);margin-top:3px}
+  .weather-alert{color:var(--warn)!important;font-weight:700}
+  .gms-panel[data-level="danger"]{border-color:var(--bad)}
+  .gms-panel[data-level="warning"]{border-color:var(--warn)}
+  .gms-days{display:grid;gap:7px}
+  .gms-day{display:grid;grid-template-columns:80px 55px 1fr;gap:8px;background:var(--panel2);border-radius:9px;padding:8px;font-size:13px}
+  .gms-day.closed{border-left:4px solid var(--bad)}
+  .gms-day.special{background:#3a2c0a}
+  .gms-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+  .gms-actions>*{flex:1 1 160px}
+  .gms-actions a{display:flex;align-items:center;justify-content:center;min-height:42px;border:1px solid var(--line);border-radius:10px;color:var(--txt);text-decoration:none;font-size:14px;font-weight:600}
+  .gps-dot{width:20px;height:20px;border-radius:50%;background:#2f80ff;border:4px solid #fff;box-shadow:0 0 0 7px #2f80ff44}
+  .missing-contact{padding:7px 0;border-top:1px solid var(--line);font-size:14px}
+
   /* Drag-to-reorder + ASAP priority */
   .stop{cursor:grab}
   .stop.sortable-chosen{cursor:grabbing;box-shadow:0 0 0 3px var(--accent);opacity:.97}
@@ -244,12 +270,46 @@
   <!-- BULK MESSAGE CONTACTS -->
   <div id="contactsWrap"></div>
 
+  <!-- WEATHER -->
+  <div class="card">
+    <details id="weatherPanel">
+      <summary class="live-head"><span id="weatherSummary">Weather forecast — load pickups to see towns</span><span class="chev">›</span></summary>
+      <div class="live-body">
+        <div class="live-toolbar">
+          <p id="weatherUpdated" class="small muted">Only places in the pickup list you load are shown.</p>
+          <button id="weatherRefresh" class="ghost sm">Refresh</button>
+        </div>
+        <div id="weatherContent" class="small muted">Load a pickup file first.</div>
+      </div>
+    </details>
+  </div>
+
+  <!-- GMS HOURS -->
+  <div class="card gms-panel" id="gmsCard" data-level="ok">
+    <details id="gmsPanel">
+      <summary class="live-head"><span id="gmsSummary">GMS New Plymouth hours — checking…</span><span class="chev">›</span></summary>
+      <div class="live-body">
+        <p id="gmsMessage" class="small muted">Checking live opening hours and special closures.</p>
+        <div id="gmsDays" class="gms-days"></div>
+        <div class="gms-actions">
+          <button id="gmsRefresh" class="ghost sm">Refresh hours</button>
+          <button id="gmsAlerts" class="ghost sm">Turn on closure alerts</button>
+          <a id="gmsMaps" href="https://maps.google.com/?q=Global+Metal+Solutions+New+Plymouth" target="_blank" rel="noopener">Check Google Maps</a>
+        </div>
+      </div>
+    </details>
+  </div>
+
   <!-- BANNERS -->
   <div id="bannerSave" class="banner warnb"></div>
   <div id="bannerOsrm" class="banner info"></div>
 
   <!-- MAP -->
-  <div class="card" style="padding:8px"><div id="map"></div></div>
+  <div class="card" style="padding:8px">
+    <div id="map"></div>
+    <button id="gpsToggle" class="ghost" style="width:100%;margin-top:8px">📍 Start live GPS</button>
+    <div id="gpsStatus" class="small muted" style="padding:6px 4px 0">Shows your current position on the map.</div>
+  </div>
 
   <!-- AREA FILTER -->
   <div class="areafilter" id="areaFilter"></div>
@@ -260,20 +320,21 @@
   <!-- NEEDS ADDRESS -->
   <div id="badWrap"></div>
 
-  <footer>$0/month • Static file • No login • Everything saved on this phone</footer>
+  <footer>Only pickups you load • No login • Your run is saved on this phone</footer>
 </div>
 
 <script>
 "use strict";
 /* ============================================================
-   Naki Pickup Run — single-file route planner
-   No backend. State lives in localStorage. Free public APIs.
+   Naki Pickup Run — simple route planner
+   Pickup state lives only in this browser's localStorage.
    ============================================================ */
 
 const NP = { lat: -39.0556, lng: 174.0752 };          // New Plymouth default centre
 const LS = "naki_route_v1";                            // main state key
 const GEO = "naki_geocache_v1";                        // address -> {lat,lng} cache
 const UA  = "NakiPickupRun/1.0 (whiteware pickup route planner; nakiwreckremoval@gmail.com)";
+const API = "https://naki-route-api.nakiwreckremoval.workers.dev";
 const AREA_COLORS = { North:"var(--north)", South:"var(--south)", Coastal:"var(--coastal)", "":"var(--none)" };
 const AREA_HEX    = { North:"#3ba0ff", South:"#ff8a3d", Coastal:"#27c08a", "":"#8a93a3" };
 
@@ -281,8 +342,11 @@ const AREA_HEX    = { North:"#3ba0ff", South:"#ff8a3d", Coastal:"#27c08a", "":"#
 let state = loadState();
 let geocache = loadJSON(GEO, {});
 let map, markerLayer, routeLayer;
+let gpsWatchId = null, gpsMarker = null, gpsAccuracy = null;
 let areaFilterValue = "all";
 let oneAddrPicked = null;   // coords chosen from the Type-one autocomplete
+let weatherState = { key:"", towns:[], loading:false, fetchedAt:0, error:"" };
+let gmsState = { data:null, loading:false, fetchedAt:0, error:"" };
 
 function loadJSON(k, d){ try{ return JSON.parse(localStorage.getItem(k)) || d; }catch(e){ return d; } }
 function saveJSON(k, v){
@@ -325,12 +389,36 @@ function haversine(a, b){
   return R * 2 * Math.atan2(Math.sqrt(x), Math.sqrt(1-x));
 }
 
-/* ---------- Geocoding (Nominatim, throttled + cached) ---------- */
+/* ---------- Address search (Google first, free fallback, cached) ---------- */
+const KNOWN_ADDRESSES = {
+  "19 longview drive, new plymouth": { lat:-39.0674957, lng:174.0995514 },
+  "19 longview drive, merrilands": { lat:-39.0674957, lng:174.0995514 }
+};
 let lastGeo = 0;
+async function googleAddressResults(addr, limit=6){
+  try{
+    const res = await fetch(`${API}/address-search?q=${encodeURIComponent(addr)}&limit=${limit}`);
+    if (!res.ok) return [];
+    const data = await res.json();
+    return Array.isArray(data.results) ? data.results : [];
+  }catch(e){ return []; }
+}
 async function geocode(addr){
   const key = normKey(addr);
   if (!key) return null;
   if (geocache[key]) return geocache[key];                 // cache hit — never re-fetch
+  const knownKey = Object.keys(KNOWN_ADDRESSES).find(k => key.includes(k));
+  if (knownKey){
+    const hit = KNOWN_ADDRESSES[knownKey];
+    geocache[key] = hit; saveGeo();
+    return hit;
+  }
+  const google = await googleAddressResults(addr, 1);
+  if (google.length){
+    const hit = { lat:+google[0].lat, lng:+google[0].lng };
+    geocache[key] = hit; saveGeo();
+    return hit;
+  }
   const wait = 1100 - (Date.now() - lastGeo);              // >=1.1s between calls
   if (wait > 0) await sleep(wait);
   lastGeo = Date.now();
@@ -378,6 +466,7 @@ async function addAddressLines(lines){
     state.manual = false; save(); render();
   }
   busy("");
+  refreshWeather(true);
 }
 
 // Add stops from a parsed file/paste (keeps coords already present).
@@ -421,6 +510,7 @@ function addFileStops(rows, srcName){
                 (parkedNow ? `, ${parkedNow} need an address below` : "") + ".";
     setFileStatus(msg); flash(msg);
     drawRoute();
+    refreshWeather(true);
   })();
 }
 
@@ -470,11 +560,12 @@ function mapRow(raw){
   Object.keys(raw||{}).forEach(k => { low[String(k).toLowerCase().trim()] = raw[k]; });
   const pick = field => {
     const aliases = HEADER_ALIASES[field];
+    const keys = Object.keys(low).filter(k => !/^appliance\s*\d+\b/.test(k));
     // 1) exact header match (most precise)
     for (const a of aliases) if (low[a]!=null && String(low[a]).trim()!=="") return low[a];
     // 2) forgiving: a header that CONTAINS the alias, e.g. "Address - Street Address" -> "street"
     for (const a of aliases)
-      for (const k of Object.keys(low))
+      for (const k of keys)
         if (k.includes(a) && String(low[k]).trim()!=="") return low[k];
     return "";
   };
@@ -666,6 +757,8 @@ function render(){
   renderContacts();
   renderBad();
   renderStart();
+  renderWeather();
+  renderGms();
   updateStats(null);
   $("#roundTrip").checked = !!state.roundTrip;
 }
@@ -789,17 +882,30 @@ function renderStart(){
 function renderContacts(){
   const wrap = $("#contactsWrap"); if (!wrap) return;
   const pend = state.stops.filter(s => s.status!=="DONE");
-  const nums  = [...new Set(pend.map(s=>(s.phone||"").trim()).filter(Boolean))];
-  const mails = [...new Set(pend.map(s=>(s.email||"").trim()).filter(Boolean))];
-  if (!nums.length && !mails.length){ wrap.innerHTML = ""; return; }
+  if (!pend.length){ wrap.innerHTML = ""; return; }
+  const goodPhone = value => {
+    const v=String(value||"").trim(), digits=v.replace(/\D/g,"");
+    return /^(\+?64|0)[\d\s()\-]{6,}$/.test(v) && digits.length>=9 && digits.length<=12;
+  };
+  const goodEmail = value => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(String(value||"").trim());
+  const nums  = [...new Set(pend.map(s=>(s.phone||"").trim()).filter(goodPhone))];
+  const mails = [...new Set(pend.map(s=>(s.email||"").trim()).filter(goodEmail))];
+  const missing = pend.map(s => {
+    const fields=[];
+    if (!goodPhone(s.phone)) fields.push("phone");
+    if (!goodEmail(s.email)) fields.push("email");
+    if (!fields.length) return null;
+    return { label:fullName(s)||fullAddr(s)||"Unnamed pickup", fields };
+  }).filter(Boolean);
   const block = (title, copyLabel, val, id) => `
     <label style="margin-top:10px">${title}</label>
     <textarea id="${id}" readonly onclick="this.select()">${esc(val)}</textarea>
     <button class="ghost" style="width:100%;margin-top:6px" onclick="copyText('${id}',this)">📋 Copy ${copyLabel}</button>`;
   wrap.innerHTML = `<div class="card"><details>
-    <summary>Bulk message<span class="se-sum"> · ${nums.length} number${nums.length!==1?'s':''}, ${mails.length} email${mails.length!==1?'s':''}</span><span class="chev">›</span></summary>
+    <summary>Bulk message<span class="se-sum"> · ${nums.length} number${nums.length!==1?'s':''}, ${mails.length} email${mails.length!==1?'s':''}${missing.length?`, ${missing.length} missing contact${missing.length!==1?'s':''}`:""}</span><span class="chev">›</span></summary>
     ${nums.length  ? block(`Phone numbers (${nums.length})`, "numbers", nums.join(", "), "numsBox") : ""}
     ${mails.length ? block(`Emails (${mails.length})`, "emails", mails.join(", "), "mailsBox") : ""}
+    ${missing.length ? `<h3 style="font-size:15px;margin-top:14px;color:var(--warn)">Missing or invalid contact details</h3>${missing.map(row=>`<div class="missing-contact"><b>${esc(row.label)}</b> — ${esc(row.fields.join(" and "))}</div>`).join("")}` : ""}
   </details></div>`;
 }
 
@@ -1021,6 +1127,34 @@ $("#useLoc").onclick = () => {
     { enableHighAccuracy:true, timeout:10000 }
   );
 };
+
+// Optional live blue GPS dot on the map. It stops as soon as the button is tapped again.
+function stopLiveGps(){
+  if (gpsWatchId!==null) navigator.geolocation.clearWatch(gpsWatchId);
+  gpsWatchId=null;
+  if (gpsMarker){ map.removeLayer(gpsMarker); gpsMarker=null; }
+  if (gpsAccuracy){ map.removeLayer(gpsAccuracy); gpsAccuracy=null; }
+  $("#gpsToggle").textContent="📍 Start live GPS";
+  $("#gpsStatus").textContent="Shows your current position on the map.";
+}
+function startLiveGps(){
+  if (!navigator.geolocation){ alert("Live GPS isn't available in this browser."); return; }
+  $("#gpsToggle").textContent="■ Stop live GPS";
+  $("#gpsStatus").textContent="Finding your live position…";
+  gpsWatchId=navigator.geolocation.watchPosition(pos=>{
+    const lat=pos.coords.latitude, lng=pos.coords.longitude, accuracy=Math.round(pos.coords.accuracy||0);
+    if (!gpsMarker){
+      gpsMarker=L.marker([lat,lng],{icon:L.divIcon({className:"",html:'<div class="gps-dot"></div>',iconSize:[20,20],iconAnchor:[10,10]})}).bindPopup("You are here").addTo(map);
+      gpsAccuracy=L.circle([lat,lng],{radius:accuracy,color:"#2f80ff",weight:1,fillColor:"#2f80ff",fillOpacity:.08}).addTo(map);
+    } else { gpsMarker.setLatLng([lat,lng]); gpsAccuracy.setLatLng([lat,lng]).setRadius(accuracy); }
+    map.panTo([lat,lng]);
+    $("#gpsStatus").textContent=`Live position · accurate to about ${accuracy} m`;
+  },()=>{
+    stopLiveGps();
+    alert("Couldn't start live GPS. Allow location access for this site and try again.");
+  },{enableHighAccuracy:true,maximumAge:3000,timeout:15000});
+}
+$("#gpsToggle").onclick=()=>gpsWatchId===null?startLiveGps():stopLiveGps();
 $("#setStart").onclick = async () => {
   const v = $("#startAddr").value.trim(); if(!v) return;
   busy("Finding start…");
@@ -1089,9 +1223,104 @@ function setBanner(sel, msg){
   el.textContent = msg; el.classList.toggle("show", !!msg);
 }
 
-/* ---------- Address autocomplete (Nominatim, debounced) ---------- */
+/* ---------- Live weather for towns in this loaded run ---------- */
+const LIVE_REFRESH_MS = 3 * 60 * 60 * 1000;
+function weatherLocations(){
+  const seen = new Set(), out=[];
+  state.stops.filter(s=>s.status!=="DONE" && isFinite(s.lat) && isFinite(s.lng)).forEach(s=>{
+    const name=String(s.town||"").trim();
+    const key=name.toLowerCase();
+    if (name && !seen.has(key) && out.length<10){ seen.add(key); out.push({name,lat:+s.lat,lng:+s.lng}); }
+  });
+  return out;
+}
+function weatherKey(locations){ return locations.map(x=>`${x.name.toLowerCase()}|${x.lat.toFixed(3)}|${x.lng.toFixed(3)}`).sort().join(";"); }
+function dayName(date){
+  const d=new Date(date+"T12:00:00");
+  return isNaN(d) ? date : d.toLocaleDateString("en-NZ",{weekday:"short",day:"numeric"});
+}
+function weatherDayHtml(day){
+  const alert=(day.alerts||[]).join(" · ");
+  return `<div class="weather-day"><b>${esc(dayName(day.date))}</b><span>${esc(day.condition||"Forecast")}</span><span><b>${esc(day.high)}°</b> / ${esc(day.low)}°</span><span>Rain ${esc(day.rain_chance)}%</span><span>Wind ${esc(day.wind)} km/h</span>${alert?`<span class="weather-alert">${esc(alert)}</span>`:""}</div>`;
+}
+function renderWeather(){
+  const locations=weatherLocations(), summary=$("#weatherSummary"), content=$("#weatherContent"), updated=$("#weatherUpdated"), button=$("#weatherRefresh");
+  if (!summary || !content) return;
+  button.disabled=weatherState.loading || !locations.length;
+  if (!locations.length){ summary.textContent="Weather forecast — load pickups to see towns"; updated.textContent="Only places in the pickup list you load are shown."; content.textContent="Load a pickup file first."; return; }
+  if (weatherState.loading && !weatherState.towns.length){ summary.textContent="Weather forecast — loading…"; content.innerHTML='<span class="spinner"></span> Loading the 7-day forecast…'; return; }
+  if (!weatherState.towns.length){ summary.textContent="Weather forecast — tap to retry"; content.textContent=weatherState.error||"Weather is temporarily unavailable."; return; }
+  const first=weatherState.towns[0], today=(first.days||[])[0]||{};
+  summary.textContent=`Weather — ${first.name}: ${today.condition||"Forecast"}${weatherState.towns.length>1?` · +${weatherState.towns.length-1} places`:""}`;
+  const when=weatherState.fetchedAt ? new Date(weatherState.fetchedAt).toLocaleTimeString("en-NZ",{hour:"numeric",minute:"2-digit"}) : "now";
+  updated.textContent=`Updated ${when} · ${weatherState.towns.map(t=>t.name).join(", ")}`;
+  content.innerHTML=weatherState.towns.map(t=>`<section class="weather-town"><h3>${esc(t.name)}</h3><div class="weather-days">${(t.days||[]).map(weatherDayHtml).join("")}</div></section>`).join("");
+}
+async function refreshWeather(force=false){
+  const locations=weatherLocations(), key=weatherKey(locations);
+  if (!locations.length){ weatherState={key:"",towns:[],loading:false,fetchedAt:0,error:""}; renderWeather(); return; }
+  if (weatherState.key!==key){ weatherState={key,towns:[],loading:false,fetchedAt:0,error:""}; }
+  if (weatherState.loading || (!force && weatherState.towns.length && Date.now()-weatherState.fetchedAt<LIVE_REFRESH_MS)){ renderWeather(); return; }
+  weatherState.loading=true; weatherState.error=""; renderWeather();
+  try{
+    const res=await fetch(`${API}/weather`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({locations})});
+    const data=await res.json(); if(!res.ok) throw new Error(data.error||"Weather could not be loaded");
+    weatherState.towns=data.towns||[]; weatherState.fetchedAt=Date.now();
+    if ((data.failed||[]).length) weatherState.error=`No forecast for ${data.failed.join(", ")}`;
+  }catch(e){ weatherState.error=e.message||"Weather could not be loaded"; }
+  weatherState.loading=false; renderWeather();
+}
+
+/* ---------- Global Metal Solutions live hours ---------- */
+function gmsDayHtml(day){
+  return `<div class="gms-day${day.closed?" closed":""}${day.special?" special":""}"><strong>${esc(day.label)}</strong><span>${esc(day.date_label)}</span><b>${esc(day.hours)}</b></div>`;
+}
+function renderGms(){
+  const summary=$("#gmsSummary"), message=$("#gmsMessage"), days=$("#gmsDays"), card=$("#gmsCard"), button=$("#gmsRefresh"), alertBtn=$("#gmsAlerts");
+  if (!summary) return;
+  button.disabled=gmsState.loading;
+  if (gmsState.loading && !gmsState.data){ summary.textContent="GMS New Plymouth hours — checking…"; message.textContent="Checking live opening hours and special closures."; days.innerHTML=""; }
+  else if (!gmsState.data){ summary.textContent="GMS live hours unavailable"; message.textContent=gmsState.error||"Check Google Maps before driving to the yard."; days.innerHTML=""; card.dataset.level="warning"; }
+  else {
+    const data=gmsState.data; summary.textContent=data.summary||"GMS New Plymouth hours"; card.dataset.level=data.level||"ok";
+    message.textContent=data.attention ? (data.notification_message||"Check the hours before driving there.") : "No unusual closure is showing this week.";
+    days.innerHTML=(data.days||[]).map(gmsDayHtml).join("");
+    if (data.source_url) $("#gmsMaps").href=data.source_url;
+  }
+  if (!("Notification" in window)) alertBtn.hidden=true;
+  else if (Notification.permission==="granted") alertBtn.textContent="Closure alerts on";
+  else if (Notification.permission==="denied") alertBtn.textContent="Alerts blocked in browser";
+}
+function maybeNotifyGms(data){
+  if (!("Notification" in window) || Notification.permission!=="granted" || !data || !data.attention || !data.notification_message) return;
+  const key="naki_gms_notice_v1", last=localStorage.getItem(key);
+  if (last===data.notification_key) return;
+  new Notification("GMS New Plymouth",{body:data.notification_message});
+  localStorage.setItem(key,data.notification_key);
+}
+async function loadGms(force=false){
+  if (gmsState.loading || (!force && gmsState.data && Date.now()-gmsState.fetchedAt<LIVE_REFRESH_MS)){ renderGms(); return; }
+  gmsState.loading=true; gmsState.error=""; renderGms();
+  try{
+    const res=await fetch(`${API}/gms-hours`); const data=await res.json();
+    if(!res.ok) throw new Error(data.error||"GMS hours could not be loaded");
+    gmsState.data=data; gmsState.fetchedAt=Date.now(); maybeNotifyGms(data);
+  }catch(e){ gmsState.error=e.message||"GMS hours could not be loaded"; }
+  gmsState.loading=false; renderGms();
+}
+$("#weatherRefresh").onclick=()=>refreshWeather(true);
+$("#gmsRefresh").onclick=()=>loadGms(true);
+$("#gmsAlerts").onclick=async()=>{
+  if (!("Notification" in window)) return;
+  const permission=await Notification.requestPermission(); renderGms();
+  if (permission==="granted" && gmsState.data) maybeNotifyGms(gmsState.data);
+};
+
+/* ---------- Address autocomplete (Google with free fallback, debounced) ---------- */
 let lastSuggest = 0;
 async function suggestAddress(q){
+  const google = await googleAddressResults(q, 6);
+  if (google.length) return google;
   const wait = 900 - (Date.now()-lastSuggest); if (wait>0) await sleep(wait);   // be kind to Nominatim
   lastSuggest = Date.now();
   const full = /taranaki|new zealand|nz/i.test(q) ? q : q + ", Taranaki, New Zealand";
@@ -1139,6 +1368,10 @@ function attachAutocomplete(input, listEl, onPick){
 initMap();
 render();
 drawRoute();
+renderWeather();
+renderGms();
+refreshWeather(false);
+loadGms(false);
 attachAutocomplete($("#oneAddr"), $("#acOne"), r => { oneAddrPicked = { lat:r.lat, lng:r.lng }; });
 attachAutocomplete($("#startAddr"), $("#acStart"), r => {
   state.start = { lat:r.lat, lng:r.lng, label:r.label }; save(); render(); replanIfAuto();
