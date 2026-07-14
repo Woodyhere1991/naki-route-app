@@ -253,6 +253,7 @@
         <input type="checkbox" id="roundTrip" style="width:auto;min-height:auto" />
         End back at start (round trip)
       </label>
+      <p class="small muted" style="margin:10px 0 0">Your start and end stay saved on this phone until you change them.</p>
     </details>
   </div>
 
@@ -345,6 +346,7 @@ let map, markerLayer, routeLayer;
 let gpsWatchId = null, gpsMarker = null, gpsAccuracy = null;
 let areaFilterValue = "all";
 let oneAddrPicked = null;   // coords chosen from the Type-one autocomplete
+let routeStartOverride = null; // one-off GPS optimisation; never replaces the saved start
 let weatherState = { key:"", towns:[], loading:false, fetchedAt:0, error:"" };
 let gmsState = { data:null, loading:false, fetchedAt:0, error:"" };
 
@@ -620,7 +622,7 @@ function routeStops(){
   return state.stops.filter(s => s.status!=="DONE" && isFinite(s.lat) && isFinite(s.lng) &&
     (areaFilterValue==="all" || (s.area||"")===areaFilterValue));
 }
-function startPoint(){ return state.start || NP; }
+function startPoint(){ return routeStartOverride || state.start || NP; }
 function endPoint(){ return state.end || (state.roundTrip ? startPoint() : null); }
 function replanIfAuto(){ if (!state.manual && routeStops().length>1) optimise(); else drawRoute(); }
 
@@ -951,7 +953,7 @@ function mapsDirUrl(s){
   const addr = navAddress(s);
   const dest = addr ? encodeURIComponent(addr)
                     : (isFinite(s.lat) && isFinite(s.lng) ? `${s.lat},${s.lng}` : "");
-  return dest ? `https://www.google.com/maps/dir/?api=1&travelmode=driving&destination=${dest}` : "";
+  return dest ? `https://www.google.com/maps/dir/?api=1&travelmode=driving&dir_action=navigate&destination=${dest}` : "";
 }
 window.navStop = id => {
   const s = state.stops.find(x=>x.id===id); if(!s) return;
@@ -1121,7 +1123,7 @@ $("#useLoc").onclick = () => {
   if (!navigator.geolocation){ alert("Location isn't available. Type your start address instead."); return; }
   busy("Getting your location…");
   navigator.geolocation.getCurrentPosition(
-    pos => { state.start = { lat:pos.coords.latitude, lng:pos.coords.longitude, label:"My location" };
+    pos => { routeStartOverride=null; state.start = { lat:pos.coords.latitude, lng:pos.coords.longitude, label:"My location" };
       busy(""); save(); render(); replanIfAuto(); },
     err => { busy(""); alert("Couldn't get location (needs https + permission). Type your start address instead."); },
     { enableHighAccuracy:true, timeout:10000 }
@@ -1159,7 +1161,7 @@ $("#setStart").onclick = async () => {
   const v = $("#startAddr").value.trim(); if(!v) return;
   busy("Finding start…");
   const hit = await geocode(v); busy("");
-  if (hit){ state.start = { lat:hit.lat, lng:hit.lng, label:v }; $("#startAddr").value="";
+  if (hit){ routeStartOverride=null; state.start = { lat:hit.lat, lng:hit.lng, label:v }; $("#startAddr").value="";
     save(); render(); replanIfAuto(); }
   else alert("Couldn't find that address — add the town and try again.");
 };
@@ -1181,6 +1183,7 @@ $("#roundTrip").onchange = e => {
 // Big actions
 $("#optimise").onclick = () => {
   if (!routeStops().length){ alert("Add some stops first."); return; }
+  routeStartOverride=null;
   busy("Working out the shortest run…");
   setTimeout(()=>{ optimise(); busy(""); $("#addBox").open=false; $("#startBox").open=false;
     document.getElementById("map").scrollIntoView({behavior:"smooth",block:"start"}); }, 30);
@@ -1191,7 +1194,7 @@ $("#optimiseHere").onclick = () => {
   if (!navigator.geolocation){ alert("Location isn't available — using your set start instead."); optimise(); return; }
   busy("Getting your location…");
   navigator.geolocation.getCurrentPosition(
-    pos => { state.start = { lat:pos.coords.latitude, lng:pos.coords.longitude, label:"My location" };
+    pos => { routeStartOverride = { lat:pos.coords.latitude, lng:pos.coords.longitude, label:"My current location" };
       busy("Re-planning from here…"); optimise(); busy(""); $("#addBox").open=false; $("#startBox").open=false;
       document.getElementById("map").scrollIntoView({behavior:"smooth",block:"start"}); },
     err => { busy(""); alert("Couldn't get location (needs https + permission). Using your set start."); optimise(); },
@@ -1212,6 +1215,7 @@ $("#clearAll").onclick = () => {
     : "";
   if (confirm(`${tally}Clear the whole run? This removes all stops and progress on this phone.`)){
     state = { stops:[], bad:[], start:state.start, end:state.end, roundTrip:state.roundTrip, manual:false, sheetUrl: state.sheetUrl };
+    routeStartOverride = null;
     areaFilterValue = "all";
     save(); render(); drawRoute();
   }
@@ -1374,7 +1378,7 @@ refreshWeather(false);
 loadGms(false);
 attachAutocomplete($("#oneAddr"), $("#acOne"), r => { oneAddrPicked = { lat:r.lat, lng:r.lng }; });
 attachAutocomplete($("#startAddr"), $("#acStart"), r => {
-  state.start = { lat:r.lat, lng:r.lng, label:r.label }; save(); render(); replanIfAuto();
+  routeStartOverride=null; state.start = { lat:r.lat, lng:r.lng, label:r.label }; save(); render(); replanIfAuto();
   flash("✓ Start set: " + r.label);
 });
 attachAutocomplete($("#endAddr"), $("#acEnd"), r => {
