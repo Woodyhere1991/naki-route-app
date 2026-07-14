@@ -471,9 +471,33 @@ async function addAddressLines(lines){
   refreshWeather(true);
 }
 
+// Keys used to recognise the same pickup when a sheet is loaded again.
+// Prefer the sheet's own submission ID, then fall back to contact details and address.
+function pickupKeys(s){
+  const keys = [];
+  const submissionId = String(s.submission_id||"").trim();
+  // IDs made by this app start with "s" and change every time, so skip those.
+  if (submissionId && !/^s[a-z0-9]{12}$/i.test(submissionId)) keys.push("id:" + normKey(submissionId));
+  const address = normKey(fullAddr(s));
+  const phone = String(s.phone||"").replace(/\D/g,"");
+  const email = normKey(s.email);
+  const name = normKey([s.first_name, s.last_name].filter(Boolean).join(" "));
+  if (address && (phone || email)) keys.push("contact:" + address + "|" + (phone || email));
+  else if (address && name) keys.push("name:" + address + "|" + name);
+  else if (address) keys.push("address:" + address);
+  return keys;
+}
+function knownPickupKeys(){
+  const known = new Set();
+  state.stops.concat(state.bad||[]).forEach(s => pickupKeys(s).forEach(k => known.add(k)));
+  return known;
+}
+
 // Add stops from a parsed file/paste (keeps coords already present).
-function addFileStops(rows, srcName){
-  let added = 0, parked = 0, toGeocode = [];
+function addFileStops(rows, srcName, setStatus){
+  let added = 0, parked = 0, skipped = 0, toGeocode = [];
+  const known = knownPickupKeys();
+  const status = setStatus || setFileStatus;
   rows.forEach(r => {
     const s = {
       id: uid(),
@@ -487,6 +511,9 @@ function addFileStops(rows, srcName){
       lng: r.lng!=null && r.lng!=="" ? +r.lng : null,
       status: (r.status==="DONE") ? "DONE" : "NEW"
     };
+    const keys = pickupKeys(s);
+    if (keys.some(k => known.has(k))){ skipped++; return; }
+    keys.forEach(k => known.add(k)); // Prevent repeats inside one sheet too.
     if (s.lat!=null && s.lng!=null && !isNaN(s.lat) && !isNaN(s.lng)){ state.stops.push(s); added++; }
     else if (s.street && (s.town||"").toLowerCase()!=="unknown"){ toGeocode.push(s); }
     else { state.bad.push(s); parked++; }
@@ -494,7 +521,8 @@ function addFileStops(rows, srcName){
   state.manual = false; save(); render(); drawRoute();
   const src = srcName ? ` from “${srcName}”` : "";
   // Immediate confirmation so the geocoding delay never looks like nothing happened.
-  if (toGeocode.length) setFileStatus(`<span class="spinner"></span> Loaded ${added}${src} — looking up ${toGeocode.length} more…`);
+  if (toGeocode.length) status(`<span class="spinner"></span> Added ${added}${src} — looking up ${toGeocode.length} more…` +
+    (skipped ? ` (${skipped} already on your list)` : ""));
   // Geocode any rows that had no coords but a usable address.
   (async () => {
     let i=0, located=0;
@@ -508,9 +536,12 @@ function addFileStops(rows, srcName){
     busy("");
     const total = added + located;
     const parkedNow = parked + (toGeocode.length - located);
-    const msg = `✓ Loaded ${total} stop${total!==1?'s':''}${src}` +
-                (parkedNow ? `, ${parkedNow} need an address below` : "") + ".";
-    setFileStatus(msg); flash(msg);
+    const msg = total
+      ? `✓ Added ${total} new stop${total!==1?'s':''}${src}` +
+        (skipped ? ` — skipped ${skipped} already on your list` : "") +
+        (parkedNow ? `, ${parkedNow} need an address below` : ".")
+      : `✓ No new stops${src} — ${skipped} already on your list.`;
+    status(msg); flash(msg);
     drawRoute();
     refreshWeather(true);
   })();
@@ -797,13 +828,14 @@ function renderList(){
     const noteBtn  = `<button class="ghost sm" onclick="editNote('${s.id}')">✏️ ${s.note?'Edit note':'Note'}</button>`;
     const phone    = s.phone ? `<button class="ghost sm" onclick="callStop('${s.id}')">📞 Call</button>` : "";
     const textBtn  = s.phone ? `<button class="ghost sm" onclick="textStop('${s.id}')">💬 Text</button>` : "";
+    const emailBtn = goodEmail(s.email) ? `<button class="ghost sm" onclick="gmailStop('${s.id}')">Email</button>` : "";
     const prioBtn  = isDone ? "" : `<button class="${asap?'bad':'ghost'} sm" onclick="togglePriority('${s.id}')" title="Make this an ASAP stop">${asap?'⭐ ASAP':'☆ ASAP'}</button>`;
     const navBtn   = (!isDone && s.lat!=null) ? `<button class="sm" onclick="navStop('${s.id}')">🧭 Navigate</button>` : "";
     const doneBtn  = `<button class="${isDone?'warn':'good'} sm" onclick="toggleDone('${s.id}')">${isDone?'↺ Undo':'✓ Done'}</button>`;
     const del      = `<button class="ghost sm" title="Remove this stop" onclick="delStop('${s.id}')" style="margin-left:auto">✕</button>`;
     const btns = isDone
-      ? `${doneBtn}${noteBtn}${del}`
-      : `${navBtn}${doneBtn}${phone}${textBtn}${noteBtn}${prioBtn}${del}`;
+      ? `${doneBtn}${noteBtn}${emailBtn}${del}`
+      : `${navBtn}${doneBtn}${phone}${textBtn}${emailBtn}${noteBtn}${prioBtn}${del}`;
     return `<div class="stop ${isDone?'done':''} ${asap&&!isDone?'asap':''} ${s.id===nextId&&!isDone?'next':''}"
         data-id="${s.id}" style="border-left-color:${AREA_COLORS[area]||AREA_COLORS['']}">
       <div class="num">${num}</div>
@@ -880,18 +912,49 @@ function renderStart(){
   if (rtRow) rtRow.style.display = state.end ? "none" : "flex";
 }
 
-// Copyable lists of phone numbers + emails for bulk messaging (pending stops only).
+// Contact helpers for individual and bulk messaging (pending stops only).
+function goodPhone(value){
+  const v=String(value||"").trim(), digits=v.replace(/\D/g,"");
+  return /^(\+?64|0)[\d\s()\-]{6,}$/.test(v) && digits.length>=9 && digits.length<=12;
+}
+function goodEmail(value){ return /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(String(value||"").trim()); }
+function collectionDayLabel(value){
+  if (!value) return "";
+  const weekday = new Date(value + "T12:00:00").toLocaleDateString("en-NZ", { weekday:"long" });
+  return `this coming ${weekday}`;
+}
+function confirmationMessage(value){
+  const day = collectionDayLabel(value); if (!day) return "";
+  return `Hey Woody here, just confirming ${day} for whiteware collection. Welcome to leave whiteware inside your property line somewhere with $ inside if easier. I will send a reminder and rough time schedule the evening before too. Thanks :)`;
+}
+function bulkMessage(){ return (state.confirmationMessage || confirmationMessage(state.confirmationDate)).trim(); }
+function messageDay(){ return state.confirmationDate || ""; }
+function messageHistory(){ return state.messageHistory || {}; }
+function isContacted(id){
+  const mark = (messageHistory()[messageDay()]||{})[id] || {};
+  return !!(mark.contacted || mark.email || mark.text); // also keeps your existing marks
+}
+function selectedRecipientIds(){
+  const day = messageDay();
+  if (state.messageSelectionDay !== day){
+    state.messageSelectionDay = day;
+    state.messageSelectedIds = state.stops.filter(s => s.status!=="DONE" && !isContacted(s.id)).map(s=>s.id);
+  }
+  return new Set(state.messageSelectedIds||[]);
+}
+function selectedRecipients(){
+  const selected = selectedRecipientIds();
+  return state.stops.filter(s => s.status!=="DONE" && selected.has(s.id));
+}
+function selectedNumbers(){ return [...new Set(selectedRecipients().map(s=>(s.phone||"").trim()).filter(goodPhone))]; }
+function selectedEmails(){ return [...new Set(selectedRecipients().map(s=>(s.email||"").trim()).filter(goodEmail))]; }
+
 function renderContacts(){
   const wrap = $("#contactsWrap"); if (!wrap) return;
   const pend = state.stops.filter(s => s.status!=="DONE");
   if (!pend.length){ wrap.innerHTML = ""; return; }
-  const goodPhone = value => {
-    const v=String(value||"").trim(), digits=v.replace(/\D/g,"");
-    return /^(\+?64|0)[\d\s()\-]{6,}$/.test(v) && digits.length>=9 && digits.length<=12;
-  };
-  const goodEmail = value => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(String(value||"").trim());
-  const nums  = [...new Set(pend.map(s=>(s.phone||"").trim()).filter(goodPhone))];
-  const mails = [...new Set(pend.map(s=>(s.email||"").trim()).filter(goodEmail))];
+  const selected = selectedRecipientIds();
+  const nums = selectedNumbers(), mails = selectedEmails();
   const missing = pend.map(s => {
     const fields=[];
     if (!goodPhone(s.phone)) fields.push("phone");
@@ -899,14 +962,32 @@ function renderContacts(){
     if (!fields.length) return null;
     return { label:fullName(s)||fullAddr(s)||"Unnamed pickup", fields };
   }).filter(Boolean);
-  const block = (title, copyLabel, val, id) => `
-    <label style="margin-top:10px">${title}</label>
-    <textarea id="${id}" readonly onclick="this.select()">${esc(val)}</textarea>
-    <button class="ghost" style="width:100%;margin-top:6px" onclick="copyText('${id}',this)">📋 Copy ${copyLabel}</button>`;
-  wrap.innerHTML = `<div class="card"><details>
-    <summary>Bulk message<span class="se-sum"> · ${nums.length} number${nums.length!==1?'s':''}, ${mails.length} email${mails.length!==1?'s':''}${missing.length?`, ${missing.length} missing contact${missing.length!==1?'s':''}`:""}</span><span class="chev">›</span></summary>
-    ${nums.length  ? block(`Phone numbers (${nums.length})`, "numbers", nums.join(", "), "numsBox") : ""}
-    ${mails.length ? block(`Emails (${mails.length})`, "emails", mails.join(", "), "mailsBox") : ""}
+  const recipientRows = pend.map(s => {
+    const flags = isContacted(s.id) ? "already sent" : "new customer";
+    return `<label class="missing-contact" style="display:flex;gap:8px;align-items:flex-start;cursor:pointer">
+      <input type="checkbox" data-recipient="${s.id}" ${selected.has(s.id)?"checked":""} onchange="setRecipientSelected('${s.id}',this.checked)" style="width:auto;margin-top:3px" />
+      <span><b>${esc(fullName(s)||fullAddr(s)||"Unnamed pickup")}</b><br><span class="small muted">${esc(flags)}</span></span>
+    </label>`;
+  }).join("");
+  const preview = `<label style="margin-top:10px">Collection day</label>
+    <input type="date" value="${esc(state.confirmationDate||"")}" onchange="setConfirmationDate(this.value)" />
+    <label style="margin-top:10px">Message preview</label>
+    <textarea id="messagePreview" readonly onclick="this.select()" placeholder="Choose a collection day above">${esc(bulkMessage())}</textarea>
+    <button class="ghost sm" style="margin-top:6px" onclick="copyText('messagePreview',this)">Copy message</button>
+    <p class="small muted">Choose the day. The message is made automatically.</p>
+    <label style="margin-top:10px">Select customers</label>
+    <p class="small muted">The same selected customers are used for both text and email.</p>
+    <div style="display:flex;gap:6px;margin:6px 0"><button class="ghost sm" onclick="selectRecipients('all')">Select all</button><button class="ghost sm" onclick="selectRecipients('new')">Select new only</button><button class="ghost sm" onclick="selectRecipients('none')">Unselect all</button></div>
+    <div style="max-height:220px;overflow:auto">${recipientRows}</div>
+    <button class="ghost sm" style="margin-top:6px" onclick="clearMessageMarks()">Clear sent marks for this day</button>`;
+  const actions = `<div style="margin-top:10px"><b id="selectedCount">${selected.size} selected customer${selected.size!==1?'s':''}</b><br>
+    <button class="good" style="width:100%;margin-top:6px" onclick="bulkText()">Open group text</button>
+    <button class="good" style="width:100%;margin-top:6px" onclick="bulkEmail()">Open Gmail BCC email</button>
+    <button class="ghost" style="width:100%;margin-top:6px" onclick="markSelectedSent()">I sent this batch - mark selected</button></div>`;
+  wrap.innerHTML = `<div class="card"><details open>
+    <summary>Bulk message<span class="se-sum">${missing.length?` · ${missing.length} missing contact${missing.length!==1?'s':''}`:""}</span><span class="chev">›</span></summary>
+    ${preview}
+    ${actions}
     ${missing.length ? `<h3 style="font-size:15px;margin-top:14px;color:var(--warn)">Missing or invalid contact details</h3>${missing.map(row=>`<div class="missing-contact"><b>${esc(row.label)}</b> — ${esc(row.fields.join(" and "))}</div>`).join("")}` : ""}
   </details></div>`;
 }
@@ -923,6 +1004,50 @@ function esc(s){ return String(s==null?"":s).replace(/[&<>"]/g, c=>({"&":"&amp;"
 
 /* ---------- Per-stop actions (exposed for inline onclick) ---------- */
 window.setAreaFilter = v => { areaFilterValue=v; render(); drawRoute(); };
+window.setConfirmationDate = value => {
+  state.confirmationDate = value;
+  delete state.confirmationDayText;
+  state.confirmationMessage = confirmationMessage(value);
+  save(); render();
+};
+window.saveConfirmationMessage = value => { state.confirmationMessage = value; save(); };
+function updateSelectedCustomerCount(){
+  const el = document.getElementById("selectedCount");
+  if (!el) return;
+  const count = selectedRecipientIds().size;
+  el.textContent = `${count} selected customer${count!==1?'s':''}`;
+}
+window.setRecipientSelected = (id, checked) => {
+  const selected = selectedRecipientIds();
+  if (checked) selected.add(id); else selected.delete(id);
+  state.messageSelectedIds = [...selected]; save(); updateSelectedCustomerCount();
+};
+window.selectRecipients = mode => {
+  const candidates = state.stops.filter(s => s.status!=="DONE");
+  state.messageSelectedIds = mode==="all" ? candidates.map(s=>s.id)
+    : mode==="new" ? candidates.filter(s=>!isContacted(s.id)).map(s=>s.id)
+    : [];
+  state.messageSelectionDay = messageDay(); save();
+  const selected = new Set(state.messageSelectedIds);
+  document.querySelectorAll("[data-recipient]").forEach(el=>{ el.checked=selected.has(el.dataset.recipient); });
+  updateSelectedCustomerCount();
+};
+window.markSelectedSent = () => {
+  if (!messageDay()) return alert("Choose the collection day first.");
+  const recipients = selectedRecipients().filter(s => goodEmail(s.email) || goodPhone(s.phone));
+  if (!recipients.length) return alert("Select at least one pickup with a valid email or phone number.");
+  state.messageHistory = state.messageHistory || {};
+  const day = state.messageHistory[messageDay()] = state.messageHistory[messageDay()] || {};
+  recipients.forEach(s => { day[s.id] = day[s.id] || {}; day[s.id].contacted = true; });
+  save(); render();
+};
+window.clearMessageMarks = () => {
+  if (!messageDay() || !state.messageHistory?.[messageDay()]) return;
+  if (!confirm("Clear the email and text sent marks for this collection day?")) return;
+  delete state.messageHistory[messageDay()];
+  state.messageSelectionDay = ""; state.messageSelectedIds = [];
+  save(); render();
+};
 window.toggleDone = id => {
   const s = state.stops.find(x=>x.id===id); if(!s) return;
   s.status = s.status==="DONE" ? "NEW" : "DONE"; save(); render(); drawRoute();
@@ -934,7 +1059,41 @@ window.editNote = id => {
   if (v===null) return;                       // cancelled
   s.note = v.trim(); save(); render();
 };
+function openGmail(fields){
+  // Open the Gmail app first. If it is not installed, fall back to Gmail in the browser.
+  const query = new URLSearchParams(fields);
+  const appUrl = "googlegmail://co?" + query.toString();
+  const webUrl = "https://mail.google.com/mail/?" + new URLSearchParams({ view:"cm", fs:"1", ...fields }).toString();
+  let appOpened = false;
+  const markOpened = () => { appOpened=true; document.removeEventListener("visibilitychange", markOpened); };
+  document.addEventListener("visibilitychange", markOpened);
+  location.href = appUrl;
+  setTimeout(() => {
+    document.removeEventListener("visibilitychange", markOpened);
+    if (!appOpened && document.visibilityState !== "hidden") location.href = webUrl;
+  }, 1400);
+}
 window.textStop = id => { const s=state.stops.find(x=>x.id===id); if(s&&s.phone) location.href="sms:"+s.phone.replace(/\s+/g,""); };
+window.gmailStop = id => {
+  const s=state.stops.find(x=>x.id===id);
+  if (s && goodEmail(s.email)) openGmail({to:s.email.trim()});
+};
+window.bulkText = () => {
+  const nums = selectedNumbers().map(n=>n.replace(/[^\d+]/g,""));
+  if (!nums.length) return alert("Select at least one pickup with a valid phone number.");
+  const message = bulkMessage();
+  if (!message) return alert("Choose the collection day first, then check the message preview.");
+  const isApple = /iPad|iPhone|iPod/.test(navigator.userAgent);
+  // Apple Messages uses semicolons; Android Messages uses commas.
+  location.href = "sms:" + nums.join(isApple ? ";" : ",") + (isApple ? "&body=" : "?body=") + encodeURIComponent(message);
+};
+window.bulkEmail = () => {
+  const mails = selectedEmails();
+  if (!mails.length) return alert("Select at least one pickup with a valid email.");
+  const message = bulkMessage();
+  if (!message) return alert("Choose the collection day first, then check the message preview.");
+  openGmail({bcc:mails.join(","), subject:"Whiteware collection", body:message});
+};
 window.togglePriority = id => {
   const s = state.stops.find(x=>x.id===id); if(!s) return;
   s.priority = !s.priority;
@@ -1113,7 +1272,7 @@ async function loadFromSheet(url){
   if (!rows.length){ setSheetStatus("No pending pickups found in that sheet."); return; }
   state.sheetUrl = url.trim(); save();
   setSheetStatus(`✓ Found ${rows.length} pickup${rows.length!==1?'s':''} — adding…`);
-  addFileStops(rows, "Google Sheet");
+  addFileStops(rows, "Google Sheet", setSheetStatus);
 }
 $("#sheetLoad").onclick = () => loadFromSheet($("#sheetUrl").value);
 if (state.sheetUrl) $("#sheetUrl").value = state.sheetUrl;   // remember the last sheet
