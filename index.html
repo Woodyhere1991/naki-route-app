@@ -885,33 +885,61 @@ function scheduleStopsInOrder(){
     .filter(s => s.status!=="DONE" && routeTiming[s.id])
     .sort((a,b)=>routeTiming[a.id].order - routeTiming[b.id].order);
 }
-// Group the timed route by town, in the order the run visits them. Each town gets a
-// generous overlapping window: a bit before the first stop to well after the last.
-function reminderWindows(){
-  const stops = scheduleStopsInOrder();
+// Woody's usual corridor times — the defaults for the reminder message.
+const DEFAULT_TOWN_WINDOWS = {
+  "inglewood":    ["09:00","10:30"],
+  "new plymouth": ["10:00","13:00"],
+  "bell block":   ["11:00","14:00"],
+  "waitara":      ["12:00","15:00"],
+};
+function minToHM(min){ min=Math.max(0,Math.round(min))%1440; return `${String(Math.floor(min/60)).padStart(2,"0")}:${String(min%60).padStart(2,"0")}`; }
+// Route-estimated window per town (fallback default for towns not in the usual list).
+function computedTownWindows(){
   const svc = stopServiceMin();
-  const groups = [];
-  stops.forEach(s=>{
-    const town = (s.town||s.area||"").trim() || "your area";
+  const out = {};
+  scheduleStopsInOrder().forEach(s=>{
+    const key = ((s.town||s.area||"").trim() || "your area").toLowerCase();
     const arrive = stopArriveMin(routeTiming[s.id]);
-    const g = groups.find(x=>x.town.toLowerCase()===town.toLowerCase());
-    if (g){ g.first = Math.min(g.first, arrive); g.last = Math.max(g.last, arrive); }
-    else groups.push({ town, first:arrive, last:arrive });
+    if (!out[key]) out[key] = { first:arrive, last:arrive };
+    else { out[key].first = Math.min(out[key].first, arrive); out[key].last = Math.max(out[key].last, arrive); }
   });
-  return groups.map(g=>({
-    town: g.town,
-    // ~quarter hour before the first stop, but never earlier than the run start time
-    start: Math.max(runStartMin(), Math.floor((g.first-15)/15)*15),
-    end:   Math.ceil((g.last+svc+45)/15)*15              // last stop + loading + slack
-  }));
+  Object.keys(out).forEach(k=>{
+    const g = out[k];
+    out[k] = { start: minToHM(Math.max(runStartMin(), Math.floor((g.first-15)/15)*15)),
+               end:   minToHM(Math.ceil((g.last+svc+45)/15)*15) };
+  });
+  return out;
+}
+// The window shown/sent for a town: Woody's saved tweak > usual default > route estimate.
+function townWindow(key){
+  const saved = (state.townWindows||{})[key];
+  if (saved && saved.start && saved.end) return saved;
+  const d = DEFAULT_TOWN_WINDOWS[key];
+  if (d) return { start:d[0], end:d[1] };
+  return computedTownWindows()[key] || { start:"09:00", end:"12:00" };
+}
+// Every town in the pending pickups, route order first, then any without a map location.
+function reminderTowns(){
+  const seen = new Set(), out = [];
+  const push = s => {
+    const town = (s.town||s.area||"").trim() || "Your area";
+    const key = town.toLowerCase();
+    if (!seen.has(key)){ seen.add(key); out.push({ town, key }); }
+  };
+  scheduleStopsInOrder().forEach(push);
+  state.stops.filter(s=>s.status!=="DONE").forEach(push);
+  return out;
 }
 function reminderBulkMessage(){
-  const wins = reminderWindows();
-  if (!wins.length) return "";
+  const towns = reminderTowns();
+  if (!towns.length) return "";
   const day = collectionDayLabel(state.confirmationDate);
   const dayPart = day ? ` ${day}` : "";
-  const towns = wins.map(w=>`${w.town} between ${fmtClockShort(w.start)} and ${fmtClockShort(w.end)}`).join(". ");
-  return `Hey Woody here, just a reminder for whiteware collection${dayPart}. Aiming to be in ${towns}. Thanks :)`;
+  const parts = towns.map(t=>{
+    const w = townWindow(t.key);
+    return `${t.town} between ${fmtClockShort(parseHM(w.start))} and ${fmtClockShort(parseHM(w.end))}`;
+  }).join(". ");
+  return `Hey Woody here, just a reminder for whiteware collection${dayPart}. Aiming to be in ${parts}. Thanks :)`;
 }
 
 /* ---------- Rendering the stop list ---------- */
@@ -1132,15 +1160,24 @@ function renderContacts(){
       <button class="${mode==='confirm'?'good':'ghost'} sm grow" onclick="setMessageMode('confirm')">Confirmation</button>
       <button class="${mode==='reminder'?'good':'ghost'} sm grow" onclick="setMessageMode('reminder')">Reminder + times</button>
     </div>`;
-  const reminderControls = mode!=="reminder" ? "" : `<div class="row" style="gap:8px;margin-top:6px">
-      <div style="flex:1"><label>Start time</label><div class="date-field-shell"><input type="time" value="${esc(state.runStartTime||'08:00')}" onchange="setRunStart(this.value)" /></div></div>
-      <div style="flex:1"><label>Mins per stop</label><input type="number" min="0" step="5" value="${stopServiceMin()}" onchange="setStopService(this.value)" /></div>
+  const townRows = mode!=="reminder" ? "" : reminderTowns().map(t=>{
+    const w = townWindow(t.key);
+    return `<div style="display:flex;align-items:center;gap:6px;margin:4px 0">
+      <b style="flex:1;font-size:14px">${esc(t.town)}</b>
+      <input type="time" value="${esc(w.start)}" onchange="setTownWindow('${esc(t.key)}','start',this.value)" style="width:auto;min-height:38px" />
+      <span class="muted">to</span>
+      <input type="time" value="${esc(w.end)}" onchange="setTownWindow('${esc(t.key)}','end',this.value)" style="width:auto;min-height:38px" />
     </div>`;
+  }).join("");
+  const reminderControls = mode!=="reminder" ? "" : `<label style="margin-top:10px">Town times</label>
+    <p class="small muted" style="margin:0 0 2px">Rough window for each town in today's pickups. Change any time and the message updates.</p>
+    ${townRows || `<p class="small muted">No pickups yet.</p>`}
+    <button class="ghost sm" style="margin-top:4px" onclick="resetTownWindows()">Reset to usual times</button>`;
   const previewPlaceholder = mode==="reminder"
-    ? "Tap Optimise route on the Today tab first — town times come from the planned route"
+    ? "Add pickups first — each town gets a time window"
     : "Choose a collection day above";
   const previewHint = mode==="reminder"
-    ? `Town windows come from your optimised route — driving time plus your minutes per stop. Adjust the boxes above to suit.`
+    ? `Towns appear in route order once you've optimised. Your time changes are remembered for next run.`
     : `Choose the day. The message is made automatically.`;
   const preview = `${modeToggle}<label style="margin-top:10px">Collection day</label>
     <div class="date-field-shell"><input type="date" value="${esc(state.confirmationDate||"")}" onchange="setConfirmationDate(this.value)" /></div>
@@ -1252,8 +1289,17 @@ function openGmail(fields){
 }
 window.textStop = id => { const s=state.stops.find(x=>x.id===id); if(s&&s.phone) location.href="sms:"+s.phone.replace(/\s+/g,""); };
 window.setMessageMode = m => { state.messageMode = m==="reminder" ? "reminder" : "confirm"; save(); renderContacts(); };
-window.setRunStart = v => { state.runStartTime = v || "08:00"; save(); renderContacts(); };
-window.setStopService = v => { const n=parseInt(v,10); state.stopServiceMin = (isFinite(n)&&n>=0) ? n : 10; save(); renderContacts(); };
+window.setTownWindow = (key, field, value) => {
+  if (!/^\d{1,2}:\d{2}$/.test(value||"")) return;
+  state.townWindows = state.townWindows || {};
+  const w = state.townWindows[key] = state.townWindows[key] || { ...townWindow(key) };
+  w[field] = value;
+  save(); renderContacts();
+};
+window.resetTownWindows = () => {
+  state.townWindows = {};
+  save(); renderContacts();
+};
 window.gmailStop = id => {
   const s=state.stops.find(x=>x.id===id);
   if (s && goodEmail(s.email)) openGmail({to:s.email.trim()});
