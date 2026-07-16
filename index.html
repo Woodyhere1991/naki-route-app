@@ -539,8 +539,10 @@ async function addAddressLines(lines){
 function pickupKeys(s){
   const keys = [];
   const submissionId = String(s.submission_id||"").trim();
-  // IDs made by this app start with "s" and change every time, so skip those.
-  if (submissionId && !/^s[a-z0-9]{12}$/i.test(submissionId)) keys.push("id:" + normKey(submissionId));
+  // Only trust an ID that LOOKS like one (long number). Jumbled sheet rows shove
+  // words like "Facebook" into the Submission ID column — two people with the
+  // same junk "id" would wrongly count as the same pickup. App-made ids (s+12) skipped.
+  if (/^[\d-]{6,}$/.test(submissionId)) keys.push("id:" + normKey(submissionId));
   const address = normKey(fullAddr(s));
   const phone = String(s.phone||"").replace(/\D/g,"");
   const email = normKey(s.email);
@@ -711,9 +713,17 @@ function mapRow(raw){
     });
     if (hit) phone = hit;
   }
+  // Rescue the submission ID too: jumbled rows (extra confirm-phone/email columns)
+  // shift the real 15-20 digit Jotform ID a couple of columns right and leave a
+  // word like "Facebook" under the Submission ID header.
+  let submission_id = pick("submission_id");
+  if (!/^[\d-]{6,}$/.test(String(submission_id||"").trim())){
+    const idHit = allVals.find(v => /^\d{15,20}$/.test(v));
+    if (idHit) submission_id = idHit;
+  }
 
   return {
-    submission_id: pick("submission_id") || undefined,
+    submission_id: submission_id || undefined,
     first_name: first || (last ? "" : name),   // a single "Name" column lands here
     last_name: last,
     phone,
