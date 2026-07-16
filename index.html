@@ -401,6 +401,7 @@ let gpsWatchId = null, gpsMarker = null, gpsAccuracy = null;
 let areaFilterValue = "all";
 let oneAddrPicked = null;   // coords chosen from the Type-one autocomplete
 let routeStartOverride = null; // one-off GPS optimisation; never replaces the saved start
+let routeTiming = {};       // id -> {order, driveSec} cumulative drive time from start to that stop
 let weatherState = { key:"", towns:[], loading:false, fetchedAt:0, error:"" };
 let gmsState = { data:null, loading:false, fetchedAt:0, error:"" };
 
@@ -809,7 +810,7 @@ async function drawRoute(){
     bounds.push([end.lat,end.lng]);
   }
   if (bounds.length) map.fitBounds(bounds, { padding:[30,30], maxZoom:13 });
-  if (!pts.length){ updateStats(0); return; }
+  if (!pts.length){ updateStats(0); routeTiming = {}; renderReminderList(); return; }
 
   // Try OSRM for a real road line + distance; fall back to straight lines.
   const seq = [start, ...pts];
@@ -826,6 +827,7 @@ async function drawRoute(){
       L.geoJSON({ type:"Feature", geometry:r.geometry },
         { style:{ color:"#2f80ff", weight:5, opacity:.85 } }).addTo(routeLayer);
       updateStats(r.distance/1000, r.duration/60);
+      setRouteTiming(pts, r.legs);
       drewRoad = true;
     }
   }catch(e){ /* OSRM down or rate-limited — fall through */ }
@@ -835,8 +837,83 @@ async function drawRoute(){
       { color:"#2f80ff", weight:4, opacity:.6, dashArray:"6 8" }).addTo(routeLayer);
     let km=0; for (let i=0;i<seq.length-1;i++) km += haversine(seq[i],seq[i+1]);
     updateStats(km, null);
+    setRouteTimingFallback(seq, pts);
     setBanner("#bannerOsrm","Showing straight-line distance (road routing unavailable right now). Navigation still works.");
   }
+}
+
+/* ---------- Rough time schedule from the planned route ---------- */
+// Cumulative drive seconds to ARRIVE at each pending stop, in route order.
+// legs[i] is the OSRM drive between waypoint i and i+1; seq = [start, ...pts, (end)].
+function setRouteTiming(pts, legs){
+  routeTiming = {};
+  let cum = 0;
+  for (let k=0;k<pts.length;k++){
+    const leg = legs && legs[k];
+    cum += leg ? leg.duration : 0;
+    routeTiming[pts[k].id] = { order:k, driveSec:cum };
+  }
+  renderReminderList();
+}
+// No road data — estimate leg times from straight-line distance at a rural average speed.
+function setRouteTimingFallback(seq, pts){
+  routeTiming = {};
+  const KMH = 45;
+  let cum = 0;
+  for (let k=0;k<pts.length;k++){
+    cum += (haversine(seq[k], seq[k+1]) / KMH) * 3600;
+    routeTiming[pts[k].id] = { order:k, driveSec:cum };
+  }
+  renderReminderList();
+}
+function parseHM(hm){ const m=/^(\d{1,2}):(\d{2})$/.exec(hm||""); return m ? (+m[1])*60 + (+m[2]) : 8*60; }
+function runStartMin(){ return parseHM(state.runStartTime || "08:00"); }
+function stopServiceMin(){ const n = parseInt(state.stopServiceMin,10); return isFinite(n) && n>=0 ? n : 10; }
+// Clock time we expect to reach a stop: start + drive so far + loading time for the stops before it.
+function stopArriveMin(t){ return runStartMin() + t.driveSec/60 + t.order*stopServiceMin(); }
+function fmtClock(totalMin){
+  totalMin = Math.max(0, Math.round(totalMin));
+  const h = Math.floor(totalMin/60) % 24, m = totalMin % 60;
+  const ap = h>=12 ? "pm" : "am"; let h12 = h%12; if (h12===0) h12=12;
+  return `${h12}:${String(m).padStart(2,"0")}${ap}`;
+}
+// A rough ~45 min window for the customer: 10 min early buffer, rounded down to a tidy quarter hour.
+function arriveWindow(mins){
+  const start = Math.floor((mins-10)/15)*15;
+  return `${fmtClock(start)} and ${fmtClock(start+45)}`;
+}
+function reminderMessage(s){
+  const t = routeTiming[s.id];
+  const day = collectionDayLabel(state.confirmationDate);
+  const name = (s.first_name||"").trim();
+  const hi = name ? `Hi ${name}, ` : "Hi, ";
+  const dayPart = day ? ` ${day}` : "";
+  if (t) return `${hi}Woody here — quick reminder I'll be collecting your whiteware${dayPart}, roughly between ${arriveWindow(stopArriveMin(t))}. Please leave it out near your property line (with $ inside if easier). Cheers :)`;
+  return `${hi}Woody here — quick reminder I'll be collecting your whiteware${dayPart}. I'll be in touch with a rough time. Please leave it out near your property line (with $ inside if easier). Cheers :)`;
+}
+function scheduleStopsInOrder(){
+  return state.stops
+    .filter(s => s.status!=="DONE" && routeTiming[s.id])
+    .sort((a,b)=>routeTiming[a.id].order - routeTiming[b.id].order);
+}
+function renderReminderList(){
+  const box = document.getElementById("reminderList");
+  if (!box) return;
+  const pend = state.stops.filter(s => s.status!=="DONE");
+  if (!pend.length){ box.innerHTML = `<p class="small muted">No pickups yet.</p>`; return; }
+  const timed = scheduleStopsInOrder();
+  if (!timed.length){ box.innerHTML = `<p class="small muted">Tap <b>Optimise route</b> on the Today tab so I can estimate pickup times.</p>`; return; }
+  const rows = timed.map(s=>{
+    const arrive = fmtClock(stopArriveMin(routeTiming[s.id]));
+    const btn = goodPhone(s.phone)
+      ? `<button class="ghost sm" onclick="reminderTextStop('${s.id}')">💬 Text</button>`
+      : `<span class="small muted">no phone</span>`;
+    return `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--line)">
+      <span><b>${esc(arrive)}</b> · ${esc(fullName(s)||fullAddr(s)||"Unnamed pickup")}</span>${btn}</div>`;
+  }).join("");
+  const untimed = pend.length - timed.length;
+  const extra = untimed>0 ? `<p class="small muted" style="margin-top:6px">${untimed} pickup${untimed!==1?'s':''} without a map location — not in the estimate.</p>` : "";
+  box.innerHTML = rows + extra;
 }
 
 /* ---------- Rendering the stop list ---------- */
@@ -984,14 +1061,25 @@ function goodPhone(value){
   return /^(\+?64|0)[\d\s()\-]{6,}$/.test(v) && digits.length>=9 && digits.length<=12;
 }
 function goodEmail(value){ return /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(String(value||"").trim()); }
+function daysUntil(value){
+  if (!value) return null;
+  const today = new Date(); today.setHours(12,0,0,0);
+  const target = new Date(value + "T12:00:00");
+  return Math.round((target - today) / 86400000);
+}
 function collectionDayLabel(value){
   if (!value) return "";
+  const d = daysUntil(value);
+  if (d===0) return "today";
+  if (d===1) return "tomorrow";
   const weekday = new Date(value + "T12:00:00").toLocaleDateString("en-NZ", { weekday:"long" });
   return `this coming ${weekday}`;
 }
 function confirmationMessage(value){
   const day = collectionDayLabel(value); if (!day) return "";
-  return `Hey Woody here, just confirming ${day} for whiteware collection. Welcome to leave whiteware inside your property line somewhere with $ inside if easier. I will send a reminder and rough time schedule the evening before too. Thanks :)`;
+  const d = daysUntil(value);
+  const when = d===1 ? "this evening" : d===0 ? "shortly" : "the evening before";
+  return `Hey Woody here, just confirming ${day} for whiteware collection. Welcome to leave whiteware inside your property line somewhere with $ inside if easier. I will send a reminder and rough time schedule ${when} too. Thanks :)`;
 }
 function bulkMessage(){ return (state.confirmationMessage || confirmationMessage(state.confirmationDate)).trim(); }
 function messageDay(){ return state.confirmationDate || ""; }
@@ -1020,6 +1108,7 @@ function renderContacts(){
   const pend = state.stops.filter(s => s.status!=="DONE");
   if (!pend.length){ wrap.innerHTML = `<div class="view-title">Messages</div><div class="card empty"><b>No customers yet</b><p>Add pickups first, then come back here to message them.</p><button onclick="setAppView('add')">Add pickups</button></div>`; return; }
   const selected = selectedRecipientIds();
+  const selCount = selectedRecipients().length; // count only stops that still exist, not stale ids
   const nums = selectedNumbers(), mails = selectedEmails();
   const missing = pend.map(s => {
     const fields=[];
@@ -1046,16 +1135,28 @@ function renderContacts(){
     <div style="display:flex;gap:6px;margin:6px 0"><button class="ghost sm" onclick="selectRecipients('all')">Select all</button><button class="ghost sm" onclick="selectRecipients('new')">Select new only</button><button class="ghost sm" onclick="selectRecipients('none')">Unselect all</button></div>
     <div class="recipient-list">${recipientRows}</div>
     <button class="ghost sm" style="margin-top:6px" onclick="clearMessageMarks()">Clear sent marks for this day</button>`;
-  const actions = `<div class="message-actions"><b id="selectedCount">${selected.size} selected customer${selected.size!==1?'s':''}</b>
+  const actions = `<div class="message-actions"><b id="selectedCount">${selCount} selected customer${selCount!==1?'s':''}</b>
     <div class="row" style="margin-top:6px"><button class="good grow" onclick="bulkText()">Copy &amp; open text</button><button class="good grow" onclick="bulkEmail()">Open Gmail</button></div>
     <p class="small muted" style="margin:6px 0 0">In Messages, tap <b>To</b> then <b>Paste</b> once.</p>
     <button class="ghost sm" style="width:100%;margin-top:6px" onclick="markSelectedSent()">I sent this batch - mark selected</button></div>`;
+  const reminder = `<div class="card"><details>
+    <summary>Evening reminder + time schedule<span class="chev">›</span></summary>
+    <p class="small muted" style="margin-top:8px">Rough pickup times worked out from your optimised route. Text each customer their window the evening before.</p>
+    <div class="row" style="gap:8px;margin-top:6px">
+      <div style="flex:1"><label>Start time</label><div class="date-field-shell"><input type="time" value="${esc(state.runStartTime||'08:00')}" onchange="setRunStart(this.value)" /></div></div>
+      <div style="flex:1"><label>Mins per stop</label><input type="number" min="0" step="5" value="${stopServiceMin()}" onchange="setStopService(this.value)" /></div>
+    </div>
+    <div id="reminderList" style="margin-top:10px"></div>
+    <button class="ghost sm" style="margin-top:8px" onclick="copySchedule(this)">Copy full schedule</button>
+    <p class="small muted" style="margin:6px 0 0">Times are estimates — driving time plus your minutes per stop. Adjust the two boxes to match your day.</p>
+  </details></div>`;
   wrap.innerHTML = `<div class="card"><details open>
     <summary>Bulk message<span class="se-sum">${missing.length?` · ${missing.length} missing contact${missing.length!==1?'s':''}`:""}</span><span class="chev">›</span></summary>
     ${preview}
     ${actions}
     ${missing.length ? `<h3 style="font-size:15px;margin-top:14px;color:var(--warn)">Missing or invalid contact details</h3>${missing.map(row=>`<div class="missing-contact"><b>${esc(row.label)}</b> — ${esc(row.fields.join(" and "))}</div>`).join("")}` : ""}
-  </details></div>`;
+  </details></div>${reminder}`;
+  renderReminderList();
 }
 
 function renderAreaFilter(){
@@ -1080,7 +1181,7 @@ window.saveConfirmationMessage = value => { state.confirmationMessage = value; s
 function updateSelectedCustomerCount(){
   const el = document.getElementById("selectedCount");
   if (!el) return;
-  const count = selectedRecipientIds().size;
+  const count = selectedRecipients().length;
   el.textContent = `${count} selected customer${count!==1?'s':''}`;
 }
 window.setRecipientSelected = (id, checked) => {
@@ -1143,6 +1244,22 @@ function openGmail(fields){
   }, 1400);
 }
 window.textStop = id => { const s=state.stops.find(x=>x.id===id); if(s&&s.phone) location.href="sms:"+s.phone.replace(/\s+/g,""); };
+window.setRunStart = v => { state.runStartTime = v || "08:00"; save(); renderReminderList(); };
+window.setStopService = v => { const n=parseInt(v,10); state.stopServiceMin = (isFinite(n)&&n>=0) ? n : 10; save(); renderReminderList(); };
+// Open the SMS app pre-filled with this customer's personal reminder + rough time window.
+window.reminderTextStop = id => {
+  const s = state.stops.find(x=>x.id===id); if(!s || !goodPhone(s.phone)) return;
+  const num = s.phone.replace(/\s+/g,"");
+  const isApple = /iPad|iPhone|iPod/.test(navigator.userAgent);
+  location.href = "sms:" + num + (isApple ? "&body=" : "?body=") + encodeURIComponent(reminderMessage(s));
+};
+window.copySchedule = btn => {
+  const stops = scheduleStopsInOrder();
+  if (!stops.length) return alert("Optimise the route first so I can estimate times.");
+  const txt = stops.map(s=>`${fmtClock(stopArriveMin(routeTiming[s.id]))} — ${fullName(s)||fullAddr(s)||"Unnamed pickup"}${fullAddr(s)?" · "+fullAddr(s):""}`).join("\n");
+  if (copyPlainText(txt)){ const t=btn.textContent; btn.textContent="✓ Copied!"; setTimeout(()=>btn.textContent=t,1800); }
+  else alert("Couldn't copy the schedule.");
+};
 window.gmailStop = id => {
   const s=state.stops.find(x=>x.id===id);
   if (s && goodEmail(s.email)) openGmail({to:s.email.trim()});
@@ -1205,7 +1322,7 @@ window.navStop = id => {
   const url = mapsDirUrl(s); if (url) window.open(url, "_blank");
 };
 window.callStop = id => { const s=state.stops.find(x=>x.id===id); if(s&&s.phone) location.href="tel:"+s.phone.replace(/\s+/g,""); };
-window.delStop = id => { state.stops = state.stops.filter(s=>s.id!==id); save(); render(); drawRoute(); };
+window.delStop = id => { state.stops = state.stops.filter(s=>s.id!==id); if (Array.isArray(state.messageSelectedIds)) state.messageSelectedIds = state.messageSelectedIds.filter(x=>x!==id); save(); render(); drawRoute(); };
 window.copyText = (id, btn) => {
   const el = document.getElementById(id); if(!el) return;
   el.focus(); el.select(); el.setSelectionRange(0, 999999);
