@@ -395,6 +395,7 @@ let areaFilterValue = "all";
 let oneAddrPicked = null;   // coords chosen from the Type-one autocomplete
 let routeStartOverride = null; // one-off GPS optimisation; never replaces the saved start
 let routeTiming = {};       // id -> {order, driveSec} cumulative drive time from start to that stop
+let importBusy = false;     // a sheet load is still geocoding — block overlapping loads
 let weatherState = { key:"", towns:[], loading:false, fetchedAt:0, error:"" };
 let gmsState = { data:null, loading:false, fetchedAt:0, error:"" };
 
@@ -602,21 +603,34 @@ function addFileStops(rows, srcName, setStatus, extraNote){
     else if (s.street && (s.town||"").toLowerCase()!=="unknown"){ toGeocode.push(s); }
     else { state.bad.push(s); parked++; }
   });
+  // Park address-lookups in "Needs address" straight away: they're saved to the
+  // phone immediately (nothing is lost if the app closes mid-lookup) and they
+  // count as "already on your list", so loading the sheet again can't add them twice.
+  toGeocode.forEach(s => state.bad.push(s));
   state.manual = false; save(); render(); drawRoute();
   const src = srcName ? ` from “${srcName}”` : "";
   // Immediate confirmation so the geocoding delay never looks like nothing happened.
   if (toGeocode.length) status(`<span class="spinner"></span> Added ${added}${src} — looking up ${toGeocode.length} more…` +
     (skipped ? ` (${skipped} already on your list)` : ""));
   // Geocode any rows that had no coords but a usable address.
+  importBusy = toGeocode.length > 0;
   (async () => {
     let i=0, located=0;
     for (const s of toGeocode){
       busy(`Finding addresses ${++i} of ${toGeocode.length}…`);
       const hit = await geocode(fullAddr(s));
-      if (hit){ s.lat=hit.lat; s.lng=hit.lng; state.stops.push(s); located++; }
-      else { state.bad.push(s); }
+      const bi = state.bad.findIndex(x => x.id === s.id);
+      if (bi < 0) continue;                    // Woody dropped it while we were looking
+      if (hit){
+        state.bad.splice(bi, 1);
+        s.lat = hit.lat; s.lng = hit.lng;
+        // Belt and braces: skip if an overlapping load already added this pickup.
+        if (!pickupKeys(s).some(k => knownPickupKeys().has(k))){ state.stops.push(s); located++; }
+      }
+      // No hit: it simply stays parked in "Needs address" with a Find button.
       save(); render();
     }
+    importBusy = false;
     busy("");
     const total = added + located;
     const parkedNow = parked + (toGeocode.length - located);
@@ -1562,29 +1576,39 @@ $("#oneMic").onclick = () => {
 
 // Google Sheet — read a shared sheet straight into the run (no Drive browsing, no login).
 function setSheetStatus(msg){ const el=$("#sheetStatus"); if(el) el.innerHTML = msg; }
-function sheetCsvUrl(url){
-  url = (url||"").trim(); if(!url) return null;
-  if (/output=csv|format=csv|tqx=out:csv/i.test(url)) return url;             // already a CSV link
+// Candidate CSV links for a pasted sheet URL, best first. The plain export
+// endpoint copies the tab faithfully; gviz is only a fallback because it MANGLES
+// tabs whose first column mixes dates with notes ("Next time") — it glues the
+// leading rows into the header and the whole load fails.
+function sheetCsvUrls(url){
+  url = (url||"").trim(); if(!url) return [];
+  if (/output=csv|format=csv|tqx=out:csv/i.test(url)) return [url];           // already a CSV link
   const id = (url.match(/\/spreadsheets\/d\/(?:e\/)?([a-zA-Z0-9-_]+)/)||[])[1];
-  if (!id) return null;
+  if (!id) return [];
   const gid = (url.match(/[#&?]gid=(\d+)/)||[])[1] || "0";
-  return `https://docs.google.com/spreadsheets/d/${id}/gviz/tq?tqx=out:csv&gid=${gid}`;
+  return [
+    `https://docs.google.com/spreadsheets/d/${id}/export?format=csv&gid=${gid}`,
+    `https://docs.google.com/spreadsheets/d/${id}/gviz/tq?tqx=out:csv&gid=${gid}`,
+  ];
 }
 async function loadFromSheet(url){
-  const csvUrl = sheetCsvUrl(url);
-  if (!csvUrl){ setSheetStatus("That doesn't look like a Google Sheet link."); return; }
+  if (importBusy){ setSheetStatus('<span class="spinner"></span> Still adding the last load — give it a few seconds, then try again.'); return; }
+  const candidates = sheetCsvUrls(url);
+  if (!candidates.length){ setSheetStatus("That doesn't look like a Google Sheet link."); return; }
   setSheetStatus('<span class="spinner"></span> Fetching your sheet…');
-  let text;
-  try{
-    const res = await fetch(csvUrl);
-    if (!res.ok) throw 0;
-    text = await res.text();
-  }catch(e){
-    setSheetStatus('Couldn\'t open that sheet. In Sheets: <b>Share → Anyone with the link → Viewer</b>, then paste the link again. (Or File → Share → Publish to web → CSV and paste that.)');
+  let parsed = null;
+  for (const csvUrl of candidates){
+    try{
+      const res = await fetch(csvUrl);
+      if (!res.ok) throw 0;
+      const p = parseCSV(await res.text());
+      if (p && p.length){ parsed = p; break; }               // clean read — use it
+    }catch(e){ /* try the next link style */ }
+  }
+  if (!parsed){
+    setSheetStatus('Couldn\'t read that sheet. In Sheets: <b>Share → Anyone with the link → Viewer</b>, then paste the link again (make sure you copy it while on your pickups tab).');
     return;
   }
-  const parsed = parseCSV(text);
-  if (!parsed || !parsed.length){ setSheetStatus("Read the sheet but found no rows — check it has a header row (Name, Address, Town…)."); return; }
   // Keep rows that have an address/name and aren't already collected.
   const rows = normalizeRows(parsed).filter(r =>
     ((r.street||"").trim() || (r.first_name||"").trim() || (r.last_name||"").trim()) &&
