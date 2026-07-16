@@ -261,7 +261,7 @@
         <button id="sheetLoad" style="margin-top:10px;width:100%">Load from Google Sheet</button>
         <p class="small muted">One-off setup: in Sheets tap <b>Share → General access → Anyone with the link → Viewer</b>, then copy the link while you're on your pickups tab and paste it here. The app only reads it — nothing is changed, and it remembers the link next time.</p>
         <div id="sheetStatus" class="small"></div>
-        <div id="cancelledInfo"></div>
+        <p class="small muted" style="margin-top:6px">Cancellation? Delete the row in your sheet — the next load takes it off the run too.</p>
       </div>
     </details>
   </div>
@@ -396,6 +396,7 @@ let oneAddrPicked = null;   // coords chosen from the Type-one autocomplete
 let routeStartOverride = null; // one-off GPS optimisation; never replaces the saved start
 let routeTiming = {};       // id -> {order, driveSec} cumulative drive time from start to that stop
 let importBusy = false;     // a sheet load is still geocoding — block overlapping loads
+let pendingReceipts = {};   // stop id -> built PDF File, waiting for the Send tap
 let weatherState = { key:"", towns:[], loading:false, fetchedAt:0, error:"" };
 let gmsState = { data:null, loading:false, fetchedAt:0, error:"" };
 
@@ -555,28 +556,14 @@ function knownPickupKeys(){
   return known;
 }
 
-// Cancellations: when a stop is deleted, remember its keys so reloading the
-// sheet doesn't bring it straight back. A repeat customer's NEW booking has a
-// new submission ID, so it still comes through.
-function rememberRemoved(s){
-  const keys = pickupKeys(s);
-  if (!keys.length) return;
-  state.removedKeys = [...new Set([...(state.removedKeys||[]), ...keys])];
-}
-function renderCancelledInfo(){
-  const el = document.getElementById("cancelledInfo");
-  if (!el) return;
-  const n = (state.removedKeys||[]).length;
-  el.innerHTML = n ? `<p class="small muted" style="margin:8px 0 4px">Cancelled pickups stay off the list when you reload the sheet.</p>
-    <button class="ghost sm" onclick="clearRemovedKeys()">Let cancelled pickups come back</button>` : "";
-}
-window.clearRemovedKeys = () => { state.removedKeys = []; save(); renderCancelledInfo(); flash("✓ Cancelled pickups can be added again on the next load."); };
+// The sheet is the source of truth for cancellations: delete the row there and
+// the reload removes the stop here (see loadFromSheet). Deleting a stop in the
+// app only affects the app — if its row is still in the sheet, it comes back.
 
 // Add stops from a parsed file/paste (keeps coords already present).
 function addFileStops(rows, srcName, setStatus, extraNote){
-  let added = 0, parked = 0, skipped = 0, cancelled = 0, toGeocode = [];
+  let added = 0, parked = 0, skipped = 0, toGeocode = [];
   const known = knownPickupKeys();
-  const removed = new Set(state.removedKeys||[]);
   const status = setStatus || setFileStatus;
   const note = extraNote || "";
   rows.forEach(r => {
@@ -590,14 +577,11 @@ function addFileStops(rows, srcName, setStatus, extraNote){
       additional_info: r.additional_info||"",
       lat: r.lat!=null && r.lat!=="" ? +r.lat : null,
       lng: r.lng!=null && r.lng!=="" ? +r.lng : null,
-      status: (r.status==="DONE") ? "DONE" : "NEW"
+      status: (r.status==="DONE") ? "DONE" : "NEW",
+      src: "sheet"                          // so a reload knows this stop mirrors a sheet row
     };
     const keys = pickupKeys(s);
     if (keys.some(k => known.has(k))){ skipped++; return; }
-    // Cancelled before? A row WITH a submission ID is only blocked when that exact
-    // booking was cancelled — a fresh booking (new ID) from the same person gets in.
-    const idKey = keys.find(k => k.startsWith("id:"));
-    if (idKey ? removed.has(idKey) : keys.some(k => removed.has(k))){ cancelled++; return; }
     keys.forEach(k => known.add(k)); // Prevent repeats inside one sheet too.
     if (s.lat!=null && s.lng!=null && !isNaN(s.lat) && !isNaN(s.lng)){ state.stops.push(s); added++; }
     else if (s.street && (s.town||"").toLowerCase()!=="unknown"){ toGeocode.push(s); }
@@ -637,9 +621,8 @@ function addFileStops(rows, srcName, setStatus, extraNote){
     const msg = (total
       ? `✓ Added ${total} new stop${total!==1?'s':''}${src}` +
         (skipped ? ` — skipped ${skipped} already on your list` : "") +
-        (cancelled ? `, left off ${cancelled} cancelled` : "") +
         (parkedNow ? `, ${parkedNow} need an address below` : ".")
-      : `✓ No new stops${src} — ${skipped} already on your list${cancelled?`, ${cancelled} cancelled left off`:""}.`) + note;
+      : `✓ No new stops${src} — ${skipped} already on your list.`) + note;
     status(msg); flash(msg);
     drawRoute();
     refreshWeather(true);
@@ -993,7 +976,6 @@ function render(){
   renderStart();
   renderWeather();
   renderGms();
-  renderCancelledInfo();
   updateStats(null);
   $("#roundTrip").checked = !!state.roundTrip;
 }
@@ -1031,7 +1013,9 @@ function renderList(){
     const phone    = s.phone ? `<button class="ghost sm" onclick="callStop('${s.id}')">📞 Call</button>` : "";
     const textBtn  = s.phone ? `<button class="ghost sm" onclick="textStop('${s.id}')">💬 Text</button>` : "";
     const emailBtn = goodEmail(s.email) ? `<button class="ghost sm" onclick="gmailStop('${s.id}')">Email</button>` : "";
-    const receiptBtn = `<button class="ghost sm" onclick="receiptStop('${s.id}')">🧾 ${s.receiptSent?'Receipt ✓':'Receipt'}</button>`;
+    const receiptBtn = pendingReceipts[s.id]
+      ? `<button class="good sm" onclick="sendReceipt('${s.id}')">📤 Send receipt</button>`
+      : `<button class="ghost sm" onclick="receiptStop('${s.id}')">🧾 ${s.receiptSent?'Receipt ✓':'Receipt'}</button>`;
     const prioBtn  = isDone ? "" : `<button class="${asap?'bad':'ghost'} sm" onclick="togglePriority('${s.id}')" title="Make this an ASAP stop">${asap?'⭐ ASAP':'☆ ASAP'}</button>`;
     const navBtn   = (!isDone && s.lat!=null) ? `<button class="sm nav-action" onclick="navStop('${s.id}')">🧭 Navigate</button>` : "";
     const doneBtn  = `<button class="${isDone?'warn':'good'} sm" onclick="toggleDone('${s.id}')">${isDone?'↺ Undo':'✓ Done'}</button>`;
@@ -1394,7 +1378,10 @@ function buildReceiptPdf(s, amt){
   doc.text("Naki Wreck Removals  ·  nakiwreckremoval@gmail.com", M, 200);
   return doc.output("blob");
 }
-window.receiptStop = async id => {
+// Two taps on purpose: iPhone only opens the share sheet from a FRESH tap, and
+// the amount prompt uses that tap up. Tap 1 (Receipt): ask amount, build the PDF.
+// Tap 2 (Send receipt): straight into the share sheet — pick Gmail, PDF attached.
+window.receiptStop = id => {
   const s = state.stops.find(x=>x.id===id); if(!s) return;
   if (!window.jspdf){ alert("The PDF maker didn't load — check your connection and try again."); return; }
   const prev = s.receiptAmount!=null ? String(s.receiptAmount) : "";
@@ -1402,25 +1389,34 @@ window.receiptStop = async id => {
   if (v===null) return;                                    // cancelled
   const amt = parseFloat(String(v).replace(/[^0-9.]/g,""));
   if (!isFinite(amt) || amt<0) return alert("Enter the dollar amount, e.g. 40");
-  s.receiptAmount = amt; s.receiptSent = true; save(); render();
+  s.receiptAmount = amt;
   const blob = buildReceiptPdf(s, amt);
   const fname = `Receipt - ${(fullName(s)||"pickup").replace(/[^\w \-]/g,"")}.pdf`;
-  const file = new File([blob], fname, { type:"application/pdf" });
+  pendingReceipts[id] = new File([blob], fname, { type:"application/pdf" });
+  save(); render();
+  flash("✓ Receipt ready — now tap 📤 Send receipt.");
+};
+window.sendReceipt = async id => {
+  const s = state.stops.find(x=>x.id===id);
+  const file = pendingReceipts[id];
+  if (!s || !file){ render(); return; }
   if (goodEmail(s.email)) copyPlainText(s.email.trim());   // ready to paste into "To"
+  const done = () => { delete pendingReceipts[id]; s.receiptSent = true; save(); render(); };
   if (navigator.canShare && navigator.canShare({ files:[file] })){
     try{
       await navigator.share({ files:[file], title:"Whiteware receipt" });
+      done();
       if (goodEmail(s.email)) flash("✓ Their email is copied — paste it into To.");
       return;
-    }catch(e){ if (e && e.name==="AbortError") return; /* else fall through */ }
+    }catch(e){ if (e && e.name==="AbortError") return; /* keep the Send button */ }
   }
-  // Desktop / no share sheet: download the PDF and open a Gmail draft to attach it to.
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob); a.download = fname;
-  document.body.appendChild(a); a.click(); a.remove();
-  setTimeout(()=>URL.revokeObjectURL(a.href), 4000);
+  // No share sheet (desktop): open the PDF to save/print, plus a Gmail draft to attach it to.
+  const blobUrl = URL.createObjectURL(file);
+  window.open(blobUrl, "_blank");
+  setTimeout(()=>URL.revokeObjectURL(blobUrl), 60000);
   if (goodEmail(s.email)) openGmail({ to:s.email.trim(), subject:"Receipt - Whiteware collection" });
-  flash("✓ Receipt downloaded — attach it to the email.");
+  done();
+  flash("✓ PDF opened — attach it to the email.");
 };
 function copyPlainText(value){
   const box = document.createElement("textarea");
@@ -1485,11 +1481,9 @@ window.navStop = id => {
 };
 window.callStop = id => { const s=state.stops.find(x=>x.id===id); if(s&&s.phone) location.href="tel:"+s.phone.replace(/\s+/g,""); };
 window.delStop = id => {
-  const s = state.stops.find(x=>x.id===id);
-  if (s) rememberRemoved(s);                                  // cancellation — keep it off future sheet loads
   state.stops = state.stops.filter(x=>x.id!==id);
   if (Array.isArray(state.messageSelectedIds)) state.messageSelectedIds = state.messageSelectedIds.filter(x=>x!==id);
-  save(); render(); drawRoute(); renderCancelledInfo();
+  save(); render(); drawRoute();
 };
 window.copyText = (id, btn) => {
   const el = document.getElementById(id); if(!el) return;
@@ -1522,7 +1516,7 @@ window.retryBad = async id => {
     state.bad.splice(j,1); state.stops.push(t); save(); render(); drawRoute();
   } else alert("Still couldn't find that address — add the town, or paste coordinates from Google Maps.");
 };
-window.dropBad = id => { const i = state.bad.findIndex(s=>s.id===id); if(i<0) return; rememberRemoved(state.bad[i]); state.bad.splice(i,1); save(); render(); renderCancelledInfo(); };
+window.dropBad = id => { const i = state.bad.findIndex(s=>s.id===id); if(i<0) return; state.bad.splice(i,1); save(); render(); };
 
 /* ---------- Wire up the UI ---------- */
 // Tabs
@@ -1616,14 +1610,17 @@ async function loadFromSheet(url){
   if (!rows.length){ setSheetStatus("No pending pickups found in that sheet."); return; }
   state.sheetUrl = url.trim(); save();
   // Rows Woody deleted from the sheet = cancellations. Drop pending stops that
-  // came from the sheet (real submission IDs) but are no longer in it.
-  // Uses ALL rows (even completed ones) so a row marked done isn't "vanished",
-  // and only runs when the sheet actually carries submission IDs.
+  // came from a sheet but no longer match any row in this one. Matches by the
+  // same keys used for dedupe (submission ID, or address+contact for hand-made
+  // sheets with no ID column). Uses ALL rows so a row marked done isn't "vanished".
   let removedGone = 0;
-  const allIds = new Set(normalizeRows(parsed).map(r=>normKey(r.submission_id)).filter(Boolean));
-  if (allIds.size){
-    const fromSheet = s => { const id=String(s.submission_id||"").trim(); return id && !/^s[a-z0-9]{12}$/i.test(id); };
-    const vanished = s => fromSheet(s) && !allIds.has(normKey(s.submission_id));
+  {
+    const sheetKeys = new Set();
+    normalizeRows(parsed).forEach(r => pickupKeys(r).forEach(k => sheetKeys.add(k)));
+    // Older stops (added before src tagging) count as sheet stops when they carry a real submission ID.
+    const fromSheet = s => s.src==="sheet" ||
+      (String(s.submission_id||"").trim() && !/^s[a-z0-9]{12}$/i.test(String(s.submission_id).trim()));
+    const vanished = s => fromSheet(s) && !pickupKeys(s).some(k => sheetKeys.has(k));
     const goneStops = state.stops.filter(s => s.status!=="DONE" && vanished(s));
     goneStops.forEach(s => { if (Array.isArray(state.messageSelectedIds)) state.messageSelectedIds = state.messageSelectedIds.filter(x=>x!==s.id); });
     state.stops = state.stops.filter(s => !(s.status!=="DONE" && vanished(s)));
