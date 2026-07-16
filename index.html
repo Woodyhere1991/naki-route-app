@@ -427,6 +427,7 @@ function applyAppView(view){
   document.body.dataset.view = view;
   document.querySelectorAll("[data-view-button]").forEach(btn=>btn.classList.toggle("on", btn.dataset.viewButton===view));
   if (view==="today" && map) setTimeout(()=>map.invalidateSize(), 80);
+  if (view==="messages") setTimeout(fitMessagePreview, 0);   // panel just became visible
 }
 window.setAppView = view => {
   state.appView = view; save(); applyAppView(view);
@@ -935,11 +936,11 @@ function reminderBulkMessage(){
   if (!towns.length) return "";
   const day = collectionDayLabel(state.confirmationDate);
   const dayPart = day ? ` ${day}` : "";
-  const parts = towns.map(t=>{
+  const lines = towns.map(t=>{
     const w = townWindow(t.key);
-    return `${t.town} between ${fmtClockShort(parseHM(w.start))} and ${fmtClockShort(parseHM(w.end))}`;
-  }).join(". ");
-  return `Hey Woody here, just a reminder for whiteware collection${dayPart}. Aiming to be in ${parts}. Thanks :)`;
+    return `${t.town}: between ${fmtClockShort(parseHM(w.start))} and ${fmtClockShort(parseHM(w.end))}`;
+  }).join("\n");
+  return `Hey Woody here, just a reminder for whiteware collection${dayPart}. Aiming to be in:\n\n${lines}\n\nThanks :)`;
 }
 
 /* ---------- Rendering the stop list ---------- */
@@ -1202,6 +1203,16 @@ function renderContacts(){
     ${actions}
     ${missing.length ? `<h3 style="font-size:15px;margin-top:14px;color:var(--warn)">Missing or invalid contact details</h3>${missing.map(row=>`<div class="missing-contact"><b>${esc(row.label)}</b> — ${esc(row.fields.join(" and "))}</div>`).join("")}` : ""}
   </details></div>`;
+  fitMessagePreview();
+}
+// Grow the preview box to show the whole message (the reminder is one line per town).
+// Only when the Messages panel is actually visible — a hidden box measures 0.
+function fitMessagePreview(){
+  const ta = document.getElementById("messagePreview");
+  // Skip when hidden or mid-layout (a squashed box measures a nonsense height).
+  if (!ta || !ta.offsetParent || ta.offsetWidth < 120) return;
+  ta.style.height = "auto";
+  ta.style.height = Math.min(ta.scrollHeight + 4, 420) + "px";
 }
 
 function renderAreaFilter(){
