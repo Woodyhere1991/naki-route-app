@@ -437,6 +437,42 @@ async function handleSendReceipt(request, env) {
   return json(request, { ok: true, messageId: out.messageId || "" });
 }
 
+// Bulk confirmations/reminders: one personalised email per customer (not one
+// BCC blob), sent through the same Brevo account as the receipts. Capped at 40
+// per call — well inside Brevo's 300/day and the worker's subrequest budget.
+async function handleSendBulk(request, env) {
+  if (!env.BREVO_API_KEY) return json(request, { error: "Email sending is not configured" }, 503);
+  let body;
+  try { body = await request.json(); } catch { return json(request, { error: "Bad request" }, 400); }
+  const subject = (String(body.subject || "").trim().slice(0, 150)) || "Whiteware collection";
+  const list = Array.isArray(body.messages) ? body.messages.slice(0, 40) : [];
+  if (!list.length) return json(request, { error: "No messages" }, 400);
+  const emailOk = value => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(value);
+  let sent = 0;
+  const failed = [];
+  for (const m of list) {
+    const to = String(m && m.to || "").trim();
+    const name = String(m && m.name || "").trim().slice(0, 80);
+    const text = String(m && m.body || "").trim().slice(0, 4000);
+    if (!emailOk(to) || !text) { failed.push(to || "(blank)"); continue; }
+    try {
+      const response = await fetch("https://api.brevo.com/v3/smtp/email", {
+        method: "POST",
+        headers: { "api-key": String(env.BREVO_API_KEY).trim(), "Content-Type": "application/json", "Accept": "application/json" },
+        body: JSON.stringify({
+          sender: { name: "Naki Whiteware Removal", email: "nakiwreckremoval@gmail.com" },
+          replyTo: { name: "Naki Whiteware Removal", email: "nakiwhitewareremoval@gmail.com" },
+          to: [{ email: to, ...(name ? { name } : {}) }],
+          subject,
+          textContent: text
+        })
+      });
+      if (response.ok) sent++; else failed.push(to);
+    } catch { failed.push(to); }
+  }
+  return json(request, { ok: true, sent, failed });
+}
+
 export default {
   async fetch(request, env) {
     if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: cors(request) });
@@ -448,6 +484,7 @@ export default {
       if (path === "/gms-hours" && request.method === "GET") return await handleGms(request, env);
       if (path === "/address-search" && request.method === "GET") return await handleAddress(request, env);
       if (path === "/send-receipt" && request.method === "POST") return await handleSendReceipt(request, env);
+      if (path === "/send-bulk" && request.method === "POST") return await handleSendBulk(request, env);
       return json(request, { error: "Not found" }, 404);
     } catch (error) {
       return json(request, { error: "Live service could not be loaded" }, 502);
