@@ -998,13 +998,14 @@ function renderList(){
     const phone    = s.phone ? `<button class="ghost sm" onclick="callStop('${s.id}')">📞 Call</button>` : "";
     const textBtn  = s.phone ? `<button class="ghost sm" onclick="textStop('${s.id}')">💬 Text</button>` : "";
     const emailBtn = goodEmail(s.email) ? `<button class="ghost sm" onclick="gmailStop('${s.id}')">Email</button>` : "";
+    const receiptBtn = goodEmail(s.email) ? `<button class="ghost sm" onclick="receiptStop('${s.id}')">🧾 ${s.receiptSent?'Receipt ✓':'Receipt'}</button>` : "";
     const prioBtn  = isDone ? "" : `<button class="${asap?'bad':'ghost'} sm" onclick="togglePriority('${s.id}')" title="Make this an ASAP stop">${asap?'⭐ ASAP':'☆ ASAP'}</button>`;
     const navBtn   = (!isDone && s.lat!=null) ? `<button class="sm nav-action" onclick="navStop('${s.id}')">🧭 Navigate</button>` : "";
     const doneBtn  = `<button class="${isDone?'warn':'good'} sm" onclick="toggleDone('${s.id}')">${isDone?'↺ Undo':'✓ Done'}</button>`;
     const del      = `<button class="ghost sm" title="Remove this stop" onclick="delStop('${s.id}')">✕</button>`;
     const btns = isDone
-      ? `${doneBtn}${noteBtn}${emailBtn}${del}`
-      : `${navBtn}${doneBtn}${phone}${textBtn}${emailBtn}${noteBtn}${prioBtn}${del}`;
+      ? `${doneBtn}${receiptBtn}${noteBtn}${emailBtn}${del}`
+      : `${navBtn}${doneBtn}${phone}${textBtn}${emailBtn}${noteBtn}${prioBtn}${receiptBtn}${del}`;
     return `<div class="stop ${isDone?'done':''} ${asap&&!isDone?'asap':''} ${s.id===nextId&&!isDone?'next':''}"
         data-id="${s.id}" style="border-left-color:${AREA_COLORS[area]||AREA_COLORS['']}">
       <div class="num">${num}</div>
@@ -1303,6 +1304,37 @@ window.resetTownWindows = () => {
 window.gmailStop = id => {
   const s=state.stops.find(x=>x.id===id);
   if (s && goodEmail(s.email)) openGmail({to:s.email.trim()});
+};
+// Ask the amount paid, then open Gmail with a ready-to-send receipt for this customer.
+window.receiptStop = id => {
+  const s = state.stops.find(x=>x.id===id); if(!s || !goodEmail(s.email)) return;
+  const prev = s.receiptAmount!=null ? String(s.receiptAmount) : "";
+  const v = prompt("Amount paid (dollars):", prev);
+  if (v===null) return;                                    // cancelled
+  const amt = parseFloat(String(v).replace(/[^0-9.]/g,""));
+  if (!isFinite(amt) || amt<0) return alert("Enter the dollar amount, e.g. 40");
+  s.receiptAmount = amt; s.receiptSent = true; save(); render();
+  const items = (s.appliances&&s.appliances.length) ? s.appliances.join(", ") : "Whiteware";
+  const today = new Date().toLocaleDateString("en-NZ",{weekday:"long", day:"numeric", month:"long", year:"numeric"});
+  const name = (s.first_name||"").trim();
+  const body = `Hey${name?" "+name:""}, here's your receipt for whiteware collection. Thank you :)
+
+--------------------------------
+RECEIPT — Naki Wreck Removals
+--------------------------------
+Date: ${today}
+Received from: ${fullName(s)||"Customer"}
+Address: ${fullAddr(s)}
+
+Collected: ${items}
+Amount paid: $${amt.toFixed(2)}
+Payment received in full.
+--------------------------------
+
+Naki Wreck Removals
+nakiwreckremoval@gmail.com`;
+  const subjectItem = (s.appliances&&s.appliances.length===1) ? s.appliances[0] : "Whiteware";
+  openGmail({to:s.email.trim(), subject:`Receipt - ${subjectItem}`, body});
 };
 function copyPlainText(value){
   const box = document.createElement("textarea");
