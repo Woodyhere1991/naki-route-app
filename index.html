@@ -269,6 +269,7 @@
         <button id="sheetLoad" style="margin-top:10px;width:100%">Load from Google Sheet</button>
         <p class="small muted">One-off setup: in Sheets tap <b>Share → General access → Anyone with the link → Viewer</b>, then copy the link while you're on your pickups tab and paste it here. The app only reads it — nothing is changed, and it remembers the link next time.</p>
         <div id="sheetStatus" class="small"></div>
+        <div id="cancelledInfo"></div>
       </div>
     </details>
   </div>
@@ -561,10 +562,28 @@ function knownPickupKeys(){
   return known;
 }
 
+// Cancellations: when a stop is deleted, remember its keys so reloading the
+// sheet doesn't bring it straight back. A repeat customer's NEW booking has a
+// new submission ID, so it still comes through.
+function rememberRemoved(s){
+  const keys = pickupKeys(s);
+  if (!keys.length) return;
+  state.removedKeys = [...new Set([...(state.removedKeys||[]), ...keys])];
+}
+function renderCancelledInfo(){
+  const el = document.getElementById("cancelledInfo");
+  if (!el) return;
+  const n = (state.removedKeys||[]).length;
+  el.innerHTML = n ? `<p class="small muted" style="margin:8px 0 4px">Cancelled pickups stay off the list when you reload the sheet.</p>
+    <button class="ghost sm" onclick="clearRemovedKeys()">Let cancelled pickups come back</button>` : "";
+}
+window.clearRemovedKeys = () => { state.removedKeys = []; save(); renderCancelledInfo(); flash("✓ Cancelled pickups can be added again on the next load."); };
+
 // Add stops from a parsed file/paste (keeps coords already present).
 function addFileStops(rows, srcName, setStatus){
-  let added = 0, parked = 0, skipped = 0, toGeocode = [];
+  let added = 0, parked = 0, skipped = 0, cancelled = 0, toGeocode = [];
   const known = knownPickupKeys();
+  const removed = new Set(state.removedKeys||[]);
   const status = setStatus || setFileStatus;
   rows.forEach(r => {
     const s = {
@@ -581,6 +600,10 @@ function addFileStops(rows, srcName, setStatus){
     };
     const keys = pickupKeys(s);
     if (keys.some(k => known.has(k))){ skipped++; return; }
+    // Cancelled before? A row WITH a submission ID is only blocked when that exact
+    // booking was cancelled — a fresh booking (new ID) from the same person gets in.
+    const idKey = keys.find(k => k.startsWith("id:"));
+    if (idKey ? removed.has(idKey) : keys.some(k => removed.has(k))){ cancelled++; return; }
     keys.forEach(k => known.add(k)); // Prevent repeats inside one sheet too.
     if (s.lat!=null && s.lng!=null && !isNaN(s.lat) && !isNaN(s.lng)){ state.stops.push(s); added++; }
     else if (s.street && (s.town||"").toLowerCase()!=="unknown"){ toGeocode.push(s); }
@@ -607,8 +630,9 @@ function addFileStops(rows, srcName, setStatus){
     const msg = total
       ? `✓ Added ${total} new stop${total!==1?'s':''}${src}` +
         (skipped ? ` — skipped ${skipped} already on your list` : "") +
+        (cancelled ? `, left off ${cancelled} cancelled` : "") +
         (parkedNow ? `, ${parkedNow} need an address below` : ".")
-      : `✓ No new stops${src} — ${skipped} already on your list.`;
+      : `✓ No new stops${src} — ${skipped} already on your list${cancelled?`, ${cancelled} cancelled left off`:""}.`;
     status(msg); flash(msg);
     drawRoute();
     refreshWeather(true);
@@ -962,6 +986,7 @@ function render(){
   renderStart();
   renderWeather();
   renderGms();
+  renderCancelledInfo();
   updateStats(null);
   $("#roundTrip").checked = !!state.roundTrip;
 }
@@ -1409,7 +1434,13 @@ window.navStop = id => {
   const url = mapsDirUrl(s); if (url) window.open(url, "_blank");
 };
 window.callStop = id => { const s=state.stops.find(x=>x.id===id); if(s&&s.phone) location.href="tel:"+s.phone.replace(/\s+/g,""); };
-window.delStop = id => { state.stops = state.stops.filter(s=>s.id!==id); if (Array.isArray(state.messageSelectedIds)) state.messageSelectedIds = state.messageSelectedIds.filter(x=>x!==id); save(); render(); drawRoute(); };
+window.delStop = id => {
+  const s = state.stops.find(x=>x.id===id);
+  if (s) rememberRemoved(s);                                  // cancellation — keep it off future sheet loads
+  state.stops = state.stops.filter(x=>x.id!==id);
+  if (Array.isArray(state.messageSelectedIds)) state.messageSelectedIds = state.messageSelectedIds.filter(x=>x!==id);
+  save(); render(); drawRoute(); renderCancelledInfo();
+};
 window.copyText = (id, btn) => {
   const el = document.getElementById(id); if(!el) return;
   el.focus(); el.select(); el.setSelectionRange(0, 999999);
@@ -1441,7 +1472,7 @@ window.retryBad = async id => {
     state.bad.splice(j,1); state.stops.push(t); save(); render(); drawRoute();
   } else alert("Still couldn't find that address — add the town, or paste coordinates from Google Maps.");
 };
-window.dropBad = id => { const i = state.bad.findIndex(s=>s.id===id); if(i<0) return; state.bad.splice(i,1); save(); render(); };
+window.dropBad = id => { const i = state.bad.findIndex(s=>s.id===id); if(i<0) return; rememberRemoved(state.bad[i]); state.bad.splice(i,1); save(); render(); renderCancelledInfo(); };
 
 /* ---------- Wire up the UI ---------- */
 // Tabs
