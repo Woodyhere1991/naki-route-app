@@ -11,7 +11,7 @@
 <!-- Tap-and-hold drag to reorder stops -->
 <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
 <!-- Read Excel (.xlsx) exported from Google Sheets -->
-<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.2/dist/jspdf.umd.min.js"></script>
 
 <style>
   :root{
@@ -231,8 +231,6 @@
 
       <div class="tabs">
         <button data-tab="one" class="on">Type one</button>
-        <button data-tab="paste">Paste list</button>
-        <button data-tab="file">Load file</button>
         <button data-tab="sheet">Google Sheet</button>
       </div>
 
@@ -243,22 +241,16 @@
           <div class="acw grow"><input id="oneAddr" autocomplete="off" placeholder="e.g. 8 King Road, Inglewood" /><div class="ac-list" id="acOne"></div></div>
           <button id="oneMic" class="ghost" title="Speak the address" style="flex:0 0 auto">🎤</button>
         </div>
+        <label style="margin-top:10px">Name</label>
+        <input id="oneName" autocomplete="off" placeholder="e.g. Rebecca Pryor" />
+        <label style="margin-top:10px">Phone</label>
+        <input id="onePhone" autocomplete="off" inputmode="tel" placeholder="e.g. 027 232 2201" />
+        <label style="margin-top:10px">Email</label>
+        <input id="oneEmail" autocomplete="off" inputmode="email" placeholder="e.g. becks@gmail.com" />
+        <label style="margin-top:10px">Appliances</label>
+        <input id="oneItems" autocomplete="off" placeholder="e.g. Fridge, Dryer" />
+        <p class="small muted">Only the address is required — the rest powers the Call, Text, Email and Receipt buttons on the pickup card.</p>
         <button id="oneAdd" style="margin-top:10px;width:100%">Add this stop</button>
-      </div>
-
-      <!-- Paste list -->
-      <div class="pane" id="pane-paste">
-        <label>One address per line (CSV with a header also works)</label>
-        <textarea id="pasteBox" placeholder="12 High Street, Hawera
-11 Tasman Street, Opunake"></textarea>
-        <button id="pasteAdd" style="margin-top:10px;width:100%">Add these stops</button>
-      </div>
-
-      <!-- Load file -->
-      <div class="pane" id="pane-file">
-        <label>Your saved list (Excel .xlsx, .csv or .json) — uses coords already in the file</label>
-        <input type="file" id="fileInput" accept=".xlsx,.xls,.csv,.json,text/csv,application/json,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" />
-        <p class="small muted">Tip: in Google Sheets choose File → Download → Microsoft Excel (.xlsx), then pick it here.</p>
         <div id="fileStatus" class="small"></div>
       </div>
 
@@ -580,11 +572,12 @@ function renderCancelledInfo(){
 window.clearRemovedKeys = () => { state.removedKeys = []; save(); renderCancelledInfo(); flash("✓ Cancelled pickups can be added again on the next load."); };
 
 // Add stops from a parsed file/paste (keeps coords already present).
-function addFileStops(rows, srcName, setStatus){
+function addFileStops(rows, srcName, setStatus, extraNote){
   let added = 0, parked = 0, skipped = 0, cancelled = 0, toGeocode = [];
   const known = knownPickupKeys();
   const removed = new Set(state.removedKeys||[]);
   const status = setStatus || setFileStatus;
+  const note = extraNote || "";
   rows.forEach(r => {
     const s = {
       id: uid(),
@@ -627,12 +620,12 @@ function addFileStops(rows, srcName, setStatus){
     busy("");
     const total = added + located;
     const parkedNow = parked + (toGeocode.length - located);
-    const msg = total
+    const msg = (total
       ? `✓ Added ${total} new stop${total!==1?'s':''}${src}` +
         (skipped ? ` — skipped ${skipped} already on your list` : "") +
         (cancelled ? `, left off ${cancelled} cancelled` : "") +
         (parkedNow ? `, ${parkedNow} need an address below` : ".")
-      : `✓ No new stops${src} — ${skipped} already on your list${cancelled?`, ${cancelled} cancelled left off`:""}.`;
+      : `✓ No new stops${src} — ${skipped} already on your list${cancelled?`, ${cancelled} cancelled left off`:""}.`) + note;
     status(msg); flash(msg);
     drawRoute();
     refreshWeather(true);
@@ -1024,7 +1017,7 @@ function renderList(){
     const phone    = s.phone ? `<button class="ghost sm" onclick="callStop('${s.id}')">📞 Call</button>` : "";
     const textBtn  = s.phone ? `<button class="ghost sm" onclick="textStop('${s.id}')">💬 Text</button>` : "";
     const emailBtn = goodEmail(s.email) ? `<button class="ghost sm" onclick="gmailStop('${s.id}')">Email</button>` : "";
-    const receiptBtn = goodEmail(s.email) ? `<button class="ghost sm" onclick="receiptStop('${s.id}')">🧾 ${s.receiptSent?'Receipt ✓':'Receipt'}</button>` : "";
+    const receiptBtn = `<button class="ghost sm" onclick="receiptStop('${s.id}')">🧾 ${s.receiptSent?'Receipt ✓':'Receipt'}</button>`;
     const prioBtn  = isDone ? "" : `<button class="${asap?'bad':'ghost'} sm" onclick="togglePriority('${s.id}')" title="Make this an ASAP stop">${asap?'⭐ ASAP':'☆ ASAP'}</button>`;
     const navBtn   = (!isDone && s.lat!=null) ? `<button class="sm nav-action" onclick="navStop('${s.id}')">🧭 Navigate</button>` : "";
     const doneBtn  = `<button class="${isDone?'warn':'good'} sm" onclick="toggleDone('${s.id}')">${isDone?'↺ Undo':'✓ Done'}</button>`;
@@ -1341,36 +1334,79 @@ window.gmailStop = id => {
   const s=state.stops.find(x=>x.id===id);
   if (s && goodEmail(s.email)) openGmail({to:s.email.trim()});
 };
-// Ask the amount paid, then open Gmail with a ready-to-send receipt for this customer.
-window.receiptStop = id => {
-  const s = state.stops.find(x=>x.id===id); if(!s || !goodEmail(s.email)) return;
+// Build a PDF receipt and hand it to the phone's share sheet (pick Gmail there
+// and it's attached, customer's email already on the clipboard). Falls back to
+// downloading the PDF + opening a Gmail draft on desktop.
+function buildReceiptPdf(s, amt){
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ unit:"mm", format:"a5" });
+  const W = 148, M = 14;
+  const items = (s.appliances&&s.appliances.length) ? s.appliances : ["Whiteware"];
+  const today = new Date().toLocaleDateString("en-NZ",{weekday:"long", day:"numeric", month:"long", year:"numeric"});
+  // Header band
+  doc.setFillColor(6, 29, 46);            // app navy
+  doc.rect(0, 0, W, 30, "F");
+  doc.setTextColor(244, 135, 34);         // app orange
+  doc.setFont("helvetica", "bold"); doc.setFontSize(18);
+  doc.text("NAKI WRECK REMOVALS", M, 13);
+  doc.setTextColor(255, 248, 233);
+  doc.setFontSize(11); doc.setFont("helvetica", "normal");
+  doc.text("Whiteware Collection Receipt", M, 21);
+  // Details
+  doc.setTextColor(30, 30, 30);
+  let y = 44;
+  const row = (label, value) => {
+    doc.setFont("helvetica", "bold"); doc.setFontSize(10); doc.text(label, M, y);
+    doc.setFont("helvetica", "normal");
+    const lines = doc.splitTextToSize(String(value||"—"), W - M - 48);
+    doc.text(lines, M + 34, y);
+    y += 7 * lines.length;
+  };
+  row("Date", today);
+  row("Received from", fullName(s) || "Customer");
+  row("Address", fullAddr(s));
+  y += 3;
+  doc.setFont("helvetica", "bold"); doc.setFontSize(10); doc.text("Collected", M, y); y += 7;
+  doc.setFont("helvetica", "normal");
+  items.forEach(it => { doc.text("• " + it, M + 4, y); y += 6; });
+  y += 4;
+  doc.setDrawColor(180); doc.line(M, y, W - M, y); y += 9;
+  doc.setFont("helvetica", "bold"); doc.setFontSize(13);
+  doc.text(`Amount paid: $${amt.toFixed(2)}`, M, y); y += 7;
+  doc.setFont("helvetica", "normal"); doc.setFontSize(10);
+  doc.text("Payment received in full — thank you!", M, y);
+  // Footer
+  doc.setFontSize(9); doc.setTextColor(120);
+  doc.text("Naki Wreck Removals  ·  nakiwreckremoval@gmail.com", M, 200);
+  return doc.output("blob");
+}
+window.receiptStop = async id => {
+  const s = state.stops.find(x=>x.id===id); if(!s) return;
+  if (!window.jspdf){ alert("The PDF maker didn't load — check your connection and try again."); return; }
   const prev = s.receiptAmount!=null ? String(s.receiptAmount) : "";
   const v = prompt("Amount paid (dollars):", prev);
   if (v===null) return;                                    // cancelled
   const amt = parseFloat(String(v).replace(/[^0-9.]/g,""));
   if (!isFinite(amt) || amt<0) return alert("Enter the dollar amount, e.g. 40");
   s.receiptAmount = amt; s.receiptSent = true; save(); render();
-  const items = (s.appliances&&s.appliances.length) ? s.appliances.join(", ") : "Whiteware";
-  const today = new Date().toLocaleDateString("en-NZ",{weekday:"long", day:"numeric", month:"long", year:"numeric"});
-  const name = (s.first_name||"").trim();
-  const body = `Hey${name?" "+name:""}, here's your receipt for whiteware collection. Thank you :)
-
---------------------------------
-RECEIPT — Naki Wreck Removals
---------------------------------
-Date: ${today}
-Received from: ${fullName(s)||"Customer"}
-Address: ${fullAddr(s)}
-
-Collected: ${items}
-Amount paid: $${amt.toFixed(2)}
-Payment received in full.
---------------------------------
-
-Naki Wreck Removals
-nakiwreckremoval@gmail.com`;
-  const subjectItem = (s.appliances&&s.appliances.length===1) ? s.appliances[0] : "Whiteware";
-  openGmail({to:s.email.trim(), subject:`Receipt - ${subjectItem}`, body});
+  const blob = buildReceiptPdf(s, amt);
+  const fname = `Receipt - ${(fullName(s)||"pickup").replace(/[^\w \-]/g,"")}.pdf`;
+  const file = new File([blob], fname, { type:"application/pdf" });
+  if (goodEmail(s.email)) copyPlainText(s.email.trim());   // ready to paste into "To"
+  if (navigator.canShare && navigator.canShare({ files:[file] })){
+    try{
+      await navigator.share({ files:[file], title:"Whiteware receipt" });
+      if (goodEmail(s.email)) flash("✓ Their email is copied — paste it into To.");
+      return;
+    }catch(e){ if (e && e.name==="AbortError") return; /* else fall through */ }
+  }
+  // Desktop / no share sheet: download the PDF and open a Gmail draft to attach it to.
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob); a.download = fname;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(a.href), 4000);
+  if (goodEmail(s.email)) openGmail({ to:s.email.trim(), subject:"Receipt - Whiteware collection" });
+  flash("✓ Receipt downloaded — attach it to the email.");
 };
 function copyPlainText(value){
   const box = document.createElement("textarea");
@@ -1484,16 +1520,33 @@ document.querySelectorAll(".tabs button").forEach(b=>{
   };
 });
 
-// Type one
+// Type one — address plus the details that power the pickup-card buttons.
+function oneDetails(s){
+  const name = $("#oneName").value.trim().split(/\s+/).filter(Boolean);
+  s.first_name = name[0]||""; s.last_name = name.slice(1).join(" ");
+  s.phone = $("#onePhone").value.trim();
+  s.email = $("#oneEmail").value.trim();
+  s.appliances = $("#oneItems").value.split(/[;,]/).map(x=>x.trim()).filter(Boolean);
+  return s;
+}
+function clearOneInputs(){ ["oneAddr","oneName","onePhone","oneEmail","oneItems"].forEach(id=>{ const el=$("#"+id); if(el) el.value=""; }); }
 $("#oneAdd").onclick = async () => {
   const v = $("#oneAddr").value.trim(); if(!v) return;
   $("#acOne").classList.remove("show");
+  const s = oneDetails(stopFromAddress(v));
   if (oneAddrPicked){   // exact spot chosen from suggestions — skip the lookup
-    const s = stopFromAddress(v); s.lat=oneAddrPicked.lat; s.lng=oneAddrPicked.lng;
-    state.stops.push(s); state.manual=false; oneAddrPicked=null;
-    $("#oneAddr").value=""; save(); render(); drawRoute(); flash("✓ Added "+v); return;
+    s.lat=oneAddrPicked.lat; s.lng=oneAddrPicked.lng; oneAddrPicked=null;
+    state.stops.push(s);
+  } else {
+    busy("Finding the address…");
+    const hit = await geocode(fullAddr(s));
+    busy("");
+    if (hit){ s.lat=hit.lat; s.lng=hit.lng; state.stops.push(s); }
+    else state.bad.push(s);   // park it in "Needs address" below
   }
-  $("#oneAddr").value = ""; await addAddressLines([v]);
+  state.manual=false; clearOneInputs();
+  save(); render(); drawRoute();
+  flash(s.lat!=null ? "✓ Added "+v : "Couldn't place that address — fix it below.");
 };
 // Voice add (Web Speech API — optional, hands-free)
 $("#oneMic").onclick = () => {
@@ -1505,60 +1558,6 @@ $("#oneMic").onclick = () => {
   rec.onerror = () => { $("#oneMic").textContent="🎤"; };
   rec.onend = () => { $("#oneMic").textContent="🎤"; };
   rec.start();
-};
-
-// Paste list
-$("#pasteAdd").onclick = async () => {
-  const text = $("#pasteBox").value;
-  const csv = parseCSV(text);
-  if (csv && csv.length){ $("#pasteBox").value=""; addFileStops(normalizeRows(csv), "pasted list"); return; }
-  $("#pasteBox").value="";
-  await addAddressLines(text.split(/\r?\n/));
-};
-
-// Load file (.json or .csv)
-$("#fileInput").onchange = e => {
-  const f = e.target.files[0]; if(!f) return;
-  const name = f.name.toLowerCase();
-  setFileStatus(`<span class="spinner"></span> Selected “${esc(f.name)}” — reading…`);   // instant feedback
-
-  // Excel (.xlsx/.xls): parse with SheetJS, map the headers, then add.
-  if (/\.xls[xm]?$/i.test(name)){
-    if (!window.XLSX){ setFileStatus("Excel reader didn't load — check your connection, or save the sheet as CSV."); e.target.value=""; return; }
-    const reader = new FileReader();
-    reader.onload = () => {
-      try{
-        const wb = XLSX.read(reader.result, { type:"array" });
-        const ws = wb.Sheets[wb.SheetNames[0]];
-        const raw = XLSX.utils.sheet_to_json(ws, { defval:"" });
-        if (!raw.length){ setFileStatus("That spreadsheet's first tab looks empty."); return; }
-        addFileStops(normalizeRows(raw), f.name);
-      }catch(err){ setFileStatus("Couldn't read that Excel file — try File → Download → CSV instead."); }
-    };
-    reader.onerror = () => setFileStatus("Couldn't read that file.");
-    reader.readAsArrayBuffer(f);
-    e.target.value=""; return;
-  }
-
-  // JSON or CSV (text).
-  const reader = new FileReader();
-  reader.onload = () => {
-    const text = reader.result;
-    try{
-      if (/\.json$/i.test(name) || text.trim().startsWith("[") || text.trim().startsWith("{")){
-        let rows = JSON.parse(text);
-        if (!Array.isArray(rows)) rows = [rows];
-        addFileStops(normalizeRows(rows), f.name);
-      } else {
-        const csv = parseCSV(text);
-        if (csv) addFileStops(normalizeRows(csv), f.name);
-        else { setFileStatus(`Reading “${esc(f.name)}” as a plain address list…`); addAddressLines(text.split(/\r?\n/)); }
-      }
-    }catch(err){ setFileStatus("Couldn't read that file — make sure it's the Excel/CSV/JSON export."); }
-  };
-  reader.onerror = () => setFileStatus("Couldn't read that file.");
-  reader.readAsText(f);
-  e.target.value="";
 };
 
 // Google Sheet — read a shared sheet straight into the run (no Drive browsing, no login).
@@ -1592,8 +1591,25 @@ async function loadFromSheet(url){
     !/^(done|complete|completed|collected)$/i.test((r.status||"").trim()));
   if (!rows.length){ setSheetStatus("No pending pickups found in that sheet."); return; }
   state.sheetUrl = url.trim(); save();
+  // Rows Woody deleted from the sheet = cancellations. Drop pending stops that
+  // came from the sheet (real submission IDs) but are no longer in it.
+  // Uses ALL rows (even completed ones) so a row marked done isn't "vanished",
+  // and only runs when the sheet actually carries submission IDs.
+  let removedGone = 0;
+  const allIds = new Set(normalizeRows(parsed).map(r=>normKey(r.submission_id)).filter(Boolean));
+  if (allIds.size){
+    const fromSheet = s => { const id=String(s.submission_id||"").trim(); return id && !/^s[a-z0-9]{12}$/i.test(id); };
+    const vanished = s => fromSheet(s) && !allIds.has(normKey(s.submission_id));
+    const goneStops = state.stops.filter(s => s.status!=="DONE" && vanished(s));
+    goneStops.forEach(s => { if (Array.isArray(state.messageSelectedIds)) state.messageSelectedIds = state.messageSelectedIds.filter(x=>x!==s.id); });
+    state.stops = state.stops.filter(s => !(s.status!=="DONE" && vanished(s)));
+    state.bad = (state.bad||[]).filter(s => !vanished(s));
+    removedGone = goneStops.length;
+    if (removedGone) save();
+  }
   setSheetStatus(`✓ Found ${rows.length} pickup${rows.length!==1?'s':''} — adding…`);
-  addFileStops(rows, "Google Sheet", setSheetStatus);
+  addFileStops(rows, "Google Sheet", setSheetStatus,
+    removedGone ? ` Removed ${removedGone} no longer in the sheet.` : "");
 }
 $("#sheetLoad").onclick = () => loadFromSheet($("#sheetUrl").value);
 if (state.sheetUrl) $("#sheetUrl").value = state.sheetUrl;   // remember the last sheet
