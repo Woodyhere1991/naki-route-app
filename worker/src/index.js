@@ -400,6 +400,43 @@ async function handleAddress(request, env) {
   });
 }
 
+// Email a receipt PDF straight to the customer via Woody's own Brevo account
+// (sender nakiwreckremoval@gmail.com is Brevo-verified; replies go to the
+// Naki Whiteware Removal address). Key lives in the BREVO_API_KEY secret.
+async function handleSendReceipt(request, env) {
+  if (!env.BREVO_API_KEY) return json(request, { error: "Email sending is not configured" }, 503);
+  let body;
+  try { body = await request.json(); } catch { return json(request, { error: "Bad request" }, 400); }
+  const to = String(body.to || "").trim();
+  const name = String(body.name || "").trim().slice(0, 80);
+  const pdf = String(body.pdfBase64 || "");
+  const filename = (String(body.filename || "").replace(/[^\w .\-]/g, "").slice(0, 80)) || "Receipt.pdf";
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(to)) return json(request, { error: "Invalid email address" }, 400);
+  if (!/^[A-Za-z0-9+/=]+$/.test(pdf) || pdf.length < 100 || pdf.length > 2000000) return json(request, { error: "Invalid PDF" }, 400);
+  const first = name.split(/\s+/)[0] || "";
+  const payload = {
+    sender: { name: "Naki Whiteware Removal", email: "nakiwreckremoval@gmail.com" },
+    replyTo: { name: "Naki Whiteware Removal", email: "nakiwhitewareremoval@gmail.com" },
+    to: [{ email: to, ...(name ? { name } : {}) }],
+    subject: "Your whiteware collection receipt",
+    textContent: `Hey${first ? " " + first : ""},\n\nThanks heaps! Your receipt for the whiteware collection is attached.\n\nCheers,\nWoody\nNaki Whiteware Removal\nnakiwhitewareremoval@gmail.com`,
+    attachment: [{ name: filename, content: pdf }]
+  };
+  const response = await fetch("https://api.brevo.com/v3/smtp/email", {
+    method: "POST",
+    // trim: secrets piped in on Windows can pick up a stray trailing newline
+    headers: { "api-key": String(env.BREVO_API_KEY).trim(), "Content-Type": "application/json", "Accept": "application/json" },
+    body: JSON.stringify(payload)
+  });
+  if (!response.ok) {
+    let detail = "";
+    try { detail = ((await response.json()) || {}).message || ""; } catch { /* keep the generic error */ }
+    return json(request, { error: "Email could not be sent" + (detail ? ` (${detail})` : "") }, 502);
+  }
+  const out = await response.json().catch(() => ({}));
+  return json(request, { ok: true, messageId: out.messageId || "" });
+}
+
 export default {
   async fetch(request, env) {
     if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: cors(request) });
@@ -410,6 +447,7 @@ export default {
       if (path === "/weather" && request.method === "POST") return await handleWeather(request, env);
       if (path === "/gms-hours" && request.method === "GET") return await handleGms(request, env);
       if (path === "/address-search" && request.method === "GET") return await handleAddress(request, env);
+      if (path === "/send-receipt" && request.method === "POST") return await handleSendReceipt(request, env);
       return json(request, { error: "Not found" }, 404);
     } catch (error) {
       return json(request, { error: "Live service could not be loaded" }, 502);

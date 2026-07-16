@@ -1449,11 +1449,14 @@ window.receiptStop = async id => {
 let receiptPreviewUrl = null;
 window.openReceiptPreview = id => {
   const file = pendingReceipts[id]; if (!file) return;
+  const s = state.stops.find(x=>x.id===id);
   const wrapEl = document.getElementById("receiptPreview");
   if (receiptPreviewUrl) URL.revokeObjectURL(receiptPreviewUrl);
   receiptPreviewUrl = URL.createObjectURL(file);
   document.getElementById("receiptFrame").src = receiptPreviewUrl;
-  document.getElementById("receiptSendBtn").onclick = () => { closeReceiptPreview(); sendReceipt(id); };
+  const btn = document.getElementById("receiptSendBtn");
+  btn.textContent = (s && goodEmail(s.email)) ? "📧 Email receipt" : "📤 Send receipt";
+  btn.onclick = () => { closeReceiptPreview(); sendReceipt(id); };
   wrapEl.style.display = "flex";
 };
 window.closeReceiptPreview = () => {
@@ -1462,12 +1465,35 @@ window.closeReceiptPreview = () => {
   document.getElementById("receiptFrame").src = "about:blank";
   if (receiptPreviewUrl){ URL.revokeObjectURL(receiptPreviewUrl); receiptPreviewUrl = null; }
 };
+async function fileToBase64(file){
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  let bin = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  return btoa(bin);
+}
 window.sendReceipt = async id => {
   const s = state.stops.find(x=>x.id===id);
   const file = pendingReceipts[id];
   if (!s || !file){ render(); return; }
-  if (goodEmail(s.email)) copyPlainText(s.email.trim());   // ready to paste into "To"
   const done = () => { delete pendingReceipts[id]; s.receiptSent = true; save(); render(); };
+  // Customer has an email: the server emails the PDF for us — no Gmail screen at all.
+  if (goodEmail(s.email)){
+    const to = s.email.trim();
+    busy("Emailing the receipt…");
+    try{
+      const res = await fetch(`${API}/send-receipt`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ to, name: fullName(s), filename: file.name, pdfBase64: await fileToBase64(file) })
+      });
+      const out = await res.json().catch(()=>({}));
+      busy("");
+      if (res.ok && out.ok){ done(); flash("✓ Receipt emailed to " + to); return; }
+    }catch(e){ busy(""); }
+    flash("Couldn't email it right now — sharing instead.");
+  }
+  // No email (or the send failed): hand the PDF to the share sheet / a download.
+  if (goodEmail(s.email)) copyPlainText(s.email.trim());   // ready to paste into "To"
   if (navigator.canShare && navigator.canShare({ files:[file] })){
     try{
       await navigator.share({ files:[file], title:"Naki Whiteware Removal receipt" });
