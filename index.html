@@ -371,6 +371,15 @@
   <button data-view-button="add">Add &amp; setup</button>
 </nav>
 
+<!-- Receipt PDF preview: look it over, then Send (share sheet) or Close -->
+<div id="receiptPreview" style="position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:9999;display:none;flex-direction:column;padding:10px;padding-bottom:max(10px, env(safe-area-inset-bottom))">
+  <iframe id="receiptFrame" title="Receipt preview" style="flex:1;border:0;border-radius:14px;background:#fff"></iframe>
+  <div style="display:flex;gap:8px;margin-top:10px">
+    <button class="ghost" style="flex:1" onclick="closeReceiptPreview()">Close</button>
+    <button class="good" style="flex:2" id="receiptSendBtn">📤 Send receipt</button>
+  </div>
+</div>
+
 <script>
 "use strict";
 /* ============================================================
@@ -1024,7 +1033,7 @@ function renderList(){
     const textBtn  = s.phone ? `<button class="ghost sm" onclick="textStop('${s.id}')">💬 Text</button>` : "";
     const emailBtn = goodEmail(s.email) ? `<button class="ghost sm" onclick="gmailStop('${s.id}')">Email</button>` : "";
     const receiptBtn = pendingReceipts[s.id]
-      ? `<button class="good sm" onclick="sendReceipt('${s.id}')">📤 Send receipt</button>`
+      ? `<button class="good sm" onclick="openReceiptPreview('${s.id}')">👁 Preview &amp; send</button>`
       : `<button class="ghost sm" onclick="receiptStop('${s.id}')">🧾 ${s.receiptSent?'Receipt ✓':'Receipt'}</button>`;
     const prioBtn  = isDone ? "" : `<button class="${asap?'bad':'ghost'} sm" onclick="togglePriority('${s.id}')" title="Make this an ASAP stop">${asap?'⭐ ASAP':'☆ ASAP'}</button>`;
     const navBtn   = (!isDone && s.lat!=null) ? `<button class="sm nav-action" onclick="navStop('${s.id}')">🧭 Navigate</button>` : "";
@@ -1345,21 +1354,50 @@ window.gmailStop = id => {
 // Build a PDF receipt and hand it to the phone's share sheet (pick Gmail there
 // and it's attached, customer's email already on the clipboard). Falls back to
 // downloading the PDF + opening a Gmail draft on desktop.
-function buildReceiptPdf(s, amt){
+// Logo for the PDF, loaded once from the app's own assets.
+let receiptLogo = null;
+async function loadReceiptLogo(){
+  if (receiptLogo !== null) return receiptLogo;
+  try{
+    // Plain onload with a hard timeout — img.decode() hangs in some webviews,
+    // and the receipt must never hang on a missing logo.
+    const img = await new Promise((res, rej) => {
+      const i = new Image();
+      i.onload = () => res(i);
+      i.onerror = () => rej(new Error("logo failed"));
+      setTimeout(() => rej(new Error("logo timeout")), 6000);
+      i.src = "assets/naki-wreck-removals-logo-cropped.png";
+    });
+    const w = 300, h = Math.max(1, Math.round(img.naturalHeight / img.naturalWidth * 300));
+    const c = document.createElement("canvas"); c.width = w; c.height = h;
+    c.getContext("2d").drawImage(img, 0, 0, w, h);
+    receiptLogo = { data: c.toDataURL("image/png"), ratio: h / w };
+  }catch(e){ receiptLogo = false; }     // no logo — the receipt still works
+  return receiptLogo;
+}
+loadReceiptLogo();   // warm it up at boot so the first Receipt tap is instant
+async function buildReceiptPdf(s, amt){
   const { jsPDF } = window.jspdf;
   const doc = new jsPDF({ unit:"mm", format:"a5" });
   const W = 148, M = 14;
   const items = (s.appliances&&s.appliances.length) ? s.appliances : ["Whiteware"];
   const today = new Date().toLocaleDateString("en-NZ",{weekday:"long", day:"numeric", month:"long", year:"numeric"});
-  // Header band
+  // Header band with logo
   doc.setFillColor(6, 29, 46);            // app navy
-  doc.rect(0, 0, W, 30, "F");
+  doc.rect(0, 0, W, 32, "F");
+  let textX = M;
+  const logo = await loadReceiptLogo();
+  if (logo){
+    const lh = 22, lw = lh / logo.ratio;
+    doc.addImage(logo.data, "PNG", M, 5, lw, lh);
+    textX = M + lw + 6;
+  }
   doc.setTextColor(244, 135, 34);         // app orange
-  doc.setFont("helvetica", "bold"); doc.setFontSize(18);
-  doc.text("NAKI WRECK REMOVALS", M, 13);
+  doc.setFont("helvetica", "bold"); doc.setFontSize(17);
+  doc.text("NAKI WHITEWARE REMOVAL", textX, 14);
   doc.setTextColor(255, 248, 233);
   doc.setFontSize(11); doc.setFont("helvetica", "normal");
-  doc.text("Whiteware Collection Receipt", M, 21);
+  doc.text("Whiteware Collection Receipt", textX, 22);
   // Details
   doc.setTextColor(30, 30, 30);
   let y = 44;
@@ -1385,14 +1423,15 @@ function buildReceiptPdf(s, amt){
   doc.text("Payment received in full — thank you!", M, y);
   // Footer
   doc.setFontSize(9); doc.setTextColor(120);
-  doc.text("Naki Wreck Removals  ·  nakiwreckremoval@gmail.com", M, 200);
+  doc.text("Naki Whiteware Removal  ·  nakiwhitewareremoval@gmail.com", M, 200);
   return doc.output("blob");
 }
 // Two taps on purpose: iPhone only opens the share sheet from a FRESH tap, and
-// the amount prompt uses that tap up. Tap 1 (Receipt): ask amount, build the PDF.
-// Tap 2 (Send receipt): straight into the share sheet — pick Gmail, PDF attached.
-window.receiptStop = id => {
+// the amount prompt uses that tap up. Tap 1 (Receipt): ask amount, build the PDF
+// and show a preview. Tap 2 (Send, on the preview): straight into the share sheet.
+window.receiptStop = async id => {
   const s = state.stops.find(x=>x.id===id); if(!s) return;
+  if (pendingReceipts[id]) return openReceiptPreview(id);   // already built — just preview
   if (!window.jspdf){ alert("The PDF maker didn't load — check your connection and try again."); return; }
   const prev = s.receiptAmount!=null ? String(s.receiptAmount) : "";
   const v = prompt("Amount paid (dollars):", prev);
@@ -1400,11 +1439,28 @@ window.receiptStop = id => {
   const amt = parseFloat(String(v).replace(/[^0-9.]/g,""));
   if (!isFinite(amt) || amt<0) return alert("Enter the dollar amount, e.g. 40");
   s.receiptAmount = amt;
-  const blob = buildReceiptPdf(s, amt);
+  const blob = await buildReceiptPdf(s, amt);
   const fname = `Receipt - ${(fullName(s)||"pickup").replace(/[^\w \-]/g,"")}.pdf`;
   pendingReceipts[id] = new File([blob], fname, { type:"application/pdf" });
   save(); render();
-  flash("✓ Receipt ready — now tap 📤 Send receipt.");
+  openReceiptPreview(id);
+};
+// Full-screen preview of the built PDF with Close / Send underneath.
+let receiptPreviewUrl = null;
+window.openReceiptPreview = id => {
+  const file = pendingReceipts[id]; if (!file) return;
+  const wrapEl = document.getElementById("receiptPreview");
+  if (receiptPreviewUrl) URL.revokeObjectURL(receiptPreviewUrl);
+  receiptPreviewUrl = URL.createObjectURL(file);
+  document.getElementById("receiptFrame").src = receiptPreviewUrl;
+  document.getElementById("receiptSendBtn").onclick = () => { closeReceiptPreview(); sendReceipt(id); };
+  wrapEl.style.display = "flex";
+};
+window.closeReceiptPreview = () => {
+  const wrapEl = document.getElementById("receiptPreview");
+  wrapEl.style.display = "none";
+  document.getElementById("receiptFrame").src = "about:blank";
+  if (receiptPreviewUrl){ URL.revokeObjectURL(receiptPreviewUrl); receiptPreviewUrl = null; }
 };
 window.sendReceipt = async id => {
   const s = state.stops.find(x=>x.id===id);
@@ -1414,7 +1470,7 @@ window.sendReceipt = async id => {
   const done = () => { delete pendingReceipts[id]; s.receiptSent = true; save(); render(); };
   if (navigator.canShare && navigator.canShare({ files:[file] })){
     try{
-      await navigator.share({ files:[file], title:"Whiteware receipt" });
+      await navigator.share({ files:[file], title:"Naki Whiteware Removal receipt" });
       done();
       if (goodEmail(s.email)) flash("✓ Their email is copied — paste it into To.");
       return;
