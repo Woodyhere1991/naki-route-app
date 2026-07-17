@@ -100,7 +100,8 @@
   .chip{background:#08283d;border:1px solid var(--line);border-radius:999px;padding:3px 10px;font-size:13px}
   .areatag{font-size:11px;font-weight:700;padding:2px 8px;border-radius:999px;color:#06121f}
   .stopbtns{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:10px}
-  .stopbtns button{width:100%;min-width:0;padding:0 7px;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  /* Labels wrap onto a second line rather than truncating — the whole word must stay readable. */
+  .stopbtns button{width:100%;min-width:0;padding:6px 7px;font-size:14px;white-space:normal;overflow-wrap:anywhere}
   .stopbtns .nav-action{grid-column:span 2}
   .arrows{display:flex;flex-direction:row;gap:6px}
   .arrows button{min-height:40px;min-width:44px;padding:0 10px;font-size:16px;line-height:1;border-radius:10px}
