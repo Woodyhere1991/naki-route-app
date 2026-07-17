@@ -404,7 +404,7 @@ async function handleAddress(request, env) {
 // (sender nakiwreckremoval@gmail.com is Brevo-verified; replies go to the
 // Naki Whiteware Removal address). Key lives in the BREVO_API_KEY secret.
 async function handleSendReceipt(request, env) {
-  if (!env.BREVO_API_KEY) return json(request, { error: "Email sending is not configured" }, 503);
+  if (!mailConfigured(env)) return json(request, { error: "Email sending is not configured" }, 503);
   let body;
   try { body = await request.json(); } catch { return json(request, { error: "Bad request" }, 400); }
   const to = String(body.to || "").trim();
@@ -414,34 +414,21 @@ async function handleSendReceipt(request, env) {
   if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(to)) return json(request, { error: "Invalid email address" }, 400);
   if (!/^[A-Za-z0-9+/=]+$/.test(pdf) || pdf.length < 100 || pdf.length > 2000000) return json(request, { error: "Invalid PDF" }, 400);
   const first = name.split(/\s+/)[0] || "";
-  const payload = {
-    sender: { name: "Naki Whiteware Removal", email: "nakiwreckremoval@gmail.com" },
-    replyTo: { name: "Naki Whiteware Removal", email: "nakiwhitewareremoval@gmail.com" },
-    to: [{ email: to, ...(name ? { name } : {}) }],
+  const sent = await sendMail(env, {
+    to, name,
     subject: "Your whiteware collection receipt",
-    textContent: `Hey${first ? " " + first : ""},\n\nThanks heaps! Your receipt for the whiteware collection is attached.\n\nCheers,\nWoody\nNaki Whiteware Removal\nnakiwhitewareremoval@gmail.com`,
+    text: `Hey${first ? " " + first : ""},\n\nThanks heaps! Your receipt for the whiteware collection is attached.\n\nCheers,\nWoody\nNaki Whiteware Removal\nnakiwhitewareremoval@gmail.com`,
     attachment: [{ name: filename, content: pdf }]
-  };
-  const response = await fetch("https://api.brevo.com/v3/smtp/email", {
-    method: "POST",
-    // trim: secrets piped in on Windows can pick up a stray trailing newline
-    headers: { "api-key": String(env.BREVO_API_KEY).trim(), "Content-Type": "application/json", "Accept": "application/json" },
-    body: JSON.stringify(payload)
   });
-  if (!response.ok) {
-    let detail = "";
-    try { detail = ((await response.json()) || {}).message || ""; } catch { /* keep the generic error */ }
-    return json(request, { error: "Email could not be sent" + (detail ? ` (${detail})` : "") }, 502);
-  }
-  const out = await response.json().catch(() => ({}));
-  return json(request, { ok: true, messageId: out.messageId || "" });
+  if (!sent) return json(request, { error: "Email could not be sent" }, 502);
+  return json(request, { ok: true });
 }
 
 // Bulk confirmations/reminders: one personalised email per customer (not one
 // BCC blob), sent through the same Brevo account as the receipts. Capped at 40
 // per call — well inside Brevo's 300/day and the worker's subrequest budget.
 async function handleSendBulk(request, env) {
-  if (!env.BREVO_API_KEY) return json(request, { error: "Email sending is not configured" }, 503);
+  if (!mailConfigured(env)) return json(request, { error: "Email sending is not configured" }, 503);
   let body;
   try { body = await request.json(); } catch { return json(request, { error: "Bad request" }, 400); }
   const subject = (String(body.subject || "").trim().slice(0, 150)) || "Whiteware collection";
@@ -455,26 +442,109 @@ async function handleSendBulk(request, env) {
     const name = String(m && m.name || "").trim().slice(0, 80);
     const text = String(m && m.body || "").trim().slice(0, 4000);
     if (!emailOk(to) || !text) { failed.push(to || "(blank)"); continue; }
-    try {
-      const response = await fetch("https://api.brevo.com/v3/smtp/email", {
-        method: "POST",
-        headers: { "api-key": String(env.BREVO_API_KEY).trim(), "Content-Type": "application/json", "Accept": "application/json" },
-        body: JSON.stringify({
-          sender: { name: "Naki Whiteware Removal", email: "nakiwreckremoval@gmail.com" },
-          replyTo: { name: "Naki Whiteware Removal", email: "nakiwhitewareremoval@gmail.com" },
-          to: [{ email: to, ...(name ? { name } : {}) }],
-          subject,
-          textContent: text
-        })
-      });
-      if (response.ok) sent++; else failed.push(to);
-    } catch { failed.push(to); }
+    if (sent) await new Promise(r => setTimeout(r, 400));   // gentle pacing — a run of 40 looks human
+    const ok = await sendMail(env, { to, name, subject, text });
+    if (ok) sent++; else failed.push(to);
   }
   return json(request, { ok: true, sent, failed });
 }
 
-// Shared Brevo sender for invoices and payment reminders.
+/* ---------- Email sending ----------
+   Gmail API first (genuine gmail.com mail — passes DMARC, lands in the primary
+   inbox, shows in Woody's Sent folder). Brevo is the automatic fallback.
+   Why: Brevo sends "From: nakiwreckremoval@gmail.com" from non-Google servers,
+   which Yahoo/Xtra/Hotmail reject outright (DMARC) and Gmail tags "via brevosend". */
+let gmailTok = { token: "", exp: 0 };
+async function gmailAccessToken(env) {
+  if (gmailTok.token && Date.now() < gmailTok.exp - 60000) return gmailTok.token;
+  const body = new URLSearchParams({
+    client_id: String(env.GMAIL_CLIENT_ID || "").trim(),
+    client_secret: String(env.GMAIL_CLIENT_SECRET || "").trim(),
+    refresh_token: String(env.GMAIL_REFRESH_TOKEN || "").trim(),
+    grant_type: "refresh_token"
+  });
+  const r = await fetch("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body
+  });
+  if (!r.ok) throw new Error(`gmail token ${r.status}`);
+  const out = await r.json();
+  gmailTok = { token: out.access_token, exp: Date.now() + (out.expires_in || 3600) * 1000 };
+  return gmailTok.token;
+}
+
+// UTF-8-safe base64 (btoa alone chokes on macrons in customer names).
+function textToB64(str) {
+  const bytes = new TextEncoder().encode(str);
+  let bin = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  return btoa(bin);
+}
+
+function buildMime({ to, name, subject, text, attachment }) {
+  const toHeader = name ? `"${name.replace(/["\r\n]/g, "")}" <${to}>` : to;
+  const head = [
+    "From: Naki Whiteware Removal <nakiwreckremoval@gmail.com>",
+    `To: ${toHeader}`,
+    "Reply-To: Naki Whiteware Removal <nakiwhitewareremoval@gmail.com>",
+    `Subject: ${subject.replace(/[\r\n]/g, " ")}`,
+    "MIME-Version: 1.0"
+  ];
+  if (attachment && attachment.length) {
+    const B = "nakimail_boundary_2718";
+    const parts = [
+      `Content-Type: multipart/mixed; boundary="${B}"`, "",
+      `--${B}`,
+      "Content-Type: text/plain; charset=utf-8",
+      "Content-Transfer-Encoding: base64", "",
+      textToB64(text), ""
+    ];
+    for (const a of attachment) {
+      const fname = String(a.name || "attachment.pdf").replace(/["\r\n]/g, "");
+      parts.push(
+        `--${B}`,
+        `Content-Type: application/pdf; name="${fname}"`,
+        `Content-Disposition: attachment; filename="${fname}"`,
+        "Content-Transfer-Encoding: base64", "",
+        String(a.content).replace(/(.{76})/g, "$1\r\n"), ""
+      );
+    }
+    parts.push(`--${B}--`);
+    return head.concat(parts).join("\r\n");
+  }
+  return head.concat([
+    "Content-Type: text/plain; charset=utf-8",
+    "Content-Transfer-Encoding: base64", "",
+    textToB64(text)
+  ]).join("\r\n");
+}
+
+async function sendGmail(env, msg) {
+  if (!env.GMAIL_REFRESH_TOKEN) return false;
+  try {
+    const tok = await gmailAccessToken(env);
+    const raw = textToB64(buildMime(msg)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    const r = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/send", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${tok}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ raw })
+    });
+    return r.ok;
+  } catch { return false; }
+}
+
+// One front door: Gmail first, Brevo fallback so a Google hiccup never loses a send.
+async function sendMail(env, msg) {
+  if (await sendGmail(env, msg)) return true;
+  return sendBrevo(env, msg);
+}
+
+function mailConfigured(env) { return Boolean(env.GMAIL_REFRESH_TOKEN || env.BREVO_API_KEY); }
+
+// Brevo sender — now the fallback path only.
 async function sendBrevo(env, { to, name, subject, text, attachment }) {
+  if (!env.BREVO_API_KEY) return false;
   const payload = {
     sender: { name: "Naki Whiteware Removal", email: "nakiwreckremoval@gmail.com" },
     replyTo: { name: "Naki Whiteware Removal", email: "nakiwhitewareremoval@gmail.com" },
@@ -512,7 +582,7 @@ function reminderText(name, amount) {
 
 // Email the invoice PDF now and, if asked, park a reminder in KV for the cron.
 async function handleSendInvoice(request, env) {
-  if (!env.BREVO_API_KEY) return json(request, { error: "Email sending is not configured" }, 503);
+  if (!mailConfigured(env)) return json(request, { error: "Email sending is not configured" }, 503);
   let body;
   try { body = await request.json(); } catch { return json(request, { error: "Bad request" }, 400); }
   const to = String(body.to || "").trim();
@@ -523,7 +593,7 @@ async function handleSendInvoice(request, env) {
   const reminderDate = String(body.reminderDate || "").trim();
   if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(to)) return json(request, { error: "Invalid email address" }, 400);
   if (!/^[A-Za-z0-9+/=]+$/.test(pdf) || pdf.length < 100 || pdf.length > 2000000) return json(request, { error: "Invalid PDF" }, 400);
-  const sent = await sendBrevo(env, {
+  const sent = await sendMail(env, {
     to, name,
     subject: "Invoice - whiteware collection",
     text: invoiceText(name, amount),
@@ -552,7 +622,7 @@ async function handleCancelReminder(request, env) {
 
 // Send every reminder whose day has arrived (NZ time), then forget it.
 async function runReminders(env) {
-  if (!env.REMINDERS || !env.BREVO_API_KEY) return { sent: 0, note: "Not configured" };
+  if (!env.REMINDERS || !mailConfigured(env)) return { sent: 0, note: "Not configured" };
   const today = isoDate(aucklandToday());
   let sent = 0, failed = 0, cursor;
   do {
@@ -563,7 +633,7 @@ async function runReminders(env) {
       let r;
       try { r = JSON.parse(raw); } catch { await env.REMINDERS.delete(key.name); continue; }
       if (!r.date || r.date > today) continue;   // not due yet
-      const ok = await sendBrevo(env, { to: r.to, name: r.name, subject: "Payment reminder - whiteware collection", text: reminderText(r.name, r.amount) });
+      const ok = await sendMail(env, { to: r.to, name: r.name, subject: "Payment reminder - whiteware collection", text: reminderText(r.name, r.amount) });
       if (ok) { await env.REMINDERS.delete(key.name); sent++; }
       else failed++;                             // left in KV — retried on the next run
     }
