@@ -383,6 +383,19 @@
   </div>
 </div>
 
+<!-- Pick the auto payment-reminder day (native calendar) before an invoice goes out -->
+<div id="remindPick" style="position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:10000;display:none;align-items:center;justify-content:center;padding:20px">
+  <div style="background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px;max-width:360px;width:100%">
+    <b style="font-size:1.05em">💰 Auto payment reminder</b>
+    <p class="small muted" style="margin:8px 0 10px">If they haven't paid by this day, they get an automatic reminder email that morning. Tap the date to change it.</p>
+    <input type="date" id="remindDate" style="width:100%;color-scheme:dark" />
+    <div style="display:flex;gap:8px;margin-top:12px">
+      <button class="ghost" style="flex:1" id="remindSkip">No reminder</button>
+      <button class="good" style="flex:1" id="remindOk">Set &amp; send</button>
+    </div>
+  </div>
+</div>
+
 <script>
 "use strict";
 /* ============================================================
@@ -1656,6 +1669,21 @@ window.cancelInvoice = id => {
   if (s) s.invoiceAmount = null;              // forget the wrong amount so Invoice re-asks fresh
   save(); render();
 };
+// Calendar picker for the reminder day. Resolves "" for no reminder.
+// Local date maths on purpose — toISOString() is UTC and lands a day early in NZ mornings.
+function localIso(d){ return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`; }
+function pickReminderDate(){
+  return new Promise(resolve => {
+    const wrap = document.getElementById("remindPick");
+    const input = document.getElementById("remindDate");
+    input.min = localIso(new Date());
+    input.value = localIso(new Date(Date.now()+7*86400000));   // a week out by default
+    const close = v => { wrap.style.display = "none"; resolve(v); };
+    document.getElementById("remindSkip").onclick = () => close("");
+    document.getElementById("remindOk").onclick = () => close(/^\d{4}-\d{2}-\d{2}$/.test(input.value) ? input.value : "");
+    wrap.style.display = "flex";
+  });
+}
 window.sendInvoice = async id => {
   const s = state.stops.find(x=>x.id===id);
   const file = pendingInvoices[id];
@@ -1670,13 +1698,7 @@ window.sendInvoice = async id => {
   // Customer has an email: server sends the PDF and can auto-remind later.
   if (goodEmail(s.email)){
     const to = s.email.trim();
-    const def = new Date(Date.now()+7*86400000).toISOString().slice(0,10);
-    const rv = prompt("Auto-remind them by email if unpaid — which day? (YYYY-MM-DD, blank = no reminder)", def);
-    let reminderDate = "";
-    if (rv!==null && rv.trim()){
-      if (/^\d{4}-\d{2}-\d{2}$/.test(rv.trim())) reminderDate = rv.trim();
-      else alert("Couldn't read that date — sending the invoice without a reminder.");
-    }
+    const reminderDate = await pickReminderDate();
     busy("Emailing the invoice…");
     try{
       const res = await fetch(`${API}/send-invoice`, {
