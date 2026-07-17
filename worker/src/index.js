@@ -493,7 +493,7 @@ async function sendBrevo(env, { to, name, subject, text, attachment }) {
   } catch { return false; }
 }
 
-const BANK_LINE = "Bank account: 06-0709-0967040-00  (NWR)";
+const BANK_LINE = "Bank account: 06-0709-0967040-00  (TRADING AS NWR)";
 const REF_LINE = "Reference: please use your name or address, as it was on the collection form";
 
 function firstName(name) { return String(name || "").trim().split(/\s+/)[0] || ""; }
