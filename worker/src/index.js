@@ -473,6 +473,105 @@ async function handleSendBulk(request, env) {
   return json(request, { ok: true, sent, failed });
 }
 
+// Shared Brevo sender for invoices and payment reminders.
+async function sendBrevo(env, { to, name, subject, text, attachment }) {
+  const payload = {
+    sender: { name: "Naki Whiteware Removal", email: "nakiwreckremoval@gmail.com" },
+    replyTo: { name: "Naki Whiteware Removal", email: "nakiwhitewareremoval@gmail.com" },
+    to: [{ email: to, ...(name ? { name } : {}) }],
+    subject,
+    textContent: text,
+    ...(attachment ? { attachment } : {})
+  };
+  try {
+    const response = await fetch("https://api.brevo.com/v3/smtp/email", {
+      method: "POST",
+      headers: { "api-key": String(env.BREVO_API_KEY).trim(), "Content-Type": "application/json", "Accept": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    return response.ok;
+  } catch { return false; }
+}
+
+const BANK_LINE = "Bank account: 06-0709-0967040-00  (NWR)";
+const REF_LINE = "Reference: please use your name or address, as it was on the collection form";
+
+function firstName(name) { return String(name || "").trim().split(/\s+/)[0] || ""; }
+
+function invoiceText(name, amount) {
+  const first = firstName(name);
+  const amt = Number.isFinite(Number(amount)) ? ` for $${Number(amount).toFixed(2)}` : "";
+  return `Hi${first ? " " + first : ""},\n\nYour invoice${amt} for the whiteware collection is attached.\n\n${BANK_LINE}\n${REF_LINE}\n\nCheers,\nWoody\nNaki Whiteware Removal\nnakiwhitewareremoval@gmail.com`;
+}
+
+function reminderText(name, amount) {
+  const first = firstName(name);
+  const amt = Number.isFinite(Number(amount)) ? ` of $${Number(amount).toFixed(2)}` : "";
+  return `Hi${first ? " " + first : ""},\n\nJust a friendly reminder about the payment${amt} for your whiteware collection.\n\n${BANK_LINE}\n${REF_LINE}\n\nIf you've already paid, thanks heaps — please ignore this.\n\nCheers,\nWoody\nNaki Whiteware Removal\nnakiwhitewareremoval@gmail.com`;
+}
+
+// Email the invoice PDF now and, if asked, park a reminder in KV for the cron.
+async function handleSendInvoice(request, env) {
+  if (!env.BREVO_API_KEY) return json(request, { error: "Email sending is not configured" }, 503);
+  let body;
+  try { body = await request.json(); } catch { return json(request, { error: "Bad request" }, 400); }
+  const to = String(body.to || "").trim();
+  const name = String(body.name || "").trim().slice(0, 80);
+  const pdf = String(body.pdfBase64 || "");
+  const filename = (String(body.filename || "").replace(/[^\w .\-]/g, "").slice(0, 80)) || "Invoice.pdf";
+  const amount = Number(body.amount);
+  const reminderDate = String(body.reminderDate || "").trim();
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(to)) return json(request, { error: "Invalid email address" }, 400);
+  if (!/^[A-Za-z0-9+/=]+$/.test(pdf) || pdf.length < 100 || pdf.length > 2000000) return json(request, { error: "Invalid PDF" }, 400);
+  const sent = await sendBrevo(env, {
+    to, name,
+    subject: "Invoice - whiteware collection",
+    text: invoiceText(name, amount),
+    attachment: [{ name: filename, content: pdf }]
+  });
+  if (!sent) return json(request, { error: "Email could not be sent" }, 502);
+  // Reminder: only for a real future-or-today date, and only if KV is bound.
+  let reminderId = "";
+  if (env.REMINDERS && /^\d{4}-\d{2}-\d{2}$/.test(reminderDate) && reminderDate >= isoDate(aucklandToday())) {
+    reminderId = crypto.randomUUID();
+    await env.REMINDERS.put(`rem:${reminderId}`, JSON.stringify({ to, name, amount: Number.isFinite(amount) ? amount : null, date: reminderDate }), { expirationTtl: 60 * 60 * 24 * 120 });
+  }
+  return json(request, { ok: true, reminderId });
+}
+
+// Customer paid: drop their queued reminder.
+async function handleCancelReminder(request, env) {
+  if (!env.REMINDERS) return json(request, { ok: true, note: "No reminder store" });
+  let body;
+  try { body = await request.json(); } catch { return json(request, { error: "Bad request" }, 400); }
+  const id = String(body.id || "").trim();
+  if (!/^[\w-]{8,64}$/.test(id)) return json(request, { error: "Invalid reminder id" }, 400);
+  await env.REMINDERS.delete(`rem:${id}`);
+  return json(request, { ok: true });
+}
+
+// Send every reminder whose day has arrived (NZ time), then forget it.
+async function runReminders(env) {
+  if (!env.REMINDERS || !env.BREVO_API_KEY) return { sent: 0, note: "Not configured" };
+  const today = isoDate(aucklandToday());
+  let sent = 0, failed = 0, cursor;
+  do {
+    const page = await env.REMINDERS.list({ prefix: "rem:", cursor });
+    for (const key of page.keys) {
+      const raw = await env.REMINDERS.get(key.name);
+      if (!raw) continue;
+      let r;
+      try { r = JSON.parse(raw); } catch { await env.REMINDERS.delete(key.name); continue; }
+      if (!r.date || r.date > today) continue;   // not due yet
+      const ok = await sendBrevo(env, { to: r.to, name: r.name, subject: "Payment reminder - whiteware collection", text: reminderText(r.name, r.amount) });
+      if (ok) { await env.REMINDERS.delete(key.name); sent++; }
+      else failed++;                             // left in KV — retried on the next run
+    }
+    cursor = page.list_complete ? null : page.cursor;
+  } while (cursor);
+  return { sent, failed, date: today };
+}
+
 export default {
   async fetch(request, env) {
     if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: cors(request) });
@@ -485,9 +584,16 @@ export default {
       if (path === "/address-search" && request.method === "GET") return await handleAddress(request, env);
       if (path === "/send-receipt" && request.method === "POST") return await handleSendReceipt(request, env);
       if (path === "/send-bulk" && request.method === "POST") return await handleSendBulk(request, env);
+      if (path === "/send-invoice" && request.method === "POST") return await handleSendInvoice(request, env);
+      if (path === "/cancel-reminder" && request.method === "POST") return await handleCancelReminder(request, env);
+      if (path === "/run-reminders" && request.method === "GET") return json(request, await runReminders(env));
       return json(request, { error: "Not found" }, 404);
     } catch (error) {
       return json(request, { error: "Live service could not be loaded" }, 502);
     }
+  },
+  // Daily at 21:00 UTC = 9am NZST (10am NZDT): send any due payment reminders.
+  async scheduled(event, env, ctx) {
+    ctx.waitUntil(runReminders(env));
   }
 };
