@@ -1513,10 +1513,7 @@ async function buildInvoicePdf(s, amt){
   doc.text("How to pay", M, y); y += 7;
   doc.setFont("helvetica", "normal"); doc.setFontSize(10);
   doc.text(`Bank account: ${BANK_ACCOUNT}  (${BANK_NAME})`, M, y); y += 6;
-  doc.text(`Reference: ${fullName(s) || fullAddr(s)}`, M, y); y += 6;
-  doc.setFontSize(9); doc.setTextColor(90);
-  const refNote = doc.splitTextToSize("Please use your name or address, exactly as it was on the collection form, as the payment reference.", W - 2*M);
-  doc.text(refNote, M, y);
+  doc.text(`Reference: ${fullName(s) || fullAddr(s)}`, M, y);
   doc.setFontSize(9); doc.setTextColor(120);
   doc.text("Naki Whiteware Removal  ·  nakiwhitewareremoval@gmail.com", M, 200);
   return doc.output("blob");
