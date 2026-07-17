@@ -192,7 +192,7 @@
   body[data-view="today"] .view-today,
   body[data-view="messages"] .view-messages,
   body[data-view="add"] .view-add{display:block}
-  .today-map{order:5}.today-actions{order:10}.today-filter{order:20}.today-list{order:30}.today-bad{order:40}
+  .today-map{order:5}.today-actions{order:10}.today-filter{order:20}.today-list{order:30}.today-bad{order:40}.today-unpaid{order:50}
   #bannerSave,#bannerOsrm{order:5} footer{order:100}
   .bottom-nav{position:fixed;left:0;right:0;bottom:0;z-index:2000;background:rgba(7,29,46,.98);
     border-top:1px solid var(--line);padding:8px max(10px,env(safe-area-inset-right)) calc(8px + env(safe-area-inset-bottom)) max(10px,env(safe-area-inset-left));
@@ -364,6 +364,9 @@
   <!-- NEEDS ADDRESS -->
   <div id="badWrap" class="view-panel view-today today-bad"></div>
 
+  <!-- UNPAID INVOICES — separate ledger, survives Clear all and sheet loads -->
+  <div id="unpaidWrap" class="view-panel view-today today-unpaid"></div>
+
   <footer>Only pickups you load • No login • Your run is saved on this phone</footer>
 </div>
 
@@ -425,6 +428,7 @@ let routeTiming = {};       // id -> {order, driveSec} cumulative drive time fro
 let importBusy = false;     // a sheet load is still geocoding — block overlapping loads
 let pendingReceipts = {};   // stop id -> built PDF File, waiting for the Send tap
 let pendingInvoices = {};   // stop id -> built invoice PDF, waiting for the Send tap
+let unpaidOpen = false;     // the Unpaid invoices dropdown stays as you left it across redraws
 // Payment details printed on every invoice + reminder email.
 const BANK_ACCOUNT = "06-0709-0967040-00";
 const BANK_NAME = "TRADING AS NWR";
@@ -442,10 +446,20 @@ function saveJSON(k, v){
 }
 function loadState(){
   const s = loadJSON(LS, null);
-  if (s && Array.isArray(s.stops)) return s;
-  return { stops:[], bad:[], start:null, end:null, roundTrip:false, manual:false };
+  if (!s || !Array.isArray(s.stops)) return { stops:[], bad:[], start:null, end:null, roundTrip:false, manual:false, unpaid:[] };
+  if (!Array.isArray(s.unpaid)) s.unpaid = [];
+  // One-off migration: invoiced-but-unpaid stops move out of the run into the unpaid ledger.
+  const owe = s.stops.filter(x => x.invoiceSent && !x.paid);
+  if (owe.length){
+    owe.forEach(x => { x.status = "DONE"; });
+    s.unpaid = owe.concat(s.unpaid);
+    s.stops = s.stops.filter(x => !(x.invoiceSent && !x.paid));
+  }
+  return s;
 }
 function save(){ saveJSON(LS, state); }
+// Buttons on unpaid-ledger cards reuse the stop handlers, so look both places.
+function findStop(id){ return state.stops.find(x => x.id === id) || (state.unpaid||[]).find(x => x.id === id); }
 function saveGeo(){ saveJSON(GEO, geocache); }
 
 function applyAppView(view){
@@ -585,7 +599,7 @@ function pickupKeys(s){
 }
 function knownPickupKeys(){
   const known = new Set();
-  state.stops.concat(state.bad||[]).forEach(s => pickupKeys(s).forEach(k => known.add(k)));
+  state.stops.concat(state.bad||[]).concat(state.unpaid||[]).forEach(s => pickupKeys(s).forEach(k => known.add(k)));
   return known;
 }
 
@@ -1014,6 +1028,7 @@ function render(){
   renderList();
   renderContacts();
   renderBad();
+  renderUnpaid();
   renderStart();
   renderWeather();
   renderGms();
@@ -1034,9 +1049,7 @@ function renderList(){
 
   const inArea = s => areaFilterValue==="all" || (s.area||"")===areaFilterValue;
   const pending = state.stops.filter(s => s.status!=="DONE" && inArea(s));
-  // Invoiced-but-unpaid pickups sit in their own "Still to pay" section until marked paid.
-  const owing   = state.stops.filter(s => s.status==="DONE" && s.invoiceSent && !s.paid && inArea(s));
-  const done    = state.stops.filter(s => s.status==="DONE" && !(s.invoiceSent && !s.paid) && inArea(s));
+  const done    = state.stops.filter(s => s.status==="DONE" && inArea(s));
   // First not-done stop = the "next" highlight.
   const nextId = (pending.find(s => s.lat!=null) || pending[0] || {}).id;
 
@@ -1063,21 +1076,18 @@ function renderList(){
     const invoiceBtn = pendingInvoices[s.id]
       ? `<button class="good sm" onclick="openInvoicePreview('${s.id}')">👁 Invoice preview</button><button class="ghost sm" title="Cancel this invoice and start again" onclick="cancelInvoice('${s.id}')">↺ Redo</button>`
       : `<button class="ghost sm" onclick="invoiceStop('${s.id}')">📄 ${s.invoiceSent?'Invoice ✓':'Invoice'}</button>`;
-    const owes = s.invoiceSent && !s.paid;
-    const paidBtn = owes ? `<button class="good sm" onclick="markPaid('${s.id}')">💰 Paid</button>` : "";
-    const owesTag = owes ? `<span class="asaptag" style="background:#c0392b">UNPAID</span>` : "";
     const prioBtn  = isDone ? "" : `<button class="${asap?'bad':'ghost'} sm" onclick="togglePriority('${s.id}')" title="Make this an ASAP stop">${asap?'⭐ ASAP':'☆ ASAP'}</button>`;
     const navBtn   = (!isDone && s.lat!=null) ? `<button class="sm nav-action" onclick="navStop('${s.id}')">🧭 Navigate</button>` : "";
     const doneBtn  = `<button class="${isDone?'warn':'good'} sm" onclick="toggleDone('${s.id}')">${isDone?'↺ Undo':'✓ Done'}</button>`;
     const del      = `<button class="ghost sm" title="Remove this stop" onclick="delStop('${s.id}')">✕</button>`;
     const btns = isDone
-      ? `${doneBtn}${paidBtn}${receiptBtn}${invoiceBtn}${editBtn}${noteBtn}${emailBtn}${del}`
-      : `${navBtn}${doneBtn}${phone}${textBtn}${emailBtn}${noteBtn}${prioBtn}${editBtn}${receiptBtn}${invoiceBtn}${paidBtn}${del}`;
+      ? `${doneBtn}${receiptBtn}${invoiceBtn}${editBtn}${noteBtn}${emailBtn}${del}`
+      : `${navBtn}${doneBtn}${phone}${textBtn}${emailBtn}${noteBtn}${prioBtn}${editBtn}${receiptBtn}${invoiceBtn}${del}`;
     return `<div class="stop ${isDone?'done':''} ${asap&&!isDone?'asap':''} ${s.id===nextId&&!isDone?'next':''}"
         data-id="${s.id}" style="border-left-color:${AREA_COLORS[area]||AREA_COLORS['']}">
       <div class="num">${num}</div>
       <div class="stopbody">
-        <div class="name">${esc(fullName(s)) || esc(fullAddr(s))} ${tag}${asapTag}${owesTag}</div>
+        <div class="name">${esc(fullName(s)) || esc(fullAddr(s))} ${tag}${asapTag}</div>
         <div class="addr">${esc(fullAddr(s))}</div>
         ${apps?`<div class="apps">${apps}</div>`:""}
         ${formNote}
@@ -1088,13 +1098,11 @@ function renderList(){
   };
 
   const pendRows = pending.map(s=>card(s,false)).join("");
-  const owingRows = owing.map(s=>card(s,true)).join("");
   const doneRows = done.map(s=>card(s,true)).join("");
 
   wrap.innerHTML =
     `<div class="sectitle">Today's run ${state.manual?'· manual order':''} · hold &amp; drag to reorder</div>
      <div id="pendingList">${pendRows || `<div class="empty" style="padding:16px 8px">Nothing pending — all picked up 🎉</div>`}</div>` +
-    (owing.length ? `<div class="sectitle" style="color:#c0392b">💰 Still to pay (${owing.length})</div><div id="owingList">${owingRows}</div>` : "") +
     (done.length ? `<div class="sectitle">Completed (${done.length})</div><div id="doneList">${doneRows}</div>` : "");
 
   // Drag only the pending list. Slot the reordered ids back into state.stops,
@@ -1116,6 +1124,54 @@ function renderList(){
       }
     });
   }
+}
+
+// The unpaid-invoices ledger: its own collapsible card, separate from the run.
+function renderUnpaid(){
+  const wrap = $("#unpaidWrap"); if (!wrap) return;
+  const list = state.unpaid || [];
+  if (!list.length){ wrap.innerHTML = ""; return; }
+  const owe = list.filter(s => !s.paid);
+  const settled = list.filter(s => s.paid);
+  const entry = s => {
+    const phone  = s.phone ? `<button class="ghost sm" onclick="callStop('${s.id}')">📞 Call</button>` : "";
+    const textB  = s.phone ? `<button class="ghost sm" onclick="textStop('${s.id}')">💬 Text</button>` : "";
+    const emailB = goodEmail(s.email) ? `<button class="ghost sm" onclick="gmailStop('${s.id}')">Email</button>` : "";
+    const invB = pendingInvoices[s.id]
+      ? `<button class="good sm" onclick="openInvoicePreview('${s.id}')">👁 Invoice preview</button><button class="ghost sm" onclick="cancelInvoice('${s.id}')">↺ Redo</button>`
+      : `<button class="ghost sm" onclick="invoiceStop('${s.id}')">📄 Invoice again</button>`;
+    const recB = pendingReceipts[s.id]
+      ? `<button class="good sm" onclick="openReceiptPreview('${s.id}')">👁 Preview &amp; send</button><button class="ghost sm" onclick="cancelReceipt('${s.id}')">↺ Redo</button>`
+      : `<button class="ghost sm" onclick="receiptStop('${s.id}')">🧾 ${s.receiptSent?'Receipt ✓':'Receipt'}</button>`;
+    const paidB = s.paid ? "" : `<button class="good sm" onclick="markPaid('${s.id}')">💰 Paid</button>`;
+    const del = `<button class="ghost sm" title="Remove from this list" onclick="removeUnpaid('${s.id}')">✕</button>`;
+    const meta = [
+      s.invoiceAmount!=null ? `$${Number(s.invoiceAmount).toFixed(2)}` : "",
+      s.invoicedAt ? `invoiced ${s.invoicedAt}` : "",
+      (!s.paid && s.reminderDate) ? `⏰ reminder ${s.reminderDate}` : ""
+    ].filter(Boolean).join(" · ");
+    return `<div class="stop ${s.paid?'done':''}" data-id="${s.id}" style="border-left-color:${s.paid?'var(--good)':'#c0392b'}">
+      <div class="num">${s.paid?'✓':'$'}</div>
+      <div class="stopbody">
+        <div class="name">${esc(fullName(s)) || esc(fullAddr(s))} ${s.paid?'':'<span class="asaptag" style="background:#c0392b">UNPAID</span>'}</div>
+        <div class="addr">${esc(fullAddr(s))}</div>
+        ${meta?`<div class="small muted" style="margin:2px 0">${meta}</div>`:""}
+        <div class="stopbtns">${s.paid ? `${recB}${emailB}${del}` : `${paidB}${recB}${invB}${phone}${textB}${emailB}${del}`}</div>
+      </div>
+    </div>`;
+  };
+  wrap.innerHTML = `<div class="card" style="padding:10px">
+    <details id="unpaidBox"${unpaidOpen?" open":""}>
+      <summary>💰 Unpaid invoices${owe.length?` (${owe.length})`:""} <span class="chev">›</span></summary>
+      <div style="padding-top:10px">
+        <p class="small muted" style="margin:0 0 8px">Separate from the run — Clear all and sheet loads never touch these. When the money lands tap 💰 Paid, send the receipt, then ✕.</p>
+        ${owe.map(entry).join("") || `<div class="empty small" style="padding:8px 4px">No one owes you right now 🎉</div>`}
+        ${settled.length ? `<div class="sectitle">Paid — send receipt, then ✕ (${settled.length})</div>${settled.map(entry).join("")}` : ""}
+      </div>
+    </details>
+  </div>`;
+  const box = document.getElementById("unpaidBox");
+  box.ontoggle = () => { unpaidOpen = box.open; };
 }
 
 function renderBad(){
@@ -1340,19 +1396,19 @@ window.clearMessageMarks = () => {
   save(); render();
 };
 window.toggleDone = id => {
-  const s = state.stops.find(x=>x.id===id); if(!s) return;
+  const s = findStop(id); if(!s) return;
   s.status = s.status==="DONE" ? "NEW" : "DONE"; save(); render(); drawRoute();
 };
 // Type a free note against a pickup (access instructions, "gate round back", etc.).
 window.editNote = id => {
-  const s = state.stops.find(x=>x.id===id); if(!s) return;
+  const s = findStop(id); if(!s) return;
   const v = prompt("Note for this pickup:", s.note||"");
   if (v===null) return;                       // cancelled
   s.note = v.trim(); save(); render();
 };
 // Edit what's being collected + the agreed price, so the receipt matches the job.
 window.editStop = id => {
-  const s = state.stops.find(x=>x.id===id); if(!s) return;
+  const s = findStop(id); if(!s) return;
   const items = prompt("Things you're picking up (separate with commas):", (s.appliances||[]).join(", "));
   if (items===null) return;                   // cancelled — leave the pickup untouched
   s.appliances = items.split(/[;,]/).map(x=>x.trim()).filter(Boolean);
@@ -1368,7 +1424,7 @@ window.editStop = id => {
 window.cancelReceipt = id => {
   if (!pendingReceipts[id]) return;
   delete pendingReceipts[id];
-  const s = state.stops.find(x=>x.id===id);
+  const s = findStop(id);
   if (s) s.receiptAmount = null;              // forget the wrong amount so Receipt re-asks fresh
   save(); render();
 };
@@ -1389,7 +1445,7 @@ function openGmail(fields){
     if (!appOpened && document.visibilityState !== "hidden") location.href = webUrl;
   }, 1400);
 }
-window.textStop = id => { const s=state.stops.find(x=>x.id===id); if(s&&s.phone) location.href="sms:"+s.phone.replace(/\s+/g,""); };
+window.textStop = id => { const s=findStop(id); if(s&&s.phone) location.href="sms:"+s.phone.replace(/\s+/g,""); };
 window.setMessageMode = m => { state.messageMode = m==="reminder" ? "reminder" : "confirm"; save(); renderContacts(); };
 window.setTownWindow = (key, field, value) => {
   if (!/^\d{1,2}:\d{2}$/.test(value||"")) return;
@@ -1403,7 +1459,7 @@ window.resetTownWindows = () => {
   save(); renderContacts();
 };
 window.gmailStop = id => {
-  const s=state.stops.find(x=>x.id===id);
+  const s=findStop(id);
   if (s && goodEmail(s.email)) openGmail({to:s.email.trim()});
 };
 // Build a PDF receipt and hand it to the phone's share sheet (pick Gmail there
@@ -1537,7 +1593,7 @@ async function buildInvoicePdf(s, amt){
 // the amount prompt uses that tap up. Tap 1 (Receipt): ask amount, build the PDF
 // and show a preview. Tap 2 (Send, on the preview): straight into the share sheet.
 window.receiptStop = async id => {
-  const s = state.stops.find(x=>x.id===id); if(!s) return;
+  const s = findStop(id); if(!s) return;
   if (pendingReceipts[id]) return openReceiptPreview(id);   // already built — just preview
   if (!window.jspdf){ alert("The PDF maker didn't load — check your connection and try again."); return; }
   // Prefill: the last amount used here, else the price set on the pickup, else blank.
@@ -1557,7 +1613,7 @@ window.receiptStop = async id => {
 let receiptPreviewUrl = null;
 window.openReceiptPreview = id => {
   const file = pendingReceipts[id]; if (!file) return;
-  const s = state.stops.find(x=>x.id===id);
+  const s = findStop(id);
   const wrapEl = document.getElementById("receiptPreview");
   if (receiptPreviewUrl) URL.revokeObjectURL(receiptPreviewUrl);
   receiptPreviewUrl = URL.createObjectURL(file);
@@ -1587,7 +1643,7 @@ async function fileToBase64(file){
   return btoa(bin);
 }
 window.sendReceipt = async id => {
-  const s = state.stops.find(x=>x.id===id);
+  const s = findStop(id);
   const file = pendingReceipts[id];
   if (!s || !file){ render(); return; }
   const done = () => { delete pendingReceipts[id]; s.receiptSent = true; save(); render(); };
@@ -1630,7 +1686,7 @@ window.sendReceipt = async id => {
 // Same two-tap shape as receipts: tap Invoice → check the amount → preview,
 // then Send emails it (server) with an optional auto-reminder day.
 window.invoiceStop = async id => {
-  const s = state.stops.find(x=>x.id===id); if(!s) return;
+  const s = findStop(id); if(!s) return;
   if (pendingInvoices[id]) return openInvoicePreview(id);
   if (!window.jspdf){ alert("The PDF maker didn't load — check your connection and try again."); return; }
   // Prefill with the pickup's price (or the last invoice/receipt amount).
@@ -1648,7 +1704,7 @@ window.invoiceStop = async id => {
 };
 window.openInvoicePreview = id => {
   const file = pendingInvoices[id]; if (!file) return;
-  const s = state.stops.find(x=>x.id===id);
+  const s = findStop(id);
   const wrapEl = document.getElementById("receiptPreview");
   if (receiptPreviewUrl) URL.revokeObjectURL(receiptPreviewUrl);
   receiptPreviewUrl = URL.createObjectURL(file);
@@ -1667,7 +1723,7 @@ window.openInvoicePreview = id => {
 window.cancelInvoice = id => {
   if (!pendingInvoices[id]) return;
   delete pendingInvoices[id];
-  const s = state.stops.find(x=>x.id===id);
+  const s = findStop(id);
   if (s) s.invoiceAmount = null;              // forget the wrong amount so Invoice re-asks fresh
   save(); render();
 };
@@ -1690,15 +1746,21 @@ function pickReminderDate(){
   });
 }
 window.sendInvoice = async id => {
-  const s = state.stops.find(x=>x.id===id);
+  const s = findStop(id);
   const file = pendingInvoices[id];
   if (!s || !file){ render(); return; }
   const amt = s.invoiceAmount;
-  const markSent = rid => {
+  const markSent = (rid, rdate) => {
     delete pendingInvoices[id];
     s.invoiceSent = true; s.paid = false;
-    if (rid) s.reminderId = rid;              // keep any earlier reminder on a re-send
-    save(); render();
+    if (rid){ s.reminderId = rid; s.reminderDate = rdate||""; }   // keep any earlier reminder on a re-send
+    // Out of the run, into the unpaid ledger — Clear all won't touch it there.
+    s.status = "DONE";
+    if (!s.invoicedAt) s.invoicedAt = localIso(new Date());
+    state.stops = state.stops.filter(x => x.id !== id);
+    state.unpaid = state.unpaid || [];
+    if (!state.unpaid.some(x => x.id === id)) state.unpaid.unshift(s);
+    save(); render(); drawRoute();
   };
   // Customer has an email: server sends the PDF and can auto-remind later.
   if (goodEmail(s.email)){
@@ -1716,8 +1778,8 @@ window.sendInvoice = async id => {
       const out = await res.json().catch(()=>({}));
       busy("");
       if (res.ok && out.ok){
-        markSent(out.reminderId||"");
-        flash("✓ Invoice emailed to " + to + (out.reminderId ? ` — reminder set for ${reminderDate}` : ""));
+        markSent(out.reminderId||"", reminderDate);
+        flash("✓ Invoice emailed to " + to + (out.reminderId ? ` — reminder set for ${reminderDate}` : "") + " · saved in Unpaid invoices");
         return;
       }
     }catch(e){ busy(""); }
@@ -1742,7 +1804,7 @@ window.sendInvoice = async id => {
 };
 // Paid up: cancel any waiting auto-reminder and move the card to Completed.
 window.markPaid = async id => {
-  const s = state.stops.find(x=>x.id===id); if(!s) return;
+  const s = findStop(id); if(!s) return;
   if (!confirm(`Mark ${fullName(s)||"this pickup"} as paid?`)) return;
   if (s.reminderId){
     try{
@@ -1755,7 +1817,24 @@ window.markPaid = async id => {
     s.reminderId = "";
   }
   s.paid = true; save(); render();
-  flash("✓ Paid — thanks " + (s.first_name||"") );
+  flash("✓ Paid — send the receipt, then ✕ to clear them off the list.");
+};
+// Take an entry off the unpaid ledger (cancels its auto-reminder too).
+window.removeUnpaid = id => {
+  const list = state.unpaid || [];
+  const i = list.findIndex(s => s.id === id); if (i < 0) return;
+  const s = list[i];
+  if (!confirm(`Remove ${fullName(s)||"this one"} from the unpaid list?${s.paid?"":"\n\nTheir auto-reminder (if one is set) will be cancelled."}`)) return;
+  if (s.reminderId){
+    try{
+      fetch(`${API}/cancel-reminder`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: s.reminderId })
+      });
+    }catch(e){}
+  }
+  list.splice(i, 1); save(); render();
 };
 function copyPlainText(value){
   const box = document.createElement("textarea");
@@ -1835,7 +1914,7 @@ window.bulkEmailAuto = async () => {
   alert("Couldn't send the emails right now — use Open Gmail instead.");
 };
 window.togglePriority = id => {
-  const s = state.stops.find(x=>x.id===id); if(!s) return;
+  const s = findStop(id); if(!s) return;
   s.priority = !s.priority;
   // Re-plan so an ASAP stop jumps to the front of the run right away.
   if (routeStops().length>1) optimise(); else { save(); render(); drawRoute(); }
@@ -1855,10 +1934,10 @@ function mapsDirUrl(s){
   return dest ? `https://www.google.com/maps/dir/?api=1&travelmode=driving&dir_action=navigate&destination=${dest}` : "";
 }
 window.navStop = id => {
-  const s = state.stops.find(x=>x.id===id); if(!s) return;
+  const s = findStop(id); if(!s) return;
   const url = mapsDirUrl(s); if (url) window.open(url, "_blank");
 };
-window.callStop = id => { const s=state.stops.find(x=>x.id===id); if(s&&s.phone) location.href="tel:"+s.phone.replace(/\s+/g,""); };
+window.callStop = id => { const s=findStop(id); if(s&&s.phone) location.href="tel:"+s.phone.replace(/\s+/g,""); };
 window.delStop = id => {
   state.stops = state.stops.filter(x=>x.id!==id);
   if (Array.isArray(state.messageSelectedIds)) state.messageSelectedIds = state.messageSelectedIds.filter(x=>x!==id);
@@ -2112,7 +2191,7 @@ $("#clearAll").onclick = () => {
     ? `Collected ${done.length} of ${state.stops.length} stops${items?` (${items} items)`:""} today.\n\n`
     : "";
   if (confirm(`${tally}Clear the whole run? This removes all stops and progress on this phone.`)){
-    state = { stops:[], bad:[], start:state.start, end:state.end, roundTrip:state.roundTrip, manual:false, sheetUrl: state.sheetUrl };
+    state = { stops:[], bad:[], start:state.start, end:state.end, roundTrip:state.roundTrip, manual:false, sheetUrl: state.sheetUrl, unpaid: state.unpaid||[] };
     routeStartOverride = null;
     areaFilterValue = "all";
     save(); render(); drawRoute();
