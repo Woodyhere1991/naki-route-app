@@ -297,8 +297,7 @@
 
   <!-- ACTIONS -->
   <div class="card view-panel view-today today-actions">
-    <button id="navAll" class="good" style="width:100%;min-height:60px;font-size:19px">🧭 Navigate to next stop</button>
-    <button id="optimise" style="width:100%;margin-top:10px">Optimise route</button>
+    <button id="optimise" style="width:100%">Optimise route</button>
     <div class="row" style="margin-top:10px">
       <button id="optimiseHere" class="ghost grow">Optimise from where I am</button>
       <button id="clearAll" class="ghost grow">Clear all</button>
@@ -2177,12 +2176,6 @@ $("#optimiseHere").onclick = () => {
     err => { busy(""); alert("Couldn't get location (needs https + permission). Using your set start."); optimise(); },
     { enableHighAccuracy:true, timeout:10000 }
   );
-};
-// Navigate to the next pending stop: Google Maps routes from your live GPS, turn-by-turn.
-$("#navAll").onclick = () => {
-  const pts = routeStops();
-  if (!pts.length){ alert("No stops to navigate. Add stops and tap Optimise first."); return; }
-  const url = mapsDirUrl(pts[0]); if (url) window.open(url, "_blank");
 };
 $("#clearAll").onclick = () => {
   const done = state.stops.filter(s=>s.status==="DONE");
