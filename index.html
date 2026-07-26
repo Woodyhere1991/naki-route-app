@@ -31,9 +31,11 @@
     color:#fff;background:var(--accent);min-height:var(--tap);padding:0 16px;font-weight:700;line-height:1.15;
     box-shadow:0 2px 0 #0003}
   button:active{transform:translateY(1px)}
-  button.ghost{background:#113a54;color:var(--txt);border-color:var(--line)}
+  button:disabled{opacity:.55;cursor:default;transform:none}
+  button.ghost,a.ghost{background:#113a54;color:var(--txt);border-color:var(--line)}
+  a.ghost{display:inline-flex;align-items:center;justify-content:center;text-decoration:none;font-weight:700;line-height:1.15;box-shadow:0 2px 0 #0003}
   button.good{background:var(--good)} button.warn{background:var(--warn);color:#16212a}
-  button.bad{background:var(--bad)} button.sm{min-height:42px;font-size:15px;padding:0 12px;border-radius:10px}
+  button.bad{background:var(--bad)} button.sm,a.sm{min-height:42px;font-size:15px;padding:0 12px;border-radius:10px}
   input,textarea,select{font-family:inherit;font-size:16px;width:100%;max-width:100%;min-width:0;display:block;padding:12px;border-radius:12px;
     border:1px solid var(--line);background:#08283d;color:var(--txt);min-height:var(--tap)}
   textarea{min-height:120px;resize:vertical}
@@ -52,6 +54,23 @@
     white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .stats{margin-left:auto;display:flex;gap:clamp(8px,3vw,14px);text-align:center;flex:0 0 auto}
   .stat{min-width:25px}.stat b{display:block;font-size:18px;line-height:1;color:#fff8e9} .stat span{font-size:10px;color:#b8cbd1;text-transform:uppercase}
+
+  /* Named pickup runs: always visible so switching never depends on the current tab. */
+  .run-switcher{background:#08273bf2;border-bottom:1px solid var(--line)}
+  .run-switcher-inner{max-width:760px;margin:0 auto;padding:8px 12px 10px}
+  .run-label{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:5px}
+  .run-label strong{font-size:13px;color:#ffd36b;text-transform:uppercase;letter-spacing:.7px}
+  .run-label span{font-size:12px;color:var(--muted)}
+  .run-controls{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:7px}
+  .run-controls select,.run-controls button{min-height:46px}
+  .run-controls button{padding:0 11px;font-size:14px}
+  .run-actions{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-top:7px}
+  .run-actions[hidden]{display:none}
+  .run-actions button{min-height:42px;font-size:14px}
+  @media(max-width:430px){
+    .run-controls{grid-template-columns:minmax(0,1fr) auto}
+    #manageRuns{grid-column:1/-1;min-height:40px}
+  }
 
   .card{background:linear-gradient(145deg,#0d3048,#0a273c);border:1px solid var(--line);border-radius:18px;padding:14px;margin:12px 0;box-shadow:0 6px 18px #0002}
   .row{display:flex;gap:10px;flex-wrap:wrap}
@@ -192,14 +211,35 @@
   .view-panel{display:none}
   body[data-view="today"] .view-today,
   body[data-view="messages"] .view-messages,
-  body[data-view="add"] .view-add{display:block}
+  body[data-view="add"] .view-add,
+  body[data-view="customers"] .view-customers,
+  body[data-view="bookings"] .view-bookings{display:block}
   .today-map{order:5}.today-actions{order:10}.today-filter{order:20}.today-list{order:30}.today-bad{order:40}.today-unpaid{order:50}
   #bannerSave,#bannerOsrm{order:5} footer{order:100}
   .bottom-nav{position:fixed;left:0;right:0;bottom:0;z-index:2000;background:rgba(7,29,46,.98);
     border-top:1px solid var(--line);padding:8px max(10px,env(safe-area-inset-right)) calc(8px + env(safe-area-inset-bottom)) max(10px,env(safe-area-inset-left));
-    display:grid;grid-template-columns:repeat(3,1fr);gap:7px;box-shadow:0 -4px 16px rgba(0,0,0,.45)}
-  .bottom-nav button{min-height:52px;background:#10364e;border:1px solid var(--line);font-size:14px;padding:0 6px}
+    display:grid;grid-template-columns:repeat(5,1fr);gap:7px;box-shadow:0 -4px 16px rgba(0,0,0,.45)}
+  .bottom-nav button{min-height:52px;background:#10364e;border:1px solid var(--line);font-size:13px;padding:0 4px}
   .bottom-nav button.on{background:var(--accent);border-color:var(--accent)}
+  .booking-count{display:inline-grid;place-items:center;min-width:20px;height:20px;margin-left:4px;padding:0 5px;border-radius:999px;background:var(--accent2);color:#fff;font-size:11px;font-weight:900}
+  .direct-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px}
+  .direct-booking{border-left:5px solid var(--accent);margin-bottom:12px}
+  .direct-booking.added{border-left-color:var(--good);opacity:.82}
+  .direct-booking h3{margin:0;font-size:18px}
+  .direct-meta{display:flex;flex-wrap:wrap;gap:6px 12px;margin:7px 0;color:var(--muted);font-size:13px}
+  .direct-items{margin:8px 0;color:var(--txt);font-weight:700}
+  .direct-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:11px}
+  .direct-actions button,.direct-actions a{flex:1 1 135px}
+  .pickup-confirm{display:grid;grid-template-columns:minmax(145px,1fr) minmax(135px,1fr);gap:8px;margin-top:11px;padding-top:11px;border-top:1px solid var(--line)}
+  .pickup-confirm button{grid-column:1/-1}
+  .confirmed-day{margin-top:9px;padding:9px 11px;border-radius:11px;background:#123f37;color:#c9ffe3;font-weight:800}
+  @media(max-width:430px){.pickup-confirm{grid-template-columns:1fr}}
+  .direct-contact{display:flex;flex-wrap:wrap;gap:4px 16px;margin-top:8px;font-size:15px;font-weight:700}
+  .direct-contact a{color:#ffd36b;text-decoration:none;overflow-wrap:anywhere}
+  .town-group{margin:12px 0}
+  .town-group>summary{font-size:16px}
+  .town-group .direct-booking{margin-top:10px}
+  .sync-ok{color:var(--good)}.sync-wait{color:var(--warn)}
   .message-actions{position:sticky;bottom:72px;z-index:20;background:var(--panel);padding:10px 0 2px;
     border-top:1px solid var(--line);box-shadow:0 -8px 14px var(--panel)}
   .message-actions .row{flex-wrap:nowrap}.message-actions .row .grow{flex:1 1 0;min-width:0;padding:0 7px;font-size:13px}
@@ -221,6 +261,20 @@
       <div class="stat"><b id="stApp">0</b><span>Items</span></div>
     </div>
   </div>
+  <section class="run-switcher" aria-label="Pickup run switcher">
+    <div class="run-switcher-inner">
+      <div class="run-label"><strong>Pickup run</strong><span id="runCountLabel"></span></div>
+      <div class="run-controls">
+        <select id="runSelect" aria-label="Choose pickup run"></select>
+        <button id="newRun" class="good">+ New run</button>
+        <button id="manageRuns" class="ghost" aria-expanded="false">Manage</button>
+      </div>
+      <div id="runActions" class="run-actions" hidden>
+        <button id="renameRun" class="ghost">Rename this run</button>
+        <button id="deleteRun" class="bad">Delete this run</button>
+      </div>
+    </div>
+  </section>
 </header>
 
 <div class="wrap">
@@ -309,6 +363,42 @@
   <!-- BULK MESSAGE CONTACTS -->
   <div id="contactsWrap" class="view-panel view-messages"></div>
 
+  <!-- DIRECT CUSTOMER BOOKINGS -->
+  <section class="view-panel view-bookings" id="directBookings">
+    <div class="view-title direct-head">
+      <span>Direct bookings</span>
+      <span>
+        <button class="ghost sm" id="ownerLogout" style="display:none">Sign out</button>
+        <button class="ghost sm" id="directRefresh">Refresh</button>
+      </span>
+    </div>
+    <div class="card" id="ownerLoginCard">
+      <b>Owner sign-in</b>
+      <p class="small muted">To protect customer details, a 6-digit code is sent to your Naki business email. This phone stays signed in for 30 days.</p>
+      <button id="ownerCodeSend" style="width:100%">Email my owner code</button>
+      <div id="ownerCodeStep" style="display:none;margin-top:12px">
+        <label>Enter the 6-digit code</label>
+        <div class="row">
+          <input id="ownerCode" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="000000" class="grow" />
+          <button id="ownerCodeVerify">Sign in</button>
+        </div>
+      </div>
+      <div id="ownerLoginStatus" class="small" style="margin-top:8px"></div>
+    </div>
+    <div id="directBookingStatus" class="small muted"></div>
+    <div id="directBookingList"></div>
+  </section>
+
+  <!-- CUSTOMER PROFILES -->
+  <section class="view-panel view-customers" id="customerProfiles">
+    <div class="view-title direct-head">
+      <span>Customers</span>
+      <span><button class="ghost sm" id="customersRefresh">Refresh</button></span>
+    </div>
+    <div id="customerStatus" class="small muted"></div>
+    <div id="customerList"></div>
+  </section>
+
   <!-- WEATHER -->
   <div class="card view-panel view-add">
     <details id="weatherPanel">
@@ -367,11 +457,13 @@
   <!-- UNPAID INVOICES — separate ledger, survives Clear all and sheet loads -->
   <div id="unpaidWrap" class="view-panel view-today today-unpaid"></div>
 
-  <footer>Only pickups you load • No login • Your run is saved on this phone</footer>
+  <footer>Only pickups you load • No login • Your runs are saved on this phone</footer>
 </div>
 
 <nav class="bottom-nav" aria-label="Main sections">
   <button data-view-button="today">Today</button>
+  <button data-view-button="bookings">Bookings <span id="bookingCount" class="booking-count" style="display:none">0</span></button>
+  <button data-view-button="customers">Customers</button>
   <button data-view-button="messages">Messages</button>
   <button data-view-button="add">Add &amp; setup</button>
 </nav>
@@ -409,15 +501,18 @@
    ============================================================ */
 
 const NP = { lat: -39.0556, lng: 174.0752 };          // New Plymouth default centre
-const LS = "naki_route_v1";                            // main state key
+const LS = "naki_route_v1";                            // old single-run key (kept as a safety backup)
+const RUNS_LS = "naki_pickup_runs_v1";                 // named runs + shared unpaid ledger
 const GEO = "naki_geocache_v1";                        // address -> {lat,lng} cache
 const UA  = "NakiPickupRun/1.0 (whiteware pickup route planner; nakiwreckremoval@gmail.com)";
 const API = "https://naki-route-api.nakiwreckremoval.workers.dev/v2";
+const OWNER_TOKEN_KEY = "naki_owner_token_v1";
 const AREA_COLORS = { North:"var(--north)", South:"var(--south)", Coastal:"var(--coastal)", "":"var(--none)" };
 const AREA_HEX    = { North:"#3ba0ff", South:"#ff8a3d", Coastal:"#27c08a", "":"#8a93a3" };
 
 /* ---------- State ---------- */
-let state = loadState();
+let runStore = loadRunStore();
+let state = loadActiveRun();
 let geocache = loadJSON(GEO, {});
 let map, markerLayer, routeLayer;
 let gpsWatchId = null, gpsMarker = null, gpsAccuracy = null;
@@ -426,12 +521,18 @@ let oneAddrPicked = null;   // coords chosen from the Type-one autocomplete
 let routeStartOverride = null; // one-off GPS optimisation; never replaces the saved start
 let routeTiming = {};       // id -> {order, driveSec} cumulative drive time from start to that stop
 let importBusy = false;     // a sheet load is still geocoding — block overlapping loads
+let runChangeBusy = false;  // a GPS/address action must finish before changing runs
 let pendingReceipts = {};   // stop id -> built PDF File, waiting for the Send tap
 let pendingInvoices = {};   // stop id -> built invoice PDF, waiting for the Send tap
+let ownerToken = localStorage.getItem(OWNER_TOKEN_KEY) || "";
+let directBookingRows = [];
+let routeDrawVersion = 0;   // prevents an old run's road line appearing after a quick switch
 let unpaidOpen = false;     // the Unpaid invoices dropdown stays as you left it across redraws
 // Payment details printed on every invoice + reminder email.
 const BANK_ACCOUNT = "06-0709-0967040-00";
 const BANK_NAME = "TRADING AS NWR";
+const WEBSITE_URL = "https://nakiwhitewareremoval.vip";
+const WEBSITE_LABEL = "nakiwhitewareremoval.vip";
 let weatherState = { key:"", towns:[], loading:false, fetchedAt:0, error:"" };
 let gmsState = { data:null, loading:false, fetchedAt:0, error:"" };
 
@@ -444,30 +545,207 @@ function saveJSON(k, v){
     catch(e2){ setBanner("#bannerSave","⚠ Couldn't save to this phone — storage may be full. Finish or Clear stops, or free up space."); }
   }
 }
-function loadState(){
-  const s = loadJSON(LS, null);
-  if (!s || !Array.isArray(s.stops)) return { stops:[], bad:[], start:null, end:null, roundTrip:false, manual:false, unpaid:[] };
-  if (!Array.isArray(s.unpaid)) s.unpaid = [];
-  // One-off migration: invoiced-but-unpaid stops move out of the run into the unpaid ledger.
+function newRunId(){ return "r" + Date.now().toString(36) + Math.random().toString(36).slice(2,8); }
+function emptyRunData(){
+  return { stops:[], bad:[], start:null, end:null, roundTrip:false, manual:false };
+}
+function suggestedRunName(data, position=1){
+  const towns = [...new Set((data.stops||[]).concat(data.bad||[])
+    .map(s=>String(s.town||"").trim()).filter(Boolean))].slice(0,3);
+  return towns.length ? towns.join(" / ") : `Pickup run ${position}`;
+}
+function cleanRunData(raw, sharedUnpaid){
+  const s = raw && Array.isArray(raw.stops) ? raw : emptyRunData();
+  if (!Array.isArray(s.bad)) s.bad = [];
+  const oldUnpaid = Array.isArray(s.unpaid) ? s.unpaid : [];
   const owe = s.stops.filter(x => x.invoiceSent && !x.paid);
-  if (owe.length){
-    owe.forEach(x => { x.status = "DONE"; });
-    s.unpaid = owe.concat(s.unpaid);
-    s.stops = s.stops.filter(x => !(x.invoiceSent && !x.paid));
-  }
+  owe.forEach(x => { x.status = "DONE"; });
+  s.stops = s.stops.filter(x => !(x.invoiceSent && !x.paid));
+  oldUnpaid.concat(owe).forEach(x=>{
+    if (!sharedUnpaid.some(existing=>existing.id===x.id)) sharedUnpaid.push(x);
+  });
+  delete s.unpaid;
   return s;
 }
-function save(){ saveJSON(LS, state); }
+function loadRunStore(){
+  const stored = loadJSON(RUNS_LS, null);
+  if (stored && Array.isArray(stored.runs) && stored.runs.length){
+    stored.shared = stored.shared || {};
+    const sharedUnpaid = Array.isArray(stored.shared.unpaid) ? stored.shared.unpaid : [];
+    stored.runs = stored.runs.map((run,i)=>({
+      id:run.id || newRunId(),
+      name:String(run.name||"").trim().slice(0,60) || suggestedRunName(run.data||{}, i+1),
+      createdAt:run.createdAt || Date.now(),
+      updatedAt:run.updatedAt || Date.now(),
+      data:cleanRunData(run.data, sharedUnpaid)
+    }));
+    stored.shared.unpaid = sharedUnpaid;
+    if (!stored.runs.some(run=>run.id===stored.activeRunId)) stored.activeRunId=stored.runs[0].id;
+    saveJSON(RUNS_LS, stored);
+    return stored;
+  }
+
+  // First launch after this update: wrap the existing saved run without altering the backup.
+  const legacy = loadJSON(LS, null);
+  const sharedUnpaid = [];
+  const data = cleanRunData(legacy, sharedUnpaid);
+  const first = {
+    id:newRunId(),
+    name:suggestedRunName(data, 1),
+    createdAt:Date.now(),
+    updatedAt:Date.now(),
+    data
+  };
+  const created = { activeRunId:first.id, runs:[first], shared:{unpaid:sharedUnpaid} };
+  saveJSON(RUNS_LS, created);
+  return created;
+}
+function activeRunRecord(){
+  return runStore.runs.find(run=>run.id===runStore.activeRunId) || runStore.runs[0];
+}
+function loadActiveRun(){
+  const run = activeRunRecord();
+  const data = cleanRunData(run.data, runStore.shared.unpaid);
+  data.unpaid = runStore.shared.unpaid;
+  return data;
+}
+function runDataSnapshot(){
+  const data = { ...state };
+  delete data.unpaid;
+  return data;
+}
+function save(){
+  const run = activeRunRecord();
+  if (run){
+    run.data = runDataSnapshot();
+    run.updatedAt = Date.now();
+  }
+  runStore.shared.unpaid = Array.isArray(state.unpaid) ? state.unpaid : [];
+  saveJSON(RUNS_LS, runStore);
+}
+function activeRunName(){ return activeRunRecord()?.name || "Pickup run"; }
+function allRunStates(){
+  return runStore.runs.map(run=>run.id===runStore.activeRunId ? state : run.data);
+}
 // Buttons on unpaid-ledger cards reuse the stop handlers, so look both places.
 function findStop(id){ return state.stops.find(x => x.id === id) || (state.unpaid||[]).find(x => x.id === id); }
 function saveGeo(){ saveJSON(GEO, geocache); }
 
+/* ---------- Named pickup runs ---------- */
+function renderRunSwitcher(){
+  const select=$("#runSelect");
+  if (!select) return;
+  select.innerHTML=runStore.runs.map(run=>{
+    const data=run.id===runStore.activeRunId ? state : run.data;
+    const pending=(data.stops||[]).filter(s=>s.status!=="DONE").length;
+    return `<option value="${esc(run.id)}"${run.id===runStore.activeRunId?" selected":""}>${esc(run.name)} (${pending})</option>`;
+  }).join("");
+  $("#runCountLabel").textContent=`${runStore.runs.length} saved run${runStore.runs.length===1?"":"s"} · saved on this phone`;
+  $("#deleteRun").disabled=runStore.runs.length===1;
+}
+function closeRunActions(){
+  $("#runActions").hidden=true;
+  $("#manageRuns").setAttribute("aria-expanded","false");
+}
+function canLeaveActiveRun(){
+  if (importBusy || runChangeBusy){
+    alert("Please wait for the current action to finish, then switch runs.");
+    renderRunSwitcher();
+    return false;
+  }
+  const unsent=Object.keys(pendingReceipts).length+Object.keys(pendingInvoices).length;
+  if (unsent && !confirm("Switching runs will close the unsent receipt or invoice preview. Switch anyway?")){
+    renderRunSwitcher();
+    return false;
+  }
+  return true;
+}
+function showActiveRun(){
+  routeStartOverride=null;
+  routeTiming={};
+  routeDrawVersion++;
+  areaFilterValue="all";
+  pendingReceipts={};
+  pendingInvoices={};
+  oneAddrPicked=null;
+  const sheet=$("#sheetUrl");
+  if (sheet) sheet.value=state.sheetUrl||"";
+  ["startAddr","endAddr"].forEach(id=>{ const el=$("#"+id); if(el) el.value=""; });
+  document.querySelectorAll(".ac-list").forEach(el=>{ el.classList.remove("show"); el.innerHTML=""; });
+  closeRunActions();
+  render();
+  applyAppView(state.appView || (state.stops.length ? "today" : "add"));
+  drawRoute();
+  refreshWeather(false);
+  renderDirectBookings();
+}
+function switchRun(id){
+  if (id===runStore.activeRunId) return;
+  if (!runStore.runs.some(run=>run.id===id) || !canLeaveActiveRun()) return;
+  save();
+  runStore.activeRunId=id;
+  state=loadActiveRun();
+  save();
+  showActiveRun();
+}
+function createRun(){
+  if (!canLeaveActiveRun()) return;
+  const position=runStore.runs.length+1;
+  const entered=prompt("Name this run (for example: Harwood / Eltham / Stratford)",`Pickup run ${position}`);
+  if (entered===null) return;
+  const name=entered.trim().slice(0,60);
+  if (!name){ alert("Please give the run a name."); return; }
+  save();
+  const data={
+    ...emptyRunData(),
+    start:state.start ? { ...state.start } : null,
+    end:state.end ? { ...state.end } : null,
+    roundTrip:!!state.roundTrip,
+    sheetUrl:state.sheetUrl||"",
+    appView:"add"
+  };
+  const run={id:newRunId(),name,createdAt:Date.now(),updatedAt:Date.now(),data};
+  runStore.runs.push(run);
+  runStore.activeRunId=run.id;
+  state=loadActiveRun();
+  save();
+  showActiveRun();
+  flash(`✓ Created ${name}`);
+}
+function renameActiveRun(){
+  const run=activeRunRecord();
+  const entered=prompt("Rename this pickup run",run.name);
+  if (entered===null) return;
+  const name=entered.trim().slice(0,60);
+  if (!name){ alert("Please give the run a name."); return; }
+  run.name=name;
+  save();
+  closeRunActions();
+  renderRunSwitcher();
+}
+function deleteActiveRun(){
+  if (runStore.runs.length===1){ alert("Keep at least one pickup run."); return; }
+  if (!canLeaveActiveRun()) return;
+  const run=activeRunRecord();
+  const stopCount=(state.stops||[]).length+(state.bad||[]).length;
+  if (!confirm(`Delete “${run.name}” and its ${stopCount} pickup${stopCount===1?"":"s"}? This cannot be undone.`)) return;
+  const index=runStore.runs.findIndex(item=>item.id===run.id);
+  runStore.runs.splice(index,1);
+  const next=runStore.runs[Math.min(index,runStore.runs.length-1)];
+  runStore.activeRunId=next.id;
+  state=loadActiveRun();
+  save();
+  showActiveRun();
+}
+
 function applyAppView(view){
-  if (!["today","messages","add"].includes(view)) view = state.stops.length ? "today" : "add";
+  if (!["today","bookings","customers","messages","add"].includes(view)) view = state.stops.length ? "today" : "add";
   document.body.dataset.view = view;
   document.querySelectorAll("[data-view-button]").forEach(btn=>btn.classList.toggle("on", btn.dataset.viewButton===view));
   if (view==="today" && map) setTimeout(()=>map.invalidateSize(), 80);
   if (view==="messages") setTimeout(fitMessagePreview, 0);   // panel just became visible
+  if (view==="bookings") loadDirectBookings(true);
+  if (view==="customers") loadCustomers(true);
 }
 window.setAppView = view => {
   state.appView = view; save(); applyAppView(view);
@@ -487,6 +765,352 @@ function flash(msg){                       // brief green confirmation in the ac
   clearTimeout(flashTimer);
   el.style.color = "var(--good)"; el.innerHTML = msg;
   flashTimer = setTimeout(()=>{ el.textContent=""; el.style.color=""; }, 6000);
+}
+
+/* ---------- Direct customer booking inbox ---------- */
+async function ownerApi(path, options={}){
+  const headers = { "Content-Type":"application/json", ...(options.headers||{}) };
+  if (ownerToken) headers.Authorization = `Bearer ${ownerToken}`;
+  const res = await fetch(`${API}${path}`, { ...options, headers });
+  let data = {}; try { data = await res.json(); } catch(e) {}
+  if (!res.ok){
+    if (res.status===401){
+      ownerToken=""; localStorage.removeItem(OWNER_TOKEN_KEY);
+      renderDirectBookings();
+      renderCustomers();
+    }
+    throw new Error(data.error || "Bookings could not be loaded");
+  }
+  return data;
+}
+function queueDirectCompletion(bookingId){
+  if (!bookingId) return;
+  runStore.shared.pendingDirectCompletions = Array.isArray(runStore.shared.pendingDirectCompletions)
+    ? runStore.shared.pendingDirectCompletions : [];
+  if (!runStore.shared.pendingDirectCompletions.includes(bookingId)) {
+    runStore.shared.pendingDirectCompletions.push(bookingId);
+    save();
+  }
+}
+async function flushDirectCompletions(){
+  const pending = Array.isArray(runStore.shared.pendingDirectCompletions)
+    ? [...runStore.shared.pendingDirectCompletions] : [];
+  if (!ownerToken || !pending.length) return;
+  const completed = [];
+  for (const bookingId of pending){
+    try{
+      await ownerApi(`/owner/bookings/${encodeURIComponent(bookingId)}`, {
+        method:"PATCH", body:JSON.stringify({status:"COMPLETED"})
+      });
+      completed.push(bookingId);
+      const row=directBookingRows.find(item=>item.id===bookingId);
+      if (row) row.status="COMPLETED";
+    }catch(e){
+      if (!ownerToken) break;
+    }
+  }
+  if (completed.length){
+    runStore.shared.pendingDirectCompletions =
+      runStore.shared.pendingDirectCompletions.filter(id=>!completed.includes(id));
+    save();
+  }
+}
+function directStatus(message, error=false){
+  const el=$("#directBookingStatus"); if(!el) return;
+  el.textContent=message||""; el.style.color=error ? "var(--bad)" : "";
+}
+function renderDirectBookings(){
+  const login=$("#ownerLoginCard"), list=$("#directBookingList"), logout=$("#ownerLogout");
+  if (!login || !list) return;
+  login.style.display = ownerToken ? "none" : "block";
+  logout.style.display = ownerToken ? "inline-block" : "none";
+  const fresh = directBookingRows.filter(b=>b.status==="NEW").length;
+  const count=$("#bookingCount");
+  count.textContent=String(fresh); count.style.display=fresh ? "inline-grid" : "none";
+  if (!ownerToken){
+    list.innerHTML="";
+    directStatus("Sign in to see customer bookings.");
+    return;
+  }
+  if (!directBookingRows.length){
+    list.innerHTML='<div class="card"><b>No direct bookings yet.</b><p class="small muted">New customer requests will appear here automatically.</p></div>';
+    directStatus("Up to date.");
+    return;
+  }
+  const bookingCard = b=>{
+    const name=esc([b.firstName,b.lastName].filter(Boolean).join(" "));
+    const address=esc([b.streetAddress,b.town,b.area].filter(Boolean).join(", "));
+    const items=esc((b.items||[]).join(", "));
+    const date=new Date(b.createdAt).toLocaleString("en-NZ",{day:"numeric",month:"short",hour:"numeric",minute:"2-digit"});
+    const terminal=["COMPLETED","DECLINED","CANCELLED"].includes(b.status);
+    const added=b.status!=="NEW";
+    const sync=b.source==="JOTFORM"
+      ? (b.sheetSyncStatus==="SYNCED"
+          ? '<span class="sync-ok">Jotform · Sheet saved</span>'
+          : '<span class="sync-wait">Jotform · Sheet retrying</span>')
+      : b.sheetSyncStatus==="SYNCED"
+        ? '<span class="sync-ok">✓ Backed up to Google Sheet</span>'
+        : '<span class="sync-wait">Sheet backup retrying</span>';
+    const price=b.quoteRequired ? "Quote needed" : `$${Number(b.total||0).toFixed(2)}`;
+    const phone=esc(b.phone||""), emailAddr=esc(b.email||"");
+    const pickupDay=b.pickupDate
+      ? new Date(`${b.pickupDate}T12:00:00`).toLocaleDateString("en-NZ",{weekday:"long",day:"numeric",month:"long"})
+      : "";
+    const windows=["Morning","Afternoon","After 5pm","Exact time arranged"];
+    const windowOptions=windows.map(value=>`<option value="${esc(value)}"${b.pickupWindow===value?" selected":""}>${esc(value)}</option>`).join("");
+    const pickupControls=!terminal ? `<div class="pickup-confirm">
+      <input type="date" aria-label="Confirmed pickup day" data-pickup-date value="${esc(b.pickupDate||"")}">
+      <select aria-label="Pickup time" data-pickup-window><option value="">Choose a time</option>${windowOptions}</select>
+      <button class="good sm" data-confirm-pickup="${esc(b.id)}">Confirm day &amp; email customer</button>
+    </div>` : "";
+    const confirmed=pickupDay ? `<div class="confirmed-day">📅 ${esc(pickupDay)}${b.pickupWindow?` · ${esc(b.pickupWindow)}`:""}</div>` : "";
+    const smsText=encodeURIComponent(`Hi ${b.firstName||""}, your Naki Whiteware pickup is confirmed for ${pickupDay||"the arranged day"}${b.pickupWindow?` (${b.pickupWindow})`:""}. You can view your booking at nakiwhitewareremoval.vip/account.html`);
+    const contact=(b.phone||b.email) ? `<div class="direct-contact">
+      ${b.phone?`<span>📞 <a href="tel:${esc(String(b.phone).replace(/[^\d+]/g,""))}">${phone}</a></span>`:""}
+      ${b.email?`<span>✉️ <a href="mailto:${encodeURIComponent(b.email)}">${emailAddr}</a></span>`:""}
+    </div>` : "";
+    return `<article class="card direct-booking${added?' added':''}" data-booking-id="${esc(b.id)}">
+      <div class="direct-head"><h3>${name}</h3><b>${esc(price)}</b></div>
+      <div class="direct-meta"><span>${esc(date)}</span><span>${esc(b.status==="NEW"?"New request":b.status.replaceAll("_"," "))}</span>${sync}</div>
+      <div>${address}</div>
+      ${contact}
+      <div class="direct-items">${items}</div>
+      ${b.additionalInfo ? `<div class="small muted">${esc(b.additionalInfo)}</div>` : ""}
+      ${confirmed}
+      ${pickupControls}
+      <div class="direct-actions">
+        <a class="ghost sm" href="tel:${esc(String(b.phone||"").replace(/[^\d+]/g,""))}">📞 Call</a>
+        <a class="ghost sm" href="mailto:${encodeURIComponent(b.email||"")}">✉️ Email</a>
+        ${b.phone&&pickupDay?`<a class="ghost sm" href="sms:${esc(String(b.phone).replace(/[^\d+]/g,""))}?body=${smsText}">💬 Text details</a>`:""}
+        ${["CANCELLED","DECLINED"].includes(b.status)
+          ? `<button class="good sm" data-restore-direct="${esc(b.id)}">↺ Restore booking</button>`
+          : b.status==="COMPLETED"
+          ? `<button class="good sm" data-uncomplete-direct="${esc(b.id)}">↺ Undo completed</button>`
+          : (added
+              ? `<button class="ghost sm" data-add-direct="${esc(b.id)}">↺ Re-add to active run</button>`
+              : `<button class="good sm" data-add-direct="${esc(b.id)}">Add to active run</button>`) +
+            `<button class="ghost sm" data-complete-direct="${esc(b.id)}">✓ Done</button>`}
+        <button class="ghost sm" title="Delete this booking" data-delete-direct="${esc(b.id)}">✕ Delete</button>
+      </div>
+    </article>`;
+  };
+  const freshRows = directBookingRows.filter(b=>b.status==="NEW");
+  const previousRows = directBookingRows.filter(b=>["COMPLETED","DECLINED","CANCELLED"].includes(b.status));
+  const rest = directBookingRows.filter(b=>b.status!=="NEW" && !["COMPLETED","DECLINED","CANCELLED"].includes(b.status));
+  const towns = {};
+  rest.forEach(b=>{ const t=(b.town||"").trim()||"No town"; (towns[t]=towns[t]||[]).push(b); });
+  let html = "";
+  if (freshRows.length){
+    html += `<details class="town-group" open><summary>🆕 New requests (${freshRows.length})<span class="chev">›</span></summary>${freshRows.map(bookingCard).join("")}</details>`;
+  }
+  Object.keys(towns).sort((a,b)=>a.localeCompare(b)).forEach(t=>{
+    html += `<details class="town-group"><summary>📍 ${esc(t)} (${towns[t].length})<span class="chev">›</span></summary>${towns[t].map(bookingCard).join("")}</details>`;
+  });
+  if (previousRows.length){
+    html += `<details class="town-group"><summary>✅ Previous (${previousRows.length})<span class="chev">›</span></summary>${previousRows.map(bookingCard).join("")}</details>`;
+  }
+  list.innerHTML = html;
+  list.querySelectorAll("[data-add-direct]").forEach(button=>button.onclick=()=>addDirectBooking(button.dataset.addDirect));
+  list.querySelectorAll("[data-confirm-pickup]").forEach(button=>button.onclick=()=>confirmDirectPickup(button.dataset.confirmPickup));
+  list.querySelectorAll("[data-complete-direct]").forEach(button=>button.onclick=()=>completeDirectBooking(button.dataset.completeDirect));
+  list.querySelectorAll("[data-uncomplete-direct]").forEach(button=>button.onclick=()=>uncompleteDirectBooking(button.dataset.uncompleteDirect));
+  list.querySelectorAll("[data-restore-direct]").forEach(button=>button.onclick=()=>restoreDirectBooking(button.dataset.restoreDirect));
+  list.querySelectorAll("[data-delete-direct]").forEach(button=>button.onclick=()=>deleteDirectBooking(button.dataset.deleteDirect));
+  directStatus(`${fresh} new booking${fresh===1?"":"s"}.`);
+}
+async function loadDirectBookings(showLoading=false){
+  if (!ownerToken){ renderDirectBookings(); return; }
+  if (showLoading) directStatus("Loading bookings…");
+  try{
+    const data=await ownerApi("/owner/bookings");
+    directBookingRows=Array.isArray(data.bookings) ? data.bookings : [];
+    await flushDirectCompletions();
+    renderDirectBookings();
+  }catch(e){ directStatus(e.message,true); }
+}
+async function addDirectBooking(id){
+  const b=directBookingRows.find(row=>row.id===id); if(!b) return;
+  const existingRun=runStore.runs.find(run=>{
+    const data=run.id===runStore.activeRunId ? state : run.data;
+    return (data.stops||[]).concat(data.bad||[]).some(s=>s.submission_id===b.id);
+  });
+  if (existingRun){
+    flash(`${b.firstName || "That booking"} is already in ${existingRun.name}`);
+    return;
+  }
+  const row={
+    submission_id:b.id,
+    first_name:b.firstName,
+    last_name:b.lastName,
+    phone:b.phone,
+    email:b.email,
+    street:b.streetAddress,
+    town:b.town,
+    area:b.area,
+    appliances:b.items,
+    additional_info:b.additionalInfo,
+    referral_source:b.referralSource,
+    amount:b.total,
+    status:"NEW"
+  };
+  try{
+    addFileStops([row],"Direct booking",message=>{ $("#directBookingStatus").innerHTML=message; });
+    if (b.status==="NEW"){
+      await ownerApi(`/owner/bookings/${encodeURIComponent(id)}`,{method:"PATCH",body:JSON.stringify({status:"ADDED_TO_RUN"})});
+      b.status="ADDED_TO_RUN";
+    }
+    renderDirectBookings();
+    flash(`✓ ${b.firstName || "Booking"} added to ${activeRunName()}`);
+  }catch(e){ directStatus(e.message,true); }
+}
+async function confirmDirectPickup(id){
+  const b=directBookingRows.find(row=>row.id===id); if(!b) return;
+  const card=document.querySelector(`[data-booking-id="${CSS.escape(id)}"]`);
+  const pickupDate=card?.querySelector("[data-pickup-date]")?.value||"";
+  const pickupWindow=card?.querySelector("[data-pickup-window]")?.value||"";
+  if(!pickupDate){ directStatus("Choose the confirmed pickup day first.",true); return; }
+  const customerNote=prompt("Optional note for the customer (access time, where to leave items, or other instructions):",b.customerNote||"");
+  if(customerNote===null) return;
+  directStatus("Saving the day and emailing the customer…");
+  try{
+    const data=await ownerApi(`/owner/bookings/${encodeURIComponent(id)}`,{
+      method:"PATCH",
+      body:JSON.stringify({status:"CONFIRMED",pickupDate,pickupWindow,customerNote:customerNote.trim(),notifyCustomer:true})
+    });
+    const index=directBookingRows.findIndex(row=>row.id===id);
+    if(index>=0) directBookingRows[index]=data.booking;
+    renderDirectBookings();
+    flash(`✓ Pickup day confirmed and emailed to ${b.firstName||"customer"}`);
+  }catch(e){ directStatus(e.message,true); }
+}
+async function completeDirectBooking(id){
+  const b=directBookingRows.find(row=>row.id===id); if(!b) return;
+  try{
+    await ownerApi(`/owner/bookings/${encodeURIComponent(id)}`,{method:"PATCH",body:JSON.stringify({status:"COMPLETED"})});
+    b.status="COMPLETED"; renderDirectBookings();
+    flash(`✓ ${b.firstName || "Booking"} marked completed`);
+  }catch(e){ directStatus(e.message,true); }
+}
+async function restoreDirectBooking(id){
+  const b=directBookingRows.find(row=>row.id===id); if(!b) return;
+  try{
+    const data=await ownerApi(`/owner/bookings/${encodeURIComponent(id)}`,{
+      method:"PATCH",
+      body:JSON.stringify({status:"NEW",pickupDate:"",pickupWindow:"",customerNote:""})
+    });
+    const index=directBookingRows.findIndex(row=>row.id===id);
+    if(index>=0) directBookingRows[index]=data.booking;
+    renderDirectBookings();
+    flash(`${b.firstName||"Booking"} restored`);
+  }catch(e){ directStatus(e.message,true); }
+}
+async function uncompleteDirectBooking(id){
+  const b=directBookingRows.find(row=>row.id===id); if(!b) return;
+  try{
+    await ownerApi(`/owner/bookings/${encodeURIComponent(id)}`,{method:"PATCH",body:JSON.stringify({status:"ADDED_TO_RUN"})});
+    b.status="ADDED_TO_RUN"; renderDirectBookings();
+    flash(`${b.firstName || "Booking"} moved back to your bookings`);
+  }catch(e){ directStatus(e.message,true); }
+}
+async function deleteDirectBooking(id){
+  const b=directBookingRows.find(row=>row.id===id); if(!b) return;
+  const name=[b.firstName,b.lastName].filter(Boolean).join(" ") || "this booking";
+  if (!confirm(`Delete ${name}? This removes the booking for good — it can't be undone.`)) return;
+  try{
+    await ownerApi(`/owner/bookings/${encodeURIComponent(id)}`,{method:"DELETE"});
+    directBookingRows=directBookingRows.filter(row=>row.id!==id);
+    renderDirectBookings();
+    flash(`✓ ${name} deleted`);
+  }catch(e){ directStatus(e.message,true); }
+}
+$("#ownerCodeSend").onclick=async()=>{
+  const button=$("#ownerCodeSend"); button.disabled=true; $("#ownerLoginStatus").textContent="Sending code…";
+  try{
+    const data=await ownerApi("/owner/request-code",{method:"POST",body:"{}"});
+    $("#ownerCodeStep").style.display="block"; $("#ownerLoginStatus").textContent=data.message; $("#ownerCode").focus();
+  }catch(e){ $("#ownerLoginStatus").textContent=e.message; }
+  finally{ button.disabled=false; }
+};
+$("#ownerCodeVerify").onclick=async()=>{
+  const code=$("#ownerCode").value.trim(); const button=$("#ownerCodeVerify");
+  button.disabled=true; $("#ownerLoginStatus").textContent="Checking code…";
+  try{
+    const data=await ownerApi("/owner/verify-code",{method:"POST",body:JSON.stringify({code})});
+    ownerToken=data.token; localStorage.setItem(OWNER_TOKEN_KEY,ownerToken); $("#ownerCode").value="";
+    await loadDirectBookings(true);
+    await syncPastBulkBookingDates();
+  }catch(e){ $("#ownerLoginStatus").textContent=e.message; }
+  finally{ button.disabled=false; }
+};
+$("#ownerCode").addEventListener("keydown",event=>{ if(event.key==="Enter"){event.preventDefault();$("#ownerCodeVerify").click();} });
+$("#ownerLogout").onclick=()=>{ownerToken="";localStorage.removeItem(OWNER_TOKEN_KEY);directBookingRows=[];customerRows=[];renderDirectBookings();renderCustomers();};
+$("#directRefresh").onclick=()=>loadDirectBookings(true);
+$("#customersRefresh").onclick=()=>loadCustomers(true);
+
+/* ---------- Customer profiles (all website customers) ---------- */
+let customerRows = [];
+function customerStatus(message, error=false){
+  const el=$("#customerStatus"); if(!el) return;
+  el.textContent=message||""; el.style.color=error ? "var(--bad)" : "";
+}
+function renderCustomers(){
+  const list=$("#customerList"); if(!list) return;
+  if (!ownerToken){
+    list.innerHTML="";
+    customerStatus("Sign in on the Bookings tab to see your customers.");
+    return;
+  }
+  if (!customerRows.length){
+    list.innerHTML='<div class="card"><b>No customers yet.</b><p class="small muted">People who book through your website will appear here.</p></div>';
+    customerStatus("");
+    return;
+  }
+  const towns={};
+  customerRows.forEach(c=>{ const t=(c.town||"").trim()||"No town"; (towns[t]=towns[t]||[]).push(c); });
+  list.innerHTML = Object.keys(towns).sort((a,b)=>a.localeCompare(b)).map(t=>{
+    const cards = towns[t].map(c=>{
+      const name=esc([c.firstName,c.lastName].filter(Boolean).join(" "))||"(No name yet)";
+      const address=esc([c.streetAddress,c.area].filter(Boolean).join(", "));
+      const last=c.lastBookingAt ? new Date(c.lastBookingAt).toLocaleDateString("en-NZ",{day:"numeric",month:"short",year:"numeric"}) : "";
+      const contact=(c.phone||c.email) ? `<div class="direct-contact">
+        ${c.phone?`<span>📞 <a href="tel:${esc(String(c.phone).replace(/[^\d+]/g,""))}">${esc(c.phone)}</a></span>`:""}
+        ${c.email?`<span>✉️ <a href="mailto:${encodeURIComponent(c.email)}">${esc(c.email)}</a></span>`:""}
+      </div>` : "";
+      return `<article class="card direct-booking">
+        <div class="direct-head"><h3>${name}</h3><b>${c.bookings} booking${c.bookings===1?"":"s"}</b></div>
+        <div>${address}</div>
+        ${contact}
+        ${last?`<div class="direct-meta"><span>Last booking: ${esc(last)}</span></div>`:""}
+        ${c.accessNotes?`<div class="small muted">📝 ${esc(c.accessNotes)}</div>`:""}
+        <div class="direct-actions">
+          <button class="ghost sm" title="Delete this customer" data-delete-customer="${esc(c.id)}">✕ Delete</button>
+        </div>
+      </article>`;
+    }).join("");
+    return `<details class="town-group"><summary>📍 ${esc(t)} (${towns[t].length})<span class="chev">›</span></summary>${cards}</details>`;
+  }).join("");
+  list.querySelectorAll("[data-delete-customer]").forEach(button=>button.onclick=()=>deleteCustomer(button.dataset.deleteCustomer));
+  customerStatus(`${customerRows.length} customer${customerRows.length===1?"":"s"}.`);
+}
+async function deleteCustomer(id){
+  const c=customerRows.find(row=>row.id===id); if(!c) return;
+  const name=[c.firstName,c.lastName].filter(Boolean).join(" ") || c.email || "this customer";
+  if (!confirm(`Delete ${name}? This removes their profile and booking history for good — it can't be undone.`)) return;
+  try{
+    await ownerApi(`/owner/customers/${encodeURIComponent(id)}`,{method:"DELETE"});
+    customerRows=customerRows.filter(row=>row.id!==id);
+    renderCustomers();
+    flash(`✓ ${name} deleted`);
+  }catch(e){ customerStatus(e.message,true); }
+}
+async function loadCustomers(showLoading=false){
+  if (!ownerToken){ renderCustomers(); return; }
+  if (showLoading) customerStatus("Loading customers…");
+  try{
+    const data=await ownerApi("/owner/customers");
+    customerRows=Array.isArray(data.customers) ? data.customers : [];
+    renderCustomers();
+  }catch(e){ customerStatus(e.message,true); }
 }
 function setFileStatus(msg){ const el=$("#fileStatus"); if(el) el.innerHTML = msg; }
 
@@ -566,16 +1190,22 @@ async function addAddressLines(lines){
   const clean = lines.map(l=>l.trim()).filter(Boolean)
                      .filter(l => !/^(name|address|street|town)\b/i.test(l)); // drop a CSV header
   if (!clean.length){ alert("No addresses found."); return; }
-  let done = 0;
-  for (const line of clean){
-    busy(`Finding addresses ${++done} of ${clean.length}…`);
-    const s = stopFromAddress(line);
-    const hit = await geocode(fullAddr(s));
-    if (hit){ s.lat = hit.lat; s.lng = hit.lng; state.stops.push(s); }
-    else    { state.bad.push(s); }
-    state.manual = false; save(); render();
+  if (importBusy){ alert("Please wait for the current addresses to finish loading."); return; }
+  importBusy=true;
+  try{
+    let done = 0;
+    for (const line of clean){
+      busy(`Finding addresses ${++done} of ${clean.length}…`);
+      const s = stopFromAddress(line);
+      const hit = await geocode(fullAddr(s));
+      if (hit){ s.lat = hit.lat; s.lng = hit.lng; state.stops.push(s); }
+      else    { state.bad.push(s); }
+      state.manual = false; save(); render();
+    }
+  } finally {
+    importBusy=false;
+    busy("");
   }
-  busy("");
   refreshWeather(true);
 }
 
@@ -599,7 +1229,10 @@ function pickupKeys(s){
 }
 function knownPickupKeys(){
   const known = new Set();
-  state.stops.concat(state.bad||[]).concat(state.unpaid||[]).forEach(s => pickupKeys(s).forEach(k => known.add(k)));
+  allRunStates().forEach(run=>{
+    (run.stops||[]).concat(run.bad||[]).forEach(s=>pickupKeys(s).forEach(k=>known.add(k)));
+  });
+  (state.unpaid||[]).forEach(s=>pickupKeys(s).forEach(k=>known.add(k)));
   return known;
 }
 
@@ -622,10 +1255,12 @@ function addFileStops(rows, srcName, setStatus, extraNote){
       area: r.area||"", appliances: Array.isArray(r.appliances) ? r.appliances
               : (r.appliances ? String(r.appliances).split(/[;|]/).map(x=>x.trim()).filter(Boolean) : []),
       additional_info: r.additional_info||"",
+      referral_source: r.referral_source||"",
       lat: r.lat!=null && r.lat!=="" ? +r.lat : null,
       lng: r.lng!=null && r.lng!=="" ? +r.lng : null,
+      amount: r.amount!=null && r.amount!=="" && Number.isFinite(+r.amount) ? +r.amount : null,
       status: (r.status==="DONE") ? "DONE" : "NEW",
-      src: "sheet"                          // so a reload knows this stop mirrors a sheet row
+      src: srcName==="Direct booking" ? "direct" : "sheet" // direct bookings stay until Woody removes them
     };
     const keys = pickupKeys(s);
     if (keys.some(k => known.has(k))){ skipped++; return; }
@@ -712,6 +1347,7 @@ const HEADER_ALIASES = {
   last_name:["last_name","last name","lastname","surname"],
   name:["name","customer","full name","contact name","client"],
   additional_info:["additional_info","info","notes","note","details","comments","instructions","access","extra"],
+  referral_source:["referral_source","referral source","how did you find us","how did you hear about us","heard about us"],
   lat:["lat","latitude"],
   lng:["lng","lon","long","longitude"],
   status:["status","state"],
@@ -778,6 +1414,7 @@ function mapRow(raw){
     area: pick("area"),
     appliances,
     additional_info: pick("additional_info"),
+    referral_source: pick("referral_source"),
     lat: pick("lat"), lng: pick("lng"),
     status: pick("status")
   };
@@ -858,6 +1495,7 @@ function pinIcon(label, area, isStart){
 }
 async function drawRoute(){
   if (!map) return;
+  const drawVersion=++routeDrawVersion;
   markerLayer.clearLayers(); routeLayer.clearLayers();
   const pts = routeStops();
   const start = startPoint();
@@ -892,6 +1530,7 @@ async function drawRoute(){
     const url = `https://router.project-osrm.org/route/v1/driving/${coords}?overview=full&geometries=geojson`;
     const res = await fetch(url);
     const data = await res.json();
+    if (drawVersion!==routeDrawVersion) return;
     if (data && data.routes && data.routes[0]){
       const r = data.routes[0];
       L.geoJSON({ type:"Feature", geometry:r.geometry },
@@ -901,6 +1540,7 @@ async function drawRoute(){
       drewRoad = true;
     }
   }catch(e){ /* OSRM down or rate-limited — fall through */ }
+  if (drawVersion!==routeDrawVersion) return;
   if (!drewRoad){
     // Straight-line fallback + great-circle distance estimate.
     L.polyline(seq.map(p=>[p.lat,p.lng]),
@@ -1024,6 +1664,7 @@ function updateStats(km, mins){
 }
 
 function render(){
+  renderRunSwitcher();
   renderAreaFilter();
   renderList();
   renderContacts();
@@ -1061,6 +1702,7 @@ function renderList(){
     const tag = area ? `<span class="areatag" style="background:${AREA_HEX[area]}">${area}</span>` : "";
     const asap = !!s.priority;
     const asapTag = asap && !isDone ? `<span class="asaptag">ASAP</span>` : "";
+    const invoicedTag = s.unpaidSourceId ? `<span class="asaptag" style="background:#c0392b">INVOICE SENT</span>` : "";
     const apps = (s.appliances||[]).map(a=>`<span class="chip">${esc(a)}</span>`).join("");
     const callFirst = /call|text|phone|ring|txt/i.test(s.additional_info||"");
     const formNote = s.additional_info ? `<div class="note${callFirst?' callfirst':''}">${callFirst?'📞':'📝'} ${esc(s.additional_info)}</div>` : "";
@@ -1073,7 +1715,9 @@ function renderList(){
     const receiptBtn = pendingReceipts[s.id]
       ? `<button class="good sm" onclick="openReceiptPreview('${s.id}')">👁 Preview &amp; send</button><button class="ghost sm" title="Cancel this receipt and start again" onclick="cancelReceipt('${s.id}')">↺ Redo</button>`
       : `<button class="ghost sm" onclick="receiptStop('${s.id}')">🧾 ${s.receiptSent?'Receipt ✓':'Receipt'}</button>`;
-    const invoiceBtn = pendingInvoices[s.id]
+    const invoiceBtn = s.unpaidSourceId
+      ? `<button class="ghost sm" disabled>📄 Invoice sent</button>`
+      : pendingInvoices[s.id]
       ? `<button class="good sm" onclick="openInvoicePreview('${s.id}')">👁 Invoice preview</button><button class="ghost sm" title="Cancel this invoice and start again" onclick="cancelInvoice('${s.id}')">↺ Redo</button>`
       : `<button class="ghost sm" onclick="invoiceStop('${s.id}')">📄 ${s.invoiceSent?'Invoice ✓':'Invoice'}</button>`;
     const prioBtn  = isDone ? "" : `<button class="${asap?'bad':'ghost'} sm" onclick="togglePriority('${s.id}')" title="Make this an ASAP stop">${asap?'⭐ ASAP':'☆ ASAP'}</button>`;
@@ -1087,7 +1731,7 @@ function renderList(){
         data-id="${s.id}" style="border-left-color:${AREA_COLORS[area]||AREA_COLORS['']}">
       <div class="num">${num}</div>
       <div class="stopbody">
-        <div class="name">${esc(fullName(s)) || esc(fullAddr(s))} ${tag}${asapTag}</div>
+        <div class="name">${esc(fullName(s)) || esc(fullAddr(s))} ${tag}${asapTag}${invoicedTag}</div>
         <div class="addr">${esc(fullAddr(s))}</div>
         ${apps?`<div class="apps">${apps}</div>`:""}
         ${formNote}
@@ -1101,7 +1745,7 @@ function renderList(){
   const doneRows = done.map(s=>card(s,true)).join("");
 
   wrap.innerHTML =
-    `<div class="sectitle">Today's run ${state.manual?'· manual order':''} · hold &amp; drag to reorder</div>
+    `<div class="sectitle">${esc(activeRunName())} ${state.manual?'· manual order':''} · hold &amp; drag to reorder</div>
      <div id="pendingList">${pendRows || `<div class="empty" style="padding:16px 8px">Nothing pending — all picked up 🎉</div>`}</div>` +
     (done.length ? `<div class="sectitle">Completed (${done.length})</div><div id="doneList">${doneRows}</div>` : "");
 
@@ -1126,6 +1770,44 @@ function renderList(){
   }
 }
 
+// Find the pickup-run copy made when an invoice was sent before collection.
+function runHoldingUnpaidPickup(unpaidId){
+  return runStore.runs.find(run=>{
+    const data=run.id===runStore.activeRunId ? state : run.data;
+    return (data.stops||[]).concat(data.bad||[]).some(s=>s.unpaidSourceId===unpaidId);
+  }) || null;
+}
+window.openRunForUnpaid = runId => switchRun(runId);
+window.addUnpaidToRun = id => {
+  const source=(state.unpaid||[]).find(s=>s.id===id); if(!source) return;
+  const existing=runHoldingUnpaidPickup(id);
+  if (existing){
+    if (existing.id!==runStore.activeRunId) switchRun(existing.id);
+    flash(`✓ This pickup is already in ${existing.name}`);
+    return;
+  }
+  const pickup={
+    ...source,
+    id:uid(),
+    unpaidSourceId:source.id,
+    src:"unpaid-return",
+    status:"NEW",
+    invoiceSent:false,
+    paid:false,
+    reminderId:"",
+    reminderDate:"",
+    receiptSent:false,
+    priority:false,
+    historyStatus:"ADDED_TO_RUN",
+    collectedAt:""
+  };
+  state.stops.push(pickup);
+  state.manual=false;
+  save(); render(); drawRoute(); refreshWeather(true);
+  syncExternalBooking(pickup);
+  flash(`✓ Added back to ${activeRunName()} · the unpaid invoice is still saved`);
+};
+
 // The unpaid-invoices ledger: its own collapsible card, separate from the run.
 function renderUnpaid(){
   const wrap = $("#unpaidWrap"); if (!wrap) return;
@@ -1144,6 +1826,12 @@ function renderUnpaid(){
       ? `<button class="good sm" onclick="openReceiptPreview('${s.id}')">👁 Preview &amp; send</button><button class="ghost sm" onclick="cancelReceipt('${s.id}')">↺ Redo</button>`
       : `<button class="ghost sm" onclick="receiptStop('${s.id}')">🧾 ${s.receiptSent?'Receipt ✓':'Receipt'}</button>`;
     const paidB = s.paid ? "" : `<button class="good sm" onclick="markPaid('${s.id}')">💰 Paid</button>`;
+    const linkedRun=runHoldingUnpaidPickup(s.id);
+    const runB = s.paid ? "" : linkedRun
+      ? (linkedRun.id===runStore.activeRunId
+          ? `<button class="ghost sm" disabled>✓ In active run</button>`
+          : `<button class="ghost sm" onclick="openRunForUnpaid('${linkedRun.id}')">📍 Go to ${esc(linkedRun.name)}</button>`)
+      : `<button class="good sm" onclick="addUnpaidToRun('${s.id}')">↩ Add to active run</button>`;
     const del = `<button class="ghost sm" title="Remove from this list" onclick="removeUnpaid('${s.id}')">✕</button>`;
     const meta = [
       s.invoiceAmount!=null ? `$${Number(s.invoiceAmount).toFixed(2)}` : "",
@@ -1156,7 +1844,7 @@ function renderUnpaid(){
         <div class="name">${esc(fullName(s)) || esc(fullAddr(s))} ${s.paid?'':'<span class="asaptag" style="background:#c0392b">UNPAID</span>'}</div>
         <div class="addr">${esc(fullAddr(s))}</div>
         ${meta?`<div class="small muted" style="margin:2px 0">${meta}</div>`:""}
-        <div class="stopbtns">${s.paid ? `${recB}${emailB}${del}` : `${paidB}${recB}${invB}${phone}${textB}${emailB}${del}`}</div>
+        <div class="stopbtns">${s.paid ? `${recB}${emailB}${del}` : `${runB}${paidB}${recB}${invB}${phone}${textB}${emailB}${del}`}</div>
       </div>
     </div>`;
   };
@@ -1164,7 +1852,7 @@ function renderUnpaid(){
     <details id="unpaidBox"${unpaidOpen?" open":""}>
       <summary>💰 Unpaid invoices${owe.length?` (${owe.length})`:""} <span class="chev">›</span></summary>
       <div style="padding-top:10px">
-        <p class="small muted" style="margin:0 0 8px">Separate from the run — Clear all and sheet loads never touch these. When the money lands tap 💰 Paid, send the receipt, then ✕.</p>
+        <p class="small muted" style="margin:0 0 8px">Invoice sent before collection? Tap <b>Add to active run</b>. The unpaid invoice stays safely here. When the money lands tap 💰 Paid, send the receipt, then ✕.</p>
         ${owe.map(entry).join("") || `<div class="empty small" style="padding:8px 4px">No one owes you right now 🎉</div>`}
         ${settled.length ? `<div class="sectitle">Paid — send receipt, then ✕ (${settled.length})</div>${settled.map(entry).join("")}` : ""}
       </div>
@@ -1213,6 +1901,92 @@ function goodPhone(value){
   return /^(\+?64|0)[\d\s()\-]{6,}$/.test(v) && digits.length>=9 && digits.length<=12;
 }
 function goodEmail(value){ return /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(String(value||"").trim()); }
+function historyBookingKey(s){
+  if (!s || s.src==="direct" || /^WEB-/i.test(String(s.submission_id||""))) return "";
+  if (!s.historyBookingKey) {
+    s.historyBookingKey = `pickup:${s.submission_id || s.unpaidSourceId || s.id}`;
+  }
+  return s.historyBookingKey;
+}
+function historyBookingStatus(s){
+  if (s.historyStatus==="COMPLETED" || s.collectedAt) return "COMPLETED";
+  if (s.historyStatus==="CONFIRMED" || s.confirmedPickupDate) return "CONFIRMED";
+  if (s.status==="CONTACTED") return "CONTACTED";
+  return "ADDED_TO_RUN";
+}
+function historyBookingPayload(s){
+  const amount = s.invoiceAmount!=null ? s.invoiceAmount : (s.receiptAmount!=null ? s.receiptAmount : s.amount);
+  return {
+    bookingKey:historyBookingKey(s),
+    bookingStatus:historyBookingStatus(s),
+    bookingCreatedAt:Number(s.historyCreatedAt || s.createdAt || s.submission_date || Date.now()),
+    items:Array.isArray(s.appliances) ? s.appliances : [],
+    total:amount==null ? null : Number(amount),
+    quoteRequired:amount==null,
+    email:String(s.email||"").trim().toLowerCase(),
+    firstName:s.first_name||"",
+    lastName:s.last_name||"",
+    phone:s.phone||"",
+    streetAddress:s.street||"",
+    town:s.town||"",
+    area:s.area||"",
+    ruralOption:s.rural_option||"",
+    referralSource:s.referral_source||"",
+    accessNotes:s.additional_info||s.note||""
+  };
+}
+async function syncExternalBooking(s){
+  if (!s || !s.historySyncToken || !historyBookingKey(s) || !goodEmail(s.email)) return false;
+  const controller = new AbortController();
+  const timeout = setTimeout(()=>controller.abort(), 8000);
+  try{
+    const res = await fetch(`${API}/customer/external-booking/sync`, {
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      signal:controller.signal,
+      body:JSON.stringify({ ...historyBookingPayload(s), syncToken:s.historySyncToken })
+    });
+    if (res.status===401) s.historySyncToken="";
+    return res.ok;
+  }catch(e){
+    return false;
+  }finally{
+    clearTimeout(timeout);
+  }
+}
+async function customerProfileLink(s){
+  const fallback = `${WEBSITE_URL}/account.html`;
+  const address = String(s.email||"").trim().toLowerCase();
+  if (!goodEmail(address)) return fallback;
+  const stillFresh = s.profileInviteUrl && s.profileInviteEmail===address &&
+    Number(s.profileInviteCreatedAt||0) > Date.now() - 80*24*60*60*1000;
+  if (stillFresh && s.historySyncToken){
+    await syncExternalBooking(s);
+    return s.profileInviteUrl;
+  }
+  const controller = new AbortController();
+  const timeout = setTimeout(()=>controller.abort(), 8000);
+  try{
+    const res = await fetch(`${API}/customer/profile-invite`, {
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      signal:controller.signal,
+      body:JSON.stringify(historyBookingPayload(s))
+    });
+    const out = await res.json().catch(()=>({}));
+    if (!res.ok || !/^https:\/\/nakiwhitewareremoval\.vip\/account\.html\?invite=/.test(String(out.url||""))) return fallback;
+    s.profileInviteUrl=out.url;
+    s.profileInviteEmail=address;
+    s.profileInviteCreatedAt=Date.now();
+    s.historySyncToken=String(out.bookingSyncToken||"");
+    save();
+    return out.url;
+  }catch(e){
+    return fallback;
+  }finally{
+    clearTimeout(timeout);
+  }
+}
 function daysUntil(value){
   if (!value) return null;
   const today = new Date(); today.setHours(12,0,0,0);
@@ -1255,6 +2029,42 @@ function selectedRecipientIds(){
 function selectedRecipients(){
   const selected = selectedRecipientIds();
   return state.stops.filter(s => s.status!=="DONE" && selected.has(s.id));
+}
+function bulkBookingRecipient(s){
+  return {
+    bookingId:String(s.submission_id||"").trim(),
+    bookingKey:historyBookingKey(s),
+    email:String(s.email||"").trim().toLowerCase(),
+    streetAddress:s.street||"",
+    town:s.town||""
+  };
+}
+async function publishBulkPickupDate(recipients,pickupDate=messageDay()){
+  if (!pickupDate || !recipients.length) return {ok:true,updated:0,unmatched:[]};
+  if (!ownerToken) throw new Error("Sign in on the Bookings tab once, then tap this button again so the dates can be saved to customer accounts.");
+  const data=await ownerApi("/owner/bookings/bulk-confirm",{
+    method:"POST",
+    body:JSON.stringify({pickupDate,recipients:recipients.map(bulkBookingRecipient)})
+  });
+  const unmatched=new Set(data.unmatched||[]);
+  recipients.forEach(s=>{
+    const recipient=bulkBookingRecipient(s);
+    if (unmatched.has(recipient.bookingId || recipient.email)) return;
+    s.historyStatus="CONFIRMED";
+    s.confirmedPickupDate=pickupDate;
+    syncExternalBooking(s);
+  });
+  return data;
+}
+function markRecipientsSentLocally(recipients,pickupDate=messageDay(),datesSaved=false){
+  if (!pickupDate) return;
+  state.messageHistory=state.messageHistory||{};
+  const day=state.messageHistory[pickupDate]=state.messageHistory[pickupDate]||{};
+  recipients.forEach(s=>{
+    day[s.id]=day[s.id]||{};
+    day[s.id].contacted=true;
+    if (datesSaved && s.confirmedPickupDate===pickupDate) day[s.id].bookingDateSynced=true;
+  });
 }
 function selectedNumbers(){ return [...new Set(selectedRecipients().map(s=>(s.phone||"").trim()).filter(goodPhone))]; }
 function selectedEmails(){ return [...new Set(selectedRecipients().map(s=>(s.email||"").trim()).filter(goodEmail))]; }
@@ -1319,8 +2129,9 @@ function renderContacts(){
     <button class="ghost sm" style="margin-top:6px" onclick="clearMessageMarks()">Clear sent marks for this day</button>`;
   const actions = `<div class="message-actions"><b id="selectedCount">${selCount} selected customer${selCount!==1?'s':''}</b>
     <div class="row" style="margin-top:6px"><button class="good grow" onclick="bulkText()">Copy &amp; open text</button><button class="good grow" onclick="bulkEmailAuto()">📧 Email all now</button></div>
-    <p class="small muted" style="margin:6px 0 0">Email all sends each customer their own email automatically. In Messages, tap <b>To</b> then <b>Paste</b> once.</p>
-    <div class="row" style="margin-top:6px"><button class="ghost sm grow" onclick="bulkEmail()">Open Gmail instead</button><button class="ghost sm grow" onclick="markSelectedSent()">I sent this batch - mark selected</button></div></div>`;
+    <p class="small muted" style="margin:6px 0 0">Email all records successful sends automatically. In Messages, tap <b>To</b> then <b>Paste</b> once.</p>
+    <div class="row" style="margin-top:6px"><button class="ghost sm grow" onclick="bulkEmail()">Open Gmail instead</button><button class="ghost sm grow" onclick="markSelectedSent()">I sent the texts / Gmail draft</button></div>
+    <p class="small muted" style="margin:6px 0 0">Only use this after sending texts or a Gmail draft. Your phone does not tell the website when you tap Send.</p></div>`;
   wrap.innerHTML = `<div class="card"><details open>
     <summary>Bulk message<span class="se-sum">${missing.length?` · ${missing.length} missing contact${missing.length!==1?'s':''}`:""}</span><span class="chev">›</span></summary>
     ${preview}
@@ -1379,14 +2190,25 @@ window.selectRecipients = mode => {
   document.querySelectorAll("[data-recipient]").forEach(el=>{ el.checked=selected.has(el.dataset.recipient); });
   updateSelectedCustomerCount();
 };
-window.markSelectedSent = () => {
+window.markSelectedSent = async () => {
   if (!messageDay()) return alert("Choose the collection day first.");
   const recipients = selectedRecipients().filter(s => goodEmail(s.email) || goodPhone(s.phone));
   if (!recipients.length) return alert("Select at least one pickup with a valid email or phone number.");
-  state.messageHistory = state.messageHistory || {};
-  const day = state.messageHistory[messageDay()] = state.messageHistory[messageDay()] || {};
-  recipients.forEach(s => { day[s.id] = day[s.id] || {}; day[s.id].contacted = true; });
+  let datesSaved=false;
+  if (messageMode()==="confirm"){
+    busy("Saving confirmed pickup dates…");
+    try{
+      await publishBulkPickupDate(recipients);
+      datesSaved=true;
+    }catch(e){
+      busy("");
+      return alert(e.message);
+    }
+  }
+  busy("");
+  markRecipientsSentLocally(recipients,messageDay(),datesSaved);
   save(); render();
+  flash(`✓ Saved ${recipients.length} sent message${recipients.length!==1?"s":""}`);
 };
 window.clearMessageMarks = () => {
   if (!messageDay() || !state.messageHistory?.[messageDay()]) return;
@@ -1397,7 +2219,12 @@ window.clearMessageMarks = () => {
 };
 window.toggleDone = id => {
   const s = findStop(id); if(!s) return;
-  s.status = s.status==="DONE" ? "NEW" : "DONE"; save(); render(); drawRoute();
+  const completed = s.status!=="DONE";
+  s.status = completed ? "DONE" : "NEW";
+  s.historyStatus = completed ? "COMPLETED" : "ADDED_TO_RUN";
+  s.collectedAt = completed ? Date.now() : "";
+  save(); render(); drawRoute();
+  syncExternalBooking(s);
 };
 // Type a free note against a pickup (access instructions, "gate round back", etc.).
 window.editNote = id => {
@@ -1419,6 +2246,7 @@ window.editStop = id => {
     else { const n = parseFloat(t.replace(/[^0-9.]/g,"")); if (isFinite(n) && n>=0) s.amount = n; }
   }
   save(); render();
+  syncExternalBooking(s);
 };
 // Ditch a built-but-unsent receipt so a wrong amount can be redone from scratch.
 window.cancelReceipt = id => {
@@ -1487,7 +2315,37 @@ async function loadReceiptLogo(){
   return receiptLogo;
 }
 loadReceiptLogo();   // warm it up at boot so the first Receipt tap is instant
-async function buildReceiptPdf(s, amt){
+function addProfileMessage(doc, y, W, M, profileUrl=`${WEBSITE_URL}/account.html`){
+  const boxH=34;
+  if (y+boxH>190){ doc.addPage(); y=18; }
+  doc.setFillColor(248, 250, 252);
+  doc.setDrawColor(244, 135, 34);
+  doc.roundedRect(M, y, W-M*2, boxH, 3, 3, "FD");
+  doc.setTextColor(244, 135, 34);
+  doc.setFont("helvetica", "bold"); doc.setFontSize(11);
+  doc.text("Book faster next time", M+5, y+7);
+  doc.setTextColor(45, 55, 65);
+  doc.setFont("helvetica", "normal"); doc.setFontSize(9);
+  const message=doc.splitTextToSize(
+    "Create a free customer profile so your details are saved. Next time, log in and book without finding the form again.",
+    W-M*2-10
+  );
+  doc.text(message, M+5, y+13);
+  doc.setTextColor(0, 98, 170);
+  doc.setFont("helvetica", "bold"); doc.setFontSize(10);
+  doc.textWithLink(WEBSITE_LABEL, M+5, y+29, {url:profileUrl});
+  return y+boxH;
+}
+function addPdfFooters(doc, W, M){
+  const pages=doc.getNumberOfPages();
+  for(let page=1;page<=pages;page++){
+    doc.setPage(page);
+    doc.setFont("helvetica", "normal"); doc.setFontSize(9); doc.setTextColor(120);
+    doc.text("Naki Whiteware Removal  ·  nakiwhitewareremoval@gmail.com", M, 200);
+    if(pages>1) doc.text(`${page} / ${pages}`, W-M, 200, {align:"right"});
+  }
+}
+async function buildReceiptPdf(s, amt, profileUrl){
   const { jsPDF } = window.jspdf;
   const doc = new jsPDF({ unit:"mm", format:"a5" });
   const W = 148, M = 14;
@@ -1532,13 +2390,13 @@ async function buildReceiptPdf(s, amt){
   doc.text(`Amount paid: $${amt.toFixed(2)}`, M, y); y += 7;
   doc.setFont("helvetica", "normal"); doc.setFontSize(10);
   doc.text("Payment received in full — thank you!", M, y);
-  // Footer
-  doc.setFontSize(9); doc.setTextColor(120);
-  doc.text("Naki Whiteware Removal  ·  nakiwhitewareremoval@gmail.com", M, 200);
+  y += 10;
+  addProfileMessage(doc, y, W, M, profileUrl);
+  addPdfFooters(doc, W, M);
   return doc.output("blob");
 }
 // Same look as the receipt, but "amount due" plus the bank details to pay it.
-async function buildInvoicePdf(s, amt){
+async function buildInvoicePdf(s, amt, profileUrl){
   const { jsPDF } = window.jspdf;
   const doc = new jsPDF({ unit:"mm", format:"a5" });
   const W = 148, M = 14;
@@ -1572,7 +2430,7 @@ async function buildInvoicePdf(s, amt){
   row("Invoice to", fullName(s) || "Customer");
   row("Address", fullAddr(s));
   y += 3;
-  doc.setFont("helvetica", "bold"); doc.setFontSize(10); doc.text("Collected", M, y); y += 7;
+  doc.setFont("helvetica", "bold"); doc.setFontSize(10); doc.text("Collection items", M, y); y += 7;
   doc.setFont("helvetica", "normal");
   items.forEach(it => { doc.text("• " + it, M + 4, y); y += 6; });
   y += 4;
@@ -1584,9 +2442,9 @@ async function buildInvoicePdf(s, amt){
   doc.text("How to pay", M, y); y += 7;
   doc.setFont("helvetica", "normal"); doc.setFontSize(10);
   doc.text(`Bank account: ${BANK_ACCOUNT}  (${BANK_NAME})`, M, y); y += 6;
-  doc.text(`Reference: ${fullName(s) || fullAddr(s)}`, M, y);
-  doc.setFontSize(9); doc.setTextColor(120);
-  doc.text("Naki Whiteware Removal  ·  nakiwhitewareremoval@gmail.com", M, 200);
+  doc.text(`Reference: ${fullName(s) || fullAddr(s)}`, M, y); y += 10;
+  addProfileMessage(doc, y, W, M, profileUrl);
+  addPdfFooters(doc, W, M);
   return doc.output("blob");
 }
 // Two taps on purpose: iPhone only opens the share sheet from a FRESH tap, and
@@ -1603,7 +2461,10 @@ window.receiptStop = async id => {
   const amt = parseFloat(String(v).replace(/[^0-9.]/g,""));
   if (!isFinite(amt) || amt<0) return alert("Enter the dollar amount, e.g. 40");
   s.receiptAmount = amt;
-  const blob = await buildReceiptPdf(s, amt);
+  busy("Preparing their private profile link...");
+  const profileUrl = await customerProfileLink(s);
+  const blob = await buildReceiptPdf(s, amt, profileUrl);
+  busy("");
   const fname = `Receipt - ${(fullName(s)||"pickup").replace(/[^\w \-]/g,"")}.pdf`;
   pendingReceipts[id] = new File([blob], fname, { type:"application/pdf" });
   save(); render();
@@ -1646,7 +2507,21 @@ window.sendReceipt = async id => {
   const s = findStop(id);
   const file = pendingReceipts[id];
   if (!s || !file){ render(); return; }
-  const done = () => { delete pendingReceipts[id]; s.receiptSent = true; save(); render(); };
+  const done = async () => {
+    delete pendingReceipts[id];
+    s.receiptSent = true;
+    s.status = "DONE";
+    s.historyStatus = "COMPLETED";
+    s.collectedAt = s.collectedAt || Date.now();
+    save(); render(); drawRoute();
+    if (s.src==="direct" && s.submission_id){
+      queueDirectCompletion(s.submission_id);
+      await flushDirectCompletions();
+      renderDirectBookings();
+    }else{
+      await syncExternalBooking(s);
+    }
+  };
   // Customer has an email: the server emails the PDF for us — no Gmail screen at all.
   if (goodEmail(s.email)){
     const to = s.email.trim();
@@ -1655,11 +2530,18 @@ window.sendReceipt = async id => {
       const res = await fetch(`${API}/send-receipt`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ to, name: fullName(s), filename: file.name, pdfBase64: await fileToBase64(file) })
+        body: JSON.stringify({
+          to,
+          name: fullName(s),
+          filename: file.name,
+          pdfBase64: await fileToBase64(file),
+          includeFindMyLocalReview: /find\s*my\s*local/i.test(String(s.referral_source||"")) ||
+            /found\s+us:\s*find\s*my\s*local/i.test(String(s.additional_info||""))
+        })
       });
       const out = await res.json().catch(()=>({}));
       busy("");
-      if (res.ok && out.ok){ done(); flash("✓ Receipt emailed to " + to); return; }
+      if (res.ok && out.ok){ await done(); flash("✓ Receipt emailed to " + to + " · booking marked completed"); return; }
     }catch(e){ busy(""); }
     flash("Couldn't email it right now — sharing instead.");
   }
@@ -1668,7 +2550,7 @@ window.sendReceipt = async id => {
   if (navigator.canShare && navigator.canShare({ files:[file] })){
     try{
       await navigator.share({ files:[file], title:"Naki Whiteware Removal receipt" });
-      done();
+      await done();
       if (goodEmail(s.email)) flash("✓ Their email is copied — paste it into To.");
       return;
     }catch(e){ if (e && e.name==="AbortError") return; /* keep the Send button */ }
@@ -1678,7 +2560,7 @@ window.sendReceipt = async id => {
   window.open(blobUrl, "_blank");
   setTimeout(()=>URL.revokeObjectURL(blobUrl), 60000);
   if (goodEmail(s.email)) openGmail({ to:s.email.trim(), subject:"Receipt - Whiteware collection" });
-  done();
+  await done();
   flash("✓ PDF opened — attach it to the email.");
 };
 
@@ -1696,7 +2578,10 @@ window.invoiceStop = async id => {
   const amt = parseFloat(String(v).replace(/[^0-9.]/g,""));
   if (!isFinite(amt) || amt<0) return alert("Enter the dollar amount, e.g. 40");
   s.invoiceAmount = amt; s.amount = amt;
-  const blob = await buildInvoicePdf(s, amt);
+  busy("Preparing their private profile link...");
+  const profileUrl = await customerProfileLink(s);
+  const blob = await buildInvoicePdf(s, amt, profileUrl);
+  busy("");
   const fname = `Invoice - ${(fullName(s)||"pickup").replace(/[^\w \-]/g,"")}.pdf`;
   pendingInvoices[id] = new File([blob], fname, { type:"application/pdf" });
   save(); render();
@@ -1755,12 +2640,14 @@ window.sendInvoice = async id => {
     s.invoiceSent = true; s.paid = false;
     if (rid){ s.reminderId = rid; s.reminderDate = rdate||""; }   // keep any earlier reminder on a re-send
     // Out of the run, into the unpaid ledger — Clear all won't touch it there.
+    if (!s.historyStatus) s.historyStatus = s.status==="DONE" ? "COMPLETED" : "ADDED_TO_RUN";
     s.status = "DONE";
     if (!s.invoicedAt) s.invoicedAt = localIso(new Date());
     state.stops = state.stops.filter(x => x.id !== id);
     state.unpaid = state.unpaid || [];
     if (!state.unpaid.some(x => x.id === id)) state.unpaid.unshift(s);
     save(); render(); drawRoute();
+    syncExternalBooking(s);
   };
   // Customer has an email: server sends the PDF and can auto-remind later.
   if (goodEmail(s.email)){
@@ -1899,15 +2786,26 @@ window.bulkEmailAuto = async () => {
     const out = await res.json().catch(()=>({}));
     busy("");
     if (res.ok && out.ok){
-      if (messageDay()){                                    // mark them as contacted for this day
-        state.messageHistory = state.messageHistory || {};
-        const day = state.messageHistory[messageDay()] = state.messageHistory[messageDay()] || {};
-        recipients.forEach(s => { day[s.id] = day[s.id] || {}; day[s.id].contacted = true; });
+      const failedEmails=new Set((out.failed||[]).map(value=>String(value).trim().toLowerCase()));
+      const sentRecipients=recipients.filter(s=>!failedEmails.has(String(s.email||"").trim().toLowerCase()));
+      let datesSaved=false, dateSaveError="";
+      if (messageMode()==="confirm" && sentRecipients.length){
+        try{
+          const result=await publishBulkPickupDate(sentRecipients);
+          datesSaved=true;
+          if ((result.unmatched||[]).length) dateSaveError="some confirmed pickup dates could not be linked to a booking.";
+        }catch(e){
+          dateSaveError=e.message;
+        }
+      }
+      if (messageDay()){
+        markRecipientsSentLocally(sentRecipients,messageDay(),datesSaved);
         save(); render();
       }
       const fails = (out.failed||[]).length;
       flash(`✓ Emailed ${out.sent} customer${out.sent!==1?'s':''}${fails?` — ${fails} failed`:""}`);
       if (fails) alert("Couldn't send to: " + out.failed.join(", "));
+      if (dateSaveError) alert(`The emails were sent, but ${dateSaveError} Sign in on the Bookings tab, then use “I sent the texts / Gmail draft” once to retry the dates.`);
       return;
     }
   }catch(e){ busy(""); }
@@ -1962,9 +2860,12 @@ window.retryBad = async id => {
     s.lat = +m[1]; s.lng = +m[2];
     state.bad.splice(i,1); state.stops.push(s); save(); render(); drawRoute(); return;
   }
+  if (importBusy){ alert("Please wait for the current address lookup to finish."); return; }
+  importBusy=true;
   busy("Finding address…");
-  const hit = await geocode(addr);
-  busy("");
+  let hit=null;
+  try{ hit = await geocode(addr); }
+  finally { importBusy=false; busy(""); }
   // Re-find the row by id in case the list shifted while we awaited.
   const j = state.bad.findIndex(x=>x.id===id); if(j<0) return;
   if (hit){
@@ -2000,15 +2901,18 @@ function oneDetails(s){
 function clearOneInputs(){ ["oneAddr","oneName","onePhone","oneEmail","oneItems","oneAmount"].forEach(id=>{ const el=$("#"+id); if(el) el.value=""; }); }
 $("#oneAdd").onclick = async () => {
   const v = $("#oneAddr").value.trim(); if(!v) return;
+  if (importBusy){ alert("Please wait for the current addresses to finish loading."); return; }
   $("#acOne").classList.remove("show");
   const s = oneDetails(stopFromAddress(v));
   if (oneAddrPicked){   // exact spot chosen from suggestions — skip the lookup
     s.lat=oneAddrPicked.lat; s.lng=oneAddrPicked.lng; oneAddrPicked=null;
     state.stops.push(s);
   } else {
+    importBusy=true;
     busy("Finding the address…");
-    const hit = await geocode(fullAddr(s));
-    busy("");
+    let hit=null;
+    try{ hit = await geocode(fullAddr(s)); }
+    finally { importBusy=false; busy(""); }
     if (hit){ s.lat=hit.lat; s.lng=hit.lng; state.stops.push(s); }
     else state.bad.push(s);   // park it in "Needs address" below
   }
@@ -2049,6 +2953,7 @@ async function loadFromSheet(url){
   if (importBusy){ setSheetStatus('<span class="spinner"></span> Still adding the last load — give it a few seconds, then try again.'); return; }
   const candidates = sheetCsvUrls(url);
   if (!candidates.length){ setSheetStatus("That doesn't look like a Google Sheet link."); return; }
+  importBusy=true;
   setSheetStatus('<span class="spinner"></span> Fetching your sheet…');
   let parsed = null;
   for (const csvUrl of candidates){
@@ -2060,14 +2965,15 @@ async function loadFromSheet(url){
     }catch(e){ /* try the next link style */ }
   }
   if (!parsed){
+    importBusy=false;
     setSheetStatus('Couldn\'t read that sheet. In Sheets: <b>Share → Anyone with the link → Viewer</b>, then paste the link again (make sure you copy it while on your pickups tab).');
     return;
   }
   // Keep rows that have an address/name and aren't already collected.
   const rows = normalizeRows(parsed).filter(r =>
     ((r.street||"").trim() || (r.first_name||"").trim() || (r.last_name||"").trim()) &&
-    !/^(done|complete|completed|collected)$/i.test((r.status||"").trim()));
-  if (!rows.length){ setSheetStatus("No pending pickups found in that sheet."); return; }
+    !/^(done|complete|completed|collected|cancelled|canceled|declined)$/i.test((r.status||"").trim()));
+  if (!rows.length){ importBusy=false; setSheetStatus("No pending pickups found in that sheet."); return; }
   state.sheetUrl = url.trim(); save();
   // Rows Woody deleted from the sheet = cancellations. Drop pending stops that
   // came from a sheet but no longer match any row in this one. Matches by the
@@ -2089,6 +2995,7 @@ async function loadFromSheet(url){
     if (removedGone) save();
   }
   setSheetStatus(`✓ Found ${rows.length} pickup${rows.length!==1?'s':''} — adding…`);
+  importBusy=false;
   addFileStops(rows, "Google Sheet", setSheetStatus,
     removedGone ? ` Removed ${removedGone} no longer in the sheet.` : "");
 }
@@ -2098,11 +3005,13 @@ if (state.sheetUrl) $("#sheetUrl").value = state.sheetUrl;   // remember the las
 // Start point
 $("#useLoc").onclick = () => {
   if (!navigator.geolocation){ alert("Location isn't available. Type your start address instead."); return; }
+  if (runChangeBusy){ alert("Please wait for the current action to finish."); return; }
+  runChangeBusy=true;
   busy("Getting your location…");
   navigator.geolocation.getCurrentPosition(
     pos => { routeStartOverride=null; state.start = { lat:pos.coords.latitude, lng:pos.coords.longitude, label:"My location" };
-      busy(""); save(); render(); replanIfAuto(); },
-    err => { busy(""); alert("Couldn't get location (needs https + permission). Type your start address instead."); },
+      runChangeBusy=false; busy(""); save(); render(); replanIfAuto(); },
+    err => { runChangeBusy=false; busy(""); alert("Couldn't get location (needs https + permission). Type your start address instead."); },
     { enableHighAccuracy:true, timeout:10000 }
   );
 };
@@ -2136,8 +3045,12 @@ function startLiveGps(){
 $("#gpsToggle").onclick=()=>gpsWatchId===null?startLiveGps():stopLiveGps();
 $("#setStart").onclick = async () => {
   const v = $("#startAddr").value.trim(); if(!v) return;
+  if (runChangeBusy){ alert("Please wait for the current action to finish."); return; }
+  runChangeBusy=true;
   busy("Finding start…");
-  const hit = await geocode(v); busy("");
+  let hit=null;
+  try{ hit = await geocode(v); }
+  finally { runChangeBusy=false; busy(""); }
   if (hit){ routeStartOverride=null; state.start = { lat:hit.lat, lng:hit.lng, label:v }; $("#startAddr").value="";
     save(); render(); replanIfAuto(); }
   else alert("Couldn't find that address — add the town and try again.");
@@ -2145,8 +3058,12 @@ $("#setStart").onclick = async () => {
 // End point (optional) — overrides round trip when set.
 $("#setEnd").onclick = async () => {
   const v = $("#endAddr").value.trim(); if(!v) return;
+  if (runChangeBusy){ alert("Please wait for the current action to finish."); return; }
+  runChangeBusy=true;
   busy("Finding end point…");
-  const hit = await geocode(v); busy("");
+  let hit=null;
+  try{ hit = await geocode(v); }
+  finally { runChangeBusy=false; busy(""); }
   if (hit){ state.end = { lat:hit.lat, lng:hit.lng, label:v }; $("#endAddr").value="";
     save(); render(); replanIfAuto(); flash("✓ End set: "+v); }
   else alert("Couldn't find that address — add the town and try again.");
@@ -2169,12 +3086,14 @@ $("#optimise").onclick = () => {
 $("#optimiseHere").onclick = () => {
   if (!routeStops().length){ alert("Add some stops first."); return; }
   if (!navigator.geolocation){ alert("Location isn't available — using your set start instead."); optimise(); return; }
+  if (runChangeBusy){ alert("Please wait for the current action to finish."); return; }
+  runChangeBusy=true;
   busy("Getting your location…");
   navigator.geolocation.getCurrentPosition(
     pos => { routeStartOverride = { lat:pos.coords.latitude, lng:pos.coords.longitude, label:"My current location" };
-      busy("Re-planning from here…"); optimise(); busy(""); $("#addBox").open=false; $("#startBox").open=false;
+      runChangeBusy=false; busy("Re-planning from here…"); optimise(); busy(""); $("#addBox").open=false; $("#startBox").open=false;
       document.getElementById("map").scrollIntoView({behavior:"smooth",block:"start"}); },
-    err => { busy(""); alert("Couldn't get location (needs https + permission). Using your set start."); optimise(); },
+    err => { runChangeBusy=false; busy(""); alert("Couldn't get location (needs https + permission). Using your set start."); optimise(); },
     { enableHighAccuracy:true, timeout:10000 }
   );
 };
@@ -2184,7 +3103,7 @@ $("#clearAll").onclick = () => {
   const tally = done.length
     ? `Collected ${done.length} of ${state.stops.length} stops${items?` (${items} items)`:""} today.\n\n`
     : "";
-  if (confirm(`${tally}Clear the whole run? This removes all stops and progress on this phone.`)){
+  if (confirm(`${tally}Clear “${activeRunName()}”? This removes only this run's stops and progress.`)){
     state = { stops:[], bad:[], start:state.start, end:state.end, roundTrip:state.roundTrip, manual:false, sheetUrl: state.sheetUrl, unpaid: state.unpaid||[] };
     routeStartOverride = null;
     areaFilterValue = "all";
@@ -2240,9 +3159,11 @@ async function refreshWeather(force=false){
   try{
     const res=await fetch(`${API}/weather`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({locations})});
     const data=await res.json(); if(!res.ok) throw new Error(data.error||"Weather could not be loaded");
+    if (weatherState.key!==key) return;
     weatherState.towns=data.towns||[]; weatherState.fetchedAt=Date.now();
     if ((data.failed||[]).length) weatherState.error=`No forecast for ${data.failed.join(", ")}`;
-  }catch(e){ weatherState.error=e.message||"Weather could not be loaded"; }
+  }catch(e){ if (weatherState.key===key) weatherState.error=e.message||"Weather could not be loaded"; }
+  if (weatherState.key!==key) return;
   weatherState.loading=false; renderWeather();
 }
 
@@ -2339,7 +3260,70 @@ function attachAutocomplete(input, listEl, onPick){
   input.addEventListener("blur", () => setTimeout(close, 250));
 }
 
+// Older invoice/receipt links did not save a booking-history record. Repair those
+// quietly from this phone's saved pickups the next time Woody opens the app.
+async function syncSavedProfileBookings(){
+  const seen = new Set();
+  const saved = allRunStates().flatMap(data => (data.stops||[]).concat(data.bad||[]))
+    .concat(runStore.shared?.unpaid||[])
+    .filter(s => {
+      const key = historyBookingKey(s);
+      if (!key || seen.has(key) || !goodEmail(s.email)) return false;
+      seen.add(key);
+      return Boolean(s.profileInviteUrl || s.invoiceSent || s.receiptSent || s.historySyncToken);
+    });
+  for (const s of saved) await customerProfileLink(s);
+  if (saved.length) save();
+}
+
+// Older bulk confirmations were saved on this phone but were not copied into
+// customer booking history. Repair them once after the owner signs in.
+let bulkDateBackfillBusy=false;
+async function syncPastBulkBookingDates(){
+  if (!ownerToken || bulkDateBackfillBusy) return;
+  bulkDateBackfillBusy=true;
+  let changed=false;
+  try{
+    for (const data of allRunStates()){
+      const stops=(data.stops||[]).concat(data.bad||[]);
+      for (const [pickupDate,marks] of Object.entries(data.messageHistory||{})){
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(pickupDate)) continue;
+        const recipients=stops.filter(s=>
+          marks?.[s.id]?.contacted &&
+          !marks[s.id].bookingDateSynced &&
+          s.historyStatus!=="COMPLETED" &&
+          !s.collectedAt
+        );
+        if (!recipients.length) continue;
+        try{
+          await publishBulkPickupDate(recipients,pickupDate);
+          recipients.forEach(s=>{
+            if (s.confirmedPickupDate===pickupDate){
+              marks[s.id].bookingDateSynced=true;
+              changed=true;
+            }
+          });
+        }catch(e){
+          if (!ownerToken) return;
+        }
+      }
+    }
+  }finally{
+    bulkDateBackfillBusy=false;
+    if (changed){ save(); render(); }
+  }
+}
+
 /* ---------- Boot ---------- */
+$("#runSelect").onchange=e=>switchRun(e.target.value);
+$("#newRun").onclick=createRun;
+$("#manageRuns").onclick=()=>{
+  const actions=$("#runActions");
+  actions.hidden=!actions.hidden;
+  $("#manageRuns").setAttribute("aria-expanded",String(!actions.hidden));
+};
+$("#renameRun").onclick=renameActiveRun;
+$("#deleteRun").onclick=deleteActiveRun;
 applyAppView(state.appView || (state.stops.length ? "today" : "add"));
 initMap();
 render();
@@ -2348,6 +3332,11 @@ renderWeather();
 renderGms();
 refreshWeather(false);
 loadGms(false);
+renderDirectBookings();
+if (ownerToken) loadDirectBookings(false);
+if (ownerToken) setTimeout(syncPastBulkBookingDates, 1800);
+setInterval(()=>{ if(ownerToken) loadDirectBookings(false); }, 60000);
+setTimeout(syncSavedProfileBookings, 1500);
 $("#mapPanel").ontoggle = () => {
   if ($("#mapPanel").open) setTimeout(()=>{ map.invalidateSize(); drawRoute(); }, 80);
 };

@@ -1,12 +1,20 @@
+import { handlePortalRequest, retryPendingSheetBackups } from "./customer.js";
+
 const GMS_PLACE_ID = "ChIJI-iQUfZQFG0RorGmjzvMPRE";
 const APP_ORIGINS = new Set([
   "https://naki-pickup-run.pages.dev",
-  "https://naki-route-app.pages.dev"
+  "https://naki-route-app.pages.dev",
+  "https://naki-collection.pages.dev",
+  "https://nakiwhitewareremoval.vip",
+  "https://www.nakiwhitewareremoval.vip"
 ]);
 
 function allowedOrigin(request) {
   const origin = request.headers.get("Origin") || "";
-  return APP_ORIGINS.has(origin) || /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin) || /^https:\/\/[a-z0-9]+\.naki-pickup-run\.pages\.dev$/.test(origin);
+  return APP_ORIGINS.has(origin) ||
+    /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin) ||
+    /^https:\/\/[a-z0-9]+\.naki-pickup-run\.pages\.dev$/.test(origin) ||
+    /^https:\/\/[a-z0-9]+\.naki-collection\.pages\.dev$/.test(origin);
 }
 
 function cors(request) {
@@ -14,8 +22,8 @@ function cors(request) {
   const allowed = allowedOrigin(request);
   return {
     "Access-Control-Allow-Origin": allowed ? origin : "https://naki-pickup-run.pages.dev",
-    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type",
+    "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization",
     "Vary": "Origin"
   };
 }
@@ -411,13 +419,16 @@ async function handleSendReceipt(request, env) {
   const name = String(body.name || "").trim().slice(0, 80);
   const pdf = String(body.pdfBase64 || "");
   const filename = (String(body.filename || "").replace(/[^\w .\-]/g, "").slice(0, 80)) || "Receipt.pdf";
+  const reviewRequest = body.includeFindMyLocalReview === true
+    ? "\n\nIf you're happy with the collection, we'd really appreciate your honest feedback on Find My Local:\nhttps://findmylocal.nz/listing/naki-whiteware-removal/#reply-title"
+    : "";
   if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(to)) return json(request, { error: "Invalid email address" }, 400);
   if (!/^[A-Za-z0-9+/=]+$/.test(pdf) || pdf.length < 100 || pdf.length > 2000000) return json(request, { error: "Invalid PDF" }, 400);
   const first = name.split(/\s+/)[0] || "";
   const sent = await sendMail(env, {
     to, name,
     subject: "Your whiteware collection receipt",
-    text: `Hey${first ? " " + first : ""},\n\nThanks heaps! Your receipt for the whiteware collection is attached.\n\nCheers,\nWoody\nNaki Whiteware Removal\nnakiwhitewareremoval@gmail.com`,
+    text: `Hey${first ? " " + first : ""},\n\nThanks heaps! Your receipt for the whiteware collection is attached.${reviewRequest}\n\nCheers,\nWoody\nNaki Whiteware Removal\nnakiwhitewareremoval@gmail.com`,
     attachment: [{ name: filename, content: pdf }]
   });
   if (!sent) return json(request, { error: "Email could not be sent" }, 502);
@@ -645,10 +656,14 @@ async function runReminders(env) {
 export default {
   async fetch(request, env) {
     if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: cors(request) });
-    if (!allowedOrigin(request)) return json(request, { error: "This service is only available to the Naki Pickup Run app" }, 403);
     const url = new URL(request.url);
     const path = url.pathname.replace(/^\/v2/, "");
+    if (path !== "/jotform/submission" && !allowedOrigin(request)) {
+      return json(request, { error: "This service is only available to the Naki Pickup Run app" }, 403);
+    }
     try {
+      const portalResponse = await handlePortalRequest({ request, env, path, json, sendMail });
+      if (portalResponse) return portalResponse;
       if (path === "/weather" && request.method === "POST") return await handleWeather(request, env);
       if (path === "/gms-hours" && request.method === "GET") return await handleGms(request, env);
       if (path === "/address-search" && request.method === "GET") return await handleAddress(request, env);
@@ -665,5 +680,6 @@ export default {
   // Daily at 21:00 UTC = 9am NZST (10am NZDT): send any due payment reminders.
   async scheduled(event, env, ctx) {
     ctx.waitUntil(runReminders(env));
+    ctx.waitUntil(retryPendingSheetBackups(env));
   }
 };

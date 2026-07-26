@@ -8,7 +8,17 @@
   "kv_namespaces": [
     { "binding": "REMINDERS", "id": "4eac6b5c298747cb9a6243c18a97852d" }
   ],
+  "d1_databases": [
+    {
+      "binding": "CUSTOMER_DB",
+      "database_name": "naki-customer-bookings",
+      "database_id": "cb443bbc-167b-446f-b524-b21c3f018046"
+    }
+  ],
+  "vars": {
+    "GOOGLE_SHEET_ID": "18D6Z6TpjTS9MPXedcF-s4qMMOs_J3b65bj63SRGj5L0"
+  },
   "triggers": {
-    "crons": ["0 21 * * *"]
+    "crons": ["0 21 * * *", "*/15 * * * *"]
   }
 }
