@@ -5,9 +5,20 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <title>Naki Pickup Run</title>
 
+<!-- Home-screen app icon and colours -->
+<link rel="manifest" href="/manifest.webmanifest" />
+<link rel="icon" href="/assets/icon-192.png" />
+<link rel="apple-touch-icon" href="/assets/icon-180.png" />
+<meta name="theme-color" content="#061d2e" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="Pickup Run" />
+
 <!-- Leaflet map (free OSM tiles) -->
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<!-- Two-finger map rotation (Leaflet has none of its own) -->
+<script src="https://unpkg.com/leaflet-rotate@0.2.8/dist/leaflet-rotate-src.js"></script>
 <!-- Tap-and-hold drag to reorder stops -->
 <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
 <!-- PDF receipts -->
@@ -163,9 +174,18 @@
   .weather-town h3{font-size:16px;margin-bottom:7px}
   .weather-days{display:grid;grid-template-columns:repeat(7,minmax(94px,1fr));gap:7px;overflow-x:auto;padding-bottom:4px}
   .weather-day{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:8px;min-width:94px}
+  .weather-day{text-align:center}
   .weather-day b,.weather-day span{display:block}
   .weather-day b{font-size:13px}.weather-day span{font-size:12px;color:var(--muted);margin-top:3px}
+  .wx-icon{display:block;margin:4px auto 2px}
+  .wx-cond{font-weight:700;color:var(--txt)!important;min-height:2.2em}
+  .wx-temp{font-size:13px!important;color:var(--txt)!important}
+  .wx-temp b{display:inline;font-size:15px}
+  #weatherSummary{display:inline-flex;align-items:center;gap:7px}
+  #weatherSummary .wx-icon{margin:0;flex:0 0 auto}
   .weather-alert{color:var(--warn)!important;font-weight:700}
+  @media(prefers-reduced-motion:no-preference){.wx-icon circle[fill="#ffc447"]{animation:wxglow 3s ease-in-out infinite}}
+  @keyframes wxglow{0%,100%{opacity:1}50%{opacity:.82}}
   .gms-panel[data-level="danger"]{border-color:var(--bad)}
   .gms-panel[data-level="warning"]{border-color:var(--warn)}
   .gms-days{display:grid;gap:7px}
@@ -1967,7 +1987,14 @@ function optimise(){
 
 /* ---------- Map drawing + OSRM road line (best-effort) ---------- */
 function initMap(){
-  map = L.map("map", { zoomControl:true }).setView([NP.lat, NP.lng], 11);
+  // rotate/touchRotate come from the leaflet-rotate plugin: twist two fingers to
+  // turn the map, and tap the compass to snap back to north.
+  map = L.map("map", {
+    zoomControl:true,
+    rotate:true,
+    touchRotate:true,
+    rotateControl:{ closeOnZeroBearing:false }
+  }).setView([NP.lat, NP.lng], 11);
   L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
     { maxZoom:19, attribution:"© OpenStreetMap" }).addTo(map);
   markerLayer = L.layerGroup().addTo(map);
@@ -3740,9 +3767,50 @@ function dayName(date){
   const d=new Date(date+"T12:00:00");
   return isNaN(d) ? date : d.toLocaleDateString("en-NZ",{weekday:"short",day:"numeric"});
 }
+/* Picture forecast. Drawn inline as SVG so it stays crisp, needs no image
+   downloads, and still shows if the tile server or a CDN is having a bad day.
+   The pieces below get combined into each condition. */
+const WX_SUN = '<circle cx="22" cy="20" r="9" fill="#ffc447"/><g stroke="#ffc447" stroke-width="3" stroke-linecap="round"><path d="M22 4v4M22 32v4M6 20h4M34 20h4M11 9l3 3M30 28l3 3M33 9l-3 3M14 28l-3 3"/></g>';
+const WX_SUN_SMALL = '<circle cx="16" cy="15" r="7" fill="#ffc447"/><g stroke="#ffc447" stroke-width="2.5" stroke-linecap="round"><path d="M16 3v3M4 15h3M7 6l2 2M25 6l-2 2"/></g>';
+const WX_CLOUD = '<path d="M15 34a8 8 0 0 1 .6-16 11 11 0 0 1 20.7 3.2A7 7 0 0 1 35 34z" fill="#cfe0ee"/>';
+const WX_CLOUD_DARK = '<path d="M15 32a8 8 0 0 1 .6-16 11 11 0 0 1 20.7 3.2A7 7 0 0 1 35 32z" fill="#9fb3c6"/>';
+const wxDrops = (count, colour="#4aa8ff") =>
+  Array.from({length:count},(_,i)=>`<path d="M${16+i*8} 36l-2 5" stroke="${colour}" stroke-width="3" stroke-linecap="round"/>`).join("");
+const wxFlakes = count =>
+  Array.from({length:count},(_,i)=>`<circle cx="${17+i*8}" cy="39" r="2.4" fill="#e8f4ff"/>`).join("");
+const WX_ICONS = {
+  CLEAR:         WX_SUN,
+  PARTLY_CLOUDY: WX_SUN_SMALL + WX_CLOUD,
+  FOG:           WX_CLOUD + '<g stroke="#b6c7d6" stroke-width="3" stroke-linecap="round"><path d="M11 38h26M15 43h18"/></g>',
+  DRIZZLE:       WX_CLOUD + wxDrops(2, "#7cc0ff"),
+  RAIN:          WX_CLOUD_DARK + wxDrops(3),
+  SHOWERS:       WX_SUN_SMALL + WX_CLOUD + wxDrops(2),
+  SNOW:          WX_CLOUD_DARK + wxFlakes(3),
+  SNOW_SHOWERS:  WX_SUN_SMALL + WX_CLOUD + wxFlakes(2),
+  THUNDERSTORMS: WX_CLOUD_DARK + '<path d="M24 34l-7 10h6l-2 8 9-11h-6l3-7z" fill="#ffd84a"/>'
+};
+// Fall back to reading the words when an unknown condition type turns up.
+function weatherIconKey(day){
+  const type=String(day.condition_type||"").toUpperCase();
+  if (WX_ICONS[type]) return type;
+  const text=String(day.condition||"").toLowerCase();
+  if (text.includes("thunder")) return "THUNDERSTORMS";
+  if (text.includes("snow")) return "SNOW";
+  if (text.includes("shower")) return "SHOWERS";
+  if (text.includes("drizzle")) return "DRIZZLE";
+  if (text.includes("rain")) return "RAIN";
+  if (text.includes("fog") || text.includes("mist")) return "FOG";
+  if (text.includes("cloud")) return "PARTLY_CLOUDY";
+  if (text.includes("sun") || text.includes("clear")) return "CLEAR";
+  return "PARTLY_CLOUDY";
+}
+function weatherIcon(day, size=46){
+  const label=day.condition||"Forecast";
+  return `<svg class="wx-icon" width="${size}" height="${size}" viewBox="0 0 48 48" role="img" aria-label="${esc(label)}">${WX_ICONS[weatherIconKey(day)]}</svg>`;
+}
 function weatherDayHtml(day){
   const alert=(day.alerts||[]).join(" · ");
-  return `<div class="weather-day"><b>${esc(dayName(day.date))}</b><span>${esc(day.condition||"Forecast")}</span><span><b>${esc(day.high)}°</b> / ${esc(day.low)}°</span><span>Rain ${esc(day.rain_chance)}%</span><span>Wind ${esc(day.wind)} km/h</span>${alert?`<span class="weather-alert">${esc(alert)}</span>`:""}</div>`;
+  return `<div class="weather-day"><b>${esc(dayName(day.date))}</b>${weatherIcon(day)}<span class="wx-cond">${esc(day.condition||"Forecast")}</span><span class="wx-temp"><b>${esc(day.high)}°</b> / ${esc(day.low)}°</span><span>💧 ${esc(day.rain_chance)}%</span><span>🌬 ${esc(day.wind)} km/h</span>${alert?`<span class="weather-alert">${esc(alert)}</span>`:""}</div>`;
 }
 function renderWeather(){
   const locations=weatherLocations(), summary=$("#weatherSummary"), content=$("#weatherContent"), updated=$("#weatherUpdated"), button=$("#weatherRefresh");
@@ -3752,7 +3820,8 @@ function renderWeather(){
   if (weatherState.loading && !weatherState.towns.length){ summary.textContent="Weather forecast — loading…"; content.innerHTML='<span class="spinner"></span> Loading the 7-day forecast…'; return; }
   if (!weatherState.towns.length){ summary.textContent="Weather forecast — tap to retry"; content.textContent=weatherState.error||"Weather is temporarily unavailable."; return; }
   const first=weatherState.towns[0], today=(first.days||[])[0]||{};
-  summary.textContent=`Weather — ${first.name}: ${today.condition||"Forecast"}${weatherState.towns.length>1?` · +${weatherState.towns.length-1} places`:""}`;
+  // Picture first, so a glance at the closed panel tells you the day.
+  summary.innerHTML=`${weatherIcon(today,26)}<span>${esc(first.name)}: ${esc(today.condition||"Forecast")}${today.high!=null?` ${esc(today.high)}°`:""}${weatherState.towns.length>1?` · +${weatherState.towns.length-1} places`:""}</span>`;
   const when=weatherState.fetchedAt ? new Date(weatherState.fetchedAt).toLocaleTimeString("en-NZ",{hour:"numeric",minute:"2-digit"}) : "now";
   updated.textContent=`Updated ${when} · ${weatherState.towns.map(t=>t.name).join(", ")}`;
   content.innerHTML=weatherState.towns.map(t=>`<section class="weather-town"><h3>${esc(t.name)}</h3><div class="weather-days">${(t.days||[]).map(weatherDayHtml).join("")}</div></section>`).join("");
