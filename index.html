@@ -561,7 +561,7 @@ function emptyRunData(){
 }
 function suggestedRunName(data, position=1){
   const towns = [...new Set((data.stops||[]).concat(data.bad||[])
-    .map(s=>String(s.town||"").trim()).filter(Boolean))].slice(0,3);
+    .map(s=>townLabel(s.town)).filter(t=>t&&t!=="No town"))].slice(0,3);
   return towns.length ? towns.join(" / ") : `Pickup run ${position}`;
 }
 function cleanRunData(raw, sharedUnpaid){
@@ -1967,7 +1967,8 @@ function townWindow(key){
 function reminderTowns(){
   const seen = new Set(), out = [];
   const push = s => {
-    const town = (s.town||s.area||"").trim() || "Your area";
+    // Tidied, so a customer's reminder never reads "New plymouth".
+    const town = townLabel(s.town||s.area).replace(/^No town$/,"Your area");
     const key = town.toLowerCase();
     if (!seen.has(key)){ seen.add(key); out.push({ town, key }); }
   };
@@ -2424,8 +2425,23 @@ function markRecipientsSentLocally(recipients,pickupDate=state.confirmationDate|
     if (datesSaved && s.confirmedPickupDate===pickupDate) mark.bookingDateSynced=true;
   });
 }
-function selectedNumbers(){ return [...new Set(selectedRecipients().map(s=>(s.phone||"").trim()).filter(goodPhone))]; }
-function selectedEmails(){ return [...new Set(selectedRecipients().map(s=>(s.email||"").trim()).filter(goodEmail))]; }
+// Dedupe on a normalised key but send the address/number as written: "021 123 4567"
+// and "0211234567" are one person, and so are Ann@gmail.com and ann@gmail.com.
+function dedupeBy(values, keyOf){
+  const seen = new Set(), out = [];
+  values.forEach(value=>{
+    const key = keyOf(value);
+    if (seen.has(key)) return;
+    seen.add(key); out.push(value);
+  });
+  return out;
+}
+function selectedNumbers(){
+  return dedupeBy(selectedRecipients().map(s=>(s.phone||"").trim()).filter(goodPhone), v=>v.replace(/\D/g,""));
+}
+function selectedEmails(){
+  return dedupeBy(selectedRecipients().map(s=>(s.email||"").trim()).filter(goodEmail), v=>v.toLowerCase());
+}
 
 function renderContacts(){
   const wrap = $("#contactsWrap"); if (!wrap) return;
