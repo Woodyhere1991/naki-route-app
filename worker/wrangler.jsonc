@@ -6,7 +6,8 @@
   "workers_dev": true,
   "preview_urls": false,
   "kv_namespaces": [
-    { "binding": "REMINDERS", "id": "4eac6b5c298747cb9a6243c18a97852d" }
+    { "binding": "REMINDERS", "id": "4eac6b5c298747cb9a6243c18a97852d" },
+    { "binding": "PHOTOS", "id": "2062b789df9941ac8f7b823afebe81ba" }
   ],
   "d1_databases": [
     {

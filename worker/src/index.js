@@ -1,4 +1,4 @@
-import { handlePortalRequest, retryPendingSheetBackups } from "./customer.js";
+import { handlePortalRequest, retryPendingSheetBackups, purgeExpiredAuth, recordBookingDocument } from "./customer.js";
 
 const GMS_PLACE_ID = "ChIJI-iQUfZQFG0RorGmjzvMPRE";
 const APP_ORIGINS = new Set([
@@ -432,6 +432,7 @@ async function handleSendReceipt(request, env) {
     attachment: [{ name: filename, content: pdf }]
   });
   if (!sent) return json(request, { error: "Email could not be sent" }, 502);
+  await recordBookingDocument(env, { email: to, kind: "RECEIPT", amount: body.amount, reference: name });
   return json(request, { ok: true });
 }
 
@@ -493,12 +494,20 @@ function textToB64(str) {
   return btoa(bin);
 }
 
-function buildMime({ to, name, subject, text, attachment }) {
+function replyToHeader(replyTo) {
+  const address = String(replyTo && replyTo.email || "").trim();
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(address)) return "Naki Whiteware Removal <nakiwhitewareremoval@gmail.com>";
+  const label = String(replyTo.name || "").replace(/["\r\n]/g, "").trim();
+  return label ? `"${label}" <${address}>` : address;
+}
+
+function buildMime({ to, name, subject, text, attachment, replyTo }) {
   const toHeader = name ? `"${name.replace(/["\r\n]/g, "")}" <${to}>` : to;
   const head = [
     "From: Naki Whiteware Removal <nakiwreckremoval@gmail.com>",
     `To: ${toHeader}`,
-    "Reply-To: Naki Whiteware Removal <nakiwhitewareremoval@gmail.com>",
+    // A forwarded customer message replies to the customer, not to ourselves.
+    `Reply-To: ${replyToHeader(replyTo)}`,
     `Subject: ${subject.replace(/[\r\n]/g, " ")}`,
     "MIME-Version: 1.0"
   ];
@@ -554,11 +563,15 @@ async function sendMail(env, msg) {
 function mailConfigured(env) { return Boolean(env.GMAIL_REFRESH_TOKEN || env.BREVO_API_KEY); }
 
 // Brevo sender — now the fallback path only.
-async function sendBrevo(env, { to, name, subject, text, attachment }) {
+async function sendBrevo(env, { to, name, subject, text, attachment, replyTo }) {
   if (!env.BREVO_API_KEY) return false;
+  const replyAddress = String(replyTo && replyTo.email || "").trim();
+  const useReply = /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(replyAddress)
+    ? { email: replyAddress, ...(replyTo.name ? { name: String(replyTo.name).slice(0, 80) } : {}) }
+    : { name: "Naki Whiteware Removal", email: "nakiwhitewareremoval@gmail.com" };
   const payload = {
     sender: { name: "Naki Whiteware Removal", email: "nakiwreckremoval@gmail.com" },
-    replyTo: { name: "Naki Whiteware Removal", email: "nakiwhitewareremoval@gmail.com" },
+    replyTo: useReply,
     to: [{ email: to, ...(name ? { name } : {}) }],
     subject,
     textContent: text,
@@ -611,6 +624,8 @@ async function handleSendInvoice(request, env) {
     attachment: [{ name: filename, content: pdf }]
   });
   if (!sent) return json(request, { error: "Email could not be sent" }, 502);
+  // Keep a copy in the customer's account so they can check what they owe.
+  await recordBookingDocument(env, { email: to, kind: "INVOICE", amount, reference: name });
   // Reminder: only for a real future-or-today date, and only if KV is bound.
   let reminderId = "";
   if (env.REMINDERS && /^\d{4}-\d{2}-\d{2}$/.test(reminderDate) && reminderDate >= isoDate(aucklandToday())) {
@@ -681,5 +696,6 @@ export default {
   async scheduled(event, env, ctx) {
     ctx.waitUntil(runReminders(env));
     ctx.waitUntil(retryPendingSheetBackups(env));
+    ctx.waitUntil(purgeExpiredAuth(env));
   }
 };

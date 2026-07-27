@@ -225,15 +225,15 @@
   .direct-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px}
   .direct-booking{border-left:5px solid var(--accent);margin-bottom:12px}
   .direct-booking.added{border-left-color:var(--good);opacity:.82}
+  .direct-booking.cancelled{border-color:#ff5b78;border-left-color:#ff3158;background:linear-gradient(145deg,#4b1730,#351222)}
   .direct-booking h3{margin:0;font-size:18px}
   .direct-meta{display:flex;flex-wrap:wrap;gap:6px 12px;margin:7px 0;color:var(--muted);font-size:13px}
+  .booking-status{display:inline-flex;align-items:center;padding:3px 8px;border-radius:999px;background:#123f37;color:#c9ffe3;font-weight:800}
+  .booking-status.cancelled{background:#ff3158;color:#fff;border:1px solid #ff9bab;text-transform:uppercase;letter-spacing:.4px}
   .direct-items{margin:8px 0;color:var(--txt);font-weight:700}
   .direct-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:11px}
   .direct-actions button,.direct-actions a{flex:1 1 135px}
-  .pickup-confirm{display:grid;grid-template-columns:minmax(145px,1fr) minmax(135px,1fr);gap:8px;margin-top:11px;padding-top:11px;border-top:1px solid var(--line)}
-  .pickup-confirm button{grid-column:1/-1}
   .confirmed-day{margin-top:9px;padding:9px 11px;border-radius:11px;background:#123f37;color:#c9ffe3;font-weight:800}
-  @media(max-width:430px){.pickup-confirm{grid-template-columns:1fr}}
   .direct-contact{display:flex;flex-wrap:wrap;gap:4px 16px;margin-top:8px;font-size:15px;font-weight:700}
   .direct-contact a{color:#ffd36b;text-decoration:none;overflow-wrap:anywhere}
   .town-group{margin:12px 0}
@@ -385,6 +385,7 @@
       </div>
       <div id="ownerLoginStatus" class="small" style="margin-top:8px"></div>
     </div>
+    <input id="bookingSearch" class="grow" placeholder="Search name, town, address, email or phone" style="display:none;margin-bottom:8px" />
     <div id="directBookingStatus" class="small muted"></div>
     <div id="directBookingList"></div>
   </section>
@@ -395,6 +396,11 @@
       <span>Customers</span>
       <span><button class="ghost sm" id="customersRefresh">Refresh</button></span>
     </div>
+    <div class="card" id="insightsCard" style="display:none">
+      <b>Where customers come from</b>
+      <div id="insightsBody" class="small muted">Loading…</div>
+    </div>
+    <input id="customerSearch" class="grow" placeholder="Search name, town, address, email or phone" style="display:none;margin-bottom:8px" />
     <div id="customerStatus" class="small muted"></div>
     <div id="customerList"></div>
   </section>
@@ -526,6 +532,10 @@ let pendingReceipts = {};   // stop id -> built PDF File, waiting for the Send t
 let pendingInvoices = {};   // stop id -> built invoice PDF, waiting for the Send tap
 let ownerToken = localStorage.getItem(OWNER_TOKEN_KEY) || "";
 let directBookingRows = [];
+let bookingSearchText = "";
+let customerSearchText = "";
+let bookingGroupOpen = loadJSON("naki_booking_group_open_v1", {});
+let customerGroupOpen = loadJSON("naki_customer_group_open_v1", {});
 let routeDrawVersion = 0;   // prevents an old run's road line appearing after a quick switch
 let unpaidOpen = false;     // the Unpaid invoices dropdown stays as you left it across redraws
 // Payment details printed on every invoice + reminder email.
@@ -685,6 +695,9 @@ function switchRun(id){
   save();
   runStore.activeRunId=id;
   state=loadActiveRun();
+  // Switching runs always lands on Today. Each run used to remember whichever
+  // tab you were last on, so changing run from Messages kept you in Messages.
+  state.appView = state.stops.length ? "today" : "add";
   save();
   showActiveRun();
 }
@@ -753,6 +766,34 @@ window.setAppView = view => {
 };
 document.querySelectorAll("[data-view-button]").forEach(btn=>btn.onclick=()=>setAppView(btn.dataset.viewButton));
 
+// iOS leaves a fixed bottom bar wherever the on-screen keyboard or the address
+// bar last pushed it, so the tabs end up stranded up the screen until the app is
+// closed. Nudge the bar whenever the visible area settles so it drops back down.
+(function keepBottomNavPinned(){
+  const nav = document.querySelector(".bottom-nav");
+  if (!nav) return;
+  let timer = 0;
+  const repin = () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      // The bar is out of normal flow, so hiding it for one frame moves nothing
+      // on the page - it just forces iOS to work out its position again.
+      const previous = nav.style.display;
+      nav.style.display = "none";
+      void nav.offsetHeight;
+      nav.style.display = previous;
+    }, 80);
+  };
+  if (window.visualViewport){
+    window.visualViewport.addEventListener("resize", repin);
+    window.visualViewport.addEventListener("scroll", repin);
+  }
+  window.addEventListener("orientationchange", repin);
+  window.addEventListener("pageshow", repin);
+  // Closing the keyboard is the usual trigger.
+  document.addEventListener("focusout", repin);
+})();
+
 /* ---------- Helpers ---------- */
 const $ = sel => document.querySelector(sel);
 const uid = () => "s" + Date.now().toString(36) + Math.random().toString(36).slice(2,6);
@@ -819,6 +860,63 @@ function directStatus(message, error=false){
   const el=$("#directBookingStatus"); if(!el) return;
   el.textContent=message||""; el.style.color=error ? "var(--bad)" : "";
 }
+function savedGroupOpen(groups, key, fallback=false){
+  return Object.hasOwn(groups, key) ? Boolean(groups[key]) : fallback;
+}
+function rememberGroupOpen(root, groups, storageKey, attribute){
+  root.querySelectorAll(`details[${attribute}]`).forEach(detail=>{
+    detail.ontoggle=()=>{
+      const key=detail.getAttribute(attribute);
+      groups[key]=detail.open;
+      saveJSON(storageKey, groups);
+    };
+  });
+}
+// Words all have to appear somewhere in the row, in any order.
+function matchesSearch(row, text){
+  if (!text) return true;
+  const hay=[row.firstName,row.lastName,row.town,row.streetAddress,row.area,row.email,row.phone,(row.items||[]).join(" ")]
+    .filter(Boolean).join(" ").toLowerCase();
+  return text.split(/\s+/).filter(Boolean).every(word=>hay.includes(word));
+}
+// Towns are free text — customers type their own — so "New plymouth", "NEW PLYMOUTH"
+// and a stray double space all used to open their own duplicate group. Group on a
+// tidied lowercase key and show one consistent label.
+function tidyTown(value){
+  return String(value==null?"":value).replace(/[\u200B-\u200D\uFEFF]/g,"").replace(/\s+/g," ").trim();
+}
+function townKey(value){
+  return tidyTown(value).toLowerCase();
+}
+function townLabel(value){
+  const tidy=tidyTown(value);
+  return tidy ? tidy.replace(/\S+/g,word=>word[0].toUpperCase()+word.slice(1).toLowerCase()) : "No town";
+}
+// { key: {label, rows} }, sorted by label, so one town is always one group.
+function groupByTown(rows){
+  const groups={};
+  rows.forEach(row=>{
+    const key=townKey(row.town)||"no town";
+    (groups[key]=groups[key]||{label:townLabel(row.town),rows:[]}).rows.push(row);
+  });
+  return Object.values(groups).sort((a,b)=>a.label.localeCompare(b.label));
+}
+function restoreTownGroups(root, groups, storageKey, keepOpen=false){
+  root.querySelectorAll("details.town-group").forEach(detail=>{
+    const label=(detail.querySelector("summary")?.textContent||"").replace(/\s*\(\d+\)\s*$/,"").trim();
+    if (!keepOpen && Object.hasOwn(groups,label)) detail.open=Boolean(groups[label]);
+    detail.ontoggle=()=>{
+      groups[label]=detail.open;
+      saveJSON(storageKey,groups);
+    };
+  });
+}
+function runContainingBooking(bookingId){
+  return runStore.runs.find(run=>{
+    const data=run.id===runStore.activeRunId ? state : run.data;
+    return (data.stops||[]).concat(data.bad||[]).some(stop=>stop.submission_id===bookingId);
+  }) || null;
+}
 function renderDirectBookings(){
   const login=$("#ownerLoginCard"), list=$("#directBookingList"), logout=$("#ownerLogout");
   if (!login || !list) return;
@@ -832,9 +930,16 @@ function renderDirectBookings(){
     directStatus("Sign in to see customer bookings.");
     return;
   }
+  const search=$("#bookingSearch"); if (search) search.style.display=directBookingRows.length>5 ? "block" : "none";
   if (!directBookingRows.length){
     list.innerHTML='<div class="card"><b>No direct bookings yet.</b><p class="small muted">New customer requests will appear here automatically.</p></div>';
     directStatus("Up to date.");
+    return;
+  }
+  const visibleRows = directBookingRows.filter(b=>matchesSearch(b,bookingSearchText));
+  if (!visibleRows.length){
+    list.innerHTML='<div class="card"><b>Nothing matches that search.</b></div>';
+    directStatus(`0 of ${directBookingRows.length} bookings.`);
     return;
   }
   const bookingCard = b=>{
@@ -843,7 +948,11 @@ function renderDirectBookings(){
     const items=esc((b.items||[]).join(", "));
     const date=new Date(b.createdAt).toLocaleString("en-NZ",{day:"numeric",month:"short",hour:"numeric",minute:"2-digit"});
     const terminal=["COMPLETED","DECLINED","CANCELLED"].includes(b.status);
-    const added=b.status!=="NEW";
+    const linkedRun=runContainingBooking(b.id);
+    const actuallyAdded=Boolean(linkedRun);
+    const added=actuallyAdded;
+    const statusText=b.status==="ADDED_TO_RUN" && !actuallyAdded ? "New request" : (b.status==="NEW" ? "New request" : b.status.replaceAll("_"," "));
+    const statusClass=b.status==="CANCELLED" ? " cancelled" : "";
     const sync=b.source==="JOTFORM"
       ? (b.sheetSyncStatus==="SYNCED"
           ? '<span class="sync-ok">Jotform · Sheet saved</span>'
@@ -851,33 +960,34 @@ function renderDirectBookings(){
       : b.sheetSyncStatus==="SYNCED"
         ? '<span class="sync-ok">✓ Backed up to Google Sheet</span>'
         : '<span class="sync-wait">Sheet backup retrying</span>';
-    const price=b.quoteRequired ? "Quote needed" : `$${Number(b.total||0).toFixed(2)}`;
+    const price=b.quotedPrice!=null
+      ? `$${Number(b.quotedPrice).toFixed(2)}`
+      : b.quoteRequired ? "Quote needed" : `$${Number(b.total||0).toFixed(2)}`;
     const phone=esc(b.phone||""), emailAddr=esc(b.email||"");
     const pickupDay=b.pickupDate
       ? new Date(`${b.pickupDate}T12:00:00`).toLocaleDateString("en-NZ",{weekday:"long",day:"numeric",month:"long"})
       : "";
-    const windows=["Morning","Afternoon","After 5pm","Exact time arranged"];
-    const windowOptions=windows.map(value=>`<option value="${esc(value)}"${b.pickupWindow===value?" selected":""}>${esc(value)}</option>`).join("");
-    const pickupControls=!terminal ? `<div class="pickup-confirm">
-      <input type="date" aria-label="Confirmed pickup day" data-pickup-date value="${esc(b.pickupDate||"")}">
-      <select aria-label="Pickup time" data-pickup-window><option value="">Choose a time</option>${windowOptions}</select>
-      <button class="good sm" data-confirm-pickup="${esc(b.id)}">Confirm day &amp; email customer</button>
-    </div>` : "";
     const confirmed=pickupDay ? `<div class="confirmed-day">📅 ${esc(pickupDay)}${b.pickupWindow?` · ${esc(b.pickupWindow)}`:""}</div>` : "";
     const smsText=encodeURIComponent(`Hi ${b.firstName||""}, your Naki Whiteware pickup is confirmed for ${pickupDay||"the arranged day"}${b.pickupWindow?` (${b.pickupWindow})`:""}. You can view your booking at nakiwhitewareremoval.vip/account.html`);
     const contact=(b.phone||b.email) ? `<div class="direct-contact">
       ${b.phone?`<span>📞 <a href="tel:${esc(String(b.phone).replace(/[^\d+]/g,""))}">${phone}</a></span>`:""}
       ${b.email?`<span>✉️ <a href="mailto:${encodeURIComponent(b.email)}">${emailAddr}</a></span>`:""}
     </div>` : "";
-    return `<article class="card direct-booking${added?' added':''}" data-booking-id="${esc(b.id)}">
+    const addAction=actuallyAdded
+      ? linkedRun.id===runStore.activeRunId
+        ? `<button class="good sm" disabled>✓ Added to this run</button>`
+        : `<button class="ghost sm" data-open-booking-run="${esc(linkedRun.id)}">Added to ${esc(linkedRun.name)}</button>`
+      : `<button class="good sm" data-add-direct="${esc(b.id)}">Add to active run</button>`;
+    return `<article class="card direct-booking${actuallyAdded?' added':''}${b.status==='CANCELLED'?' cancelled':''}" data-booking-id="${esc(b.id)}">
       <div class="direct-head"><h3>${name}</h3><b>${esc(price)}</b></div>
-      <div class="direct-meta"><span>${esc(date)}</span><span>${esc(b.status==="NEW"?"New request":b.status.replaceAll("_"," "))}</span>${sync}</div>
+      <div class="direct-meta"><span>${esc(date)}</span><span class="booking-status${statusClass}">${esc(statusText)}</span>${sync}</div>
       <div>${address}</div>
       ${contact}
       <div class="direct-items">${items}</div>
       ${b.additionalInfo ? `<div class="small muted">${esc(b.additionalInfo)}</div>` : ""}
+      ${b.quotedPrice!=null && b.quoteNote ? `<div class="small muted">Quote note: ${esc(b.quoteNote)}</div>` : ""}
+      ${b.emailFailed ? `<div class="small" style="color:var(--bad)">⚠ An email for this booking failed to send — check they know.</div>` : ""}
       ${confirmed}
-      ${pickupControls}
       <div class="direct-actions">
         <a class="ghost sm" href="tel:${esc(String(b.phone||"").replace(/[^\d+]/g,""))}">📞 Call</a>
         <a class="ghost sm" href="mailto:${encodeURIComponent(b.email||"")}">✉️ Email</a>
@@ -890,33 +1000,120 @@ function renderDirectBookings(){
               ? `<button class="ghost sm" data-add-direct="${esc(b.id)}">↺ Re-add to active run</button>`
               : `<button class="good sm" data-add-direct="${esc(b.id)}">Add to active run</button>`) +
             `<button class="ghost sm" data-complete-direct="${esc(b.id)}">✓ Done</button>`}
+        ${b.quoteRequired || b.quotedPrice!=null
+          ? `<button class="good sm" data-quote-direct="${esc(b.id)}">${b.quotedPrice!=null ? "✎ Change price" : "$ Send price"}</button>`
+          : ""}
+        ${b.photoCount ? `<button class="ghost sm" data-photos-direct="${esc(b.id)}">📷 ${b.photoCount} photo${b.photoCount===1?"":"s"}</button>` : ""}
         <button class="ghost sm" title="Delete this booking" data-delete-direct="${esc(b.id)}">✕ Delete</button>
       </div>
     </article>`;
   };
-  const freshRows = directBookingRows.filter(b=>b.status==="NEW");
-  const previousRows = directBookingRows.filter(b=>["COMPLETED","DECLINED","CANCELLED"].includes(b.status));
-  const rest = directBookingRows.filter(b=>b.status!=="NEW" && !["COMPLETED","DECLINED","CANCELLED"].includes(b.status));
-  const towns = {};
-  rest.forEach(b=>{ const t=(b.town||"").trim()||"No town"; (towns[t]=towns[t]||[]).push(b); });
+  const isNewBooking=b=>b.status==="NEW" || (b.status==="ADDED_TO_RUN" && !runContainingBooking(b.id));
+  const freshRows = visibleRows.filter(isNewBooking);
+  const previousRows = visibleRows.filter(b=>["COMPLETED","DECLINED","CANCELLED"].includes(b.status));
+  const rest = visibleRows.filter(b=>!isNewBooking(b) && !["COMPLETED","DECLINED","CANCELLED"].includes(b.status));
+  const townGroups = groupByTown(rest);
   let html = "";
   if (freshRows.length){
     html += `<details class="town-group" open><summary>🆕 New requests (${freshRows.length})<span class="chev">›</span></summary>${freshRows.map(bookingCard).join("")}</details>`;
   }
-  Object.keys(towns).sort((a,b)=>a.localeCompare(b)).forEach(t=>{
-    html += `<details class="town-group"><summary>📍 ${esc(t)} (${towns[t].length})<span class="chev">›</span></summary>${towns[t].map(bookingCard).join("")}</details>`;
+  // A search should show what it found, not hide it inside collapsed towns.
+  const openWhenSearching = bookingSearchText ? " open" : "";
+  townGroups.forEach(group=>{
+    html += `<details class="town-group"${openWhenSearching}><summary>📍 ${esc(group.label)} (${group.rows.length})<span class="chev">›</span></summary>${group.rows.map(bookingCard).join("")}</details>`;
   });
   if (previousRows.length){
-    html += `<details class="town-group"><summary>✅ Previous (${previousRows.length})<span class="chev">›</span></summary>${previousRows.map(bookingCard).join("")}</details>`;
+    html += `<details class="town-group"${openWhenSearching}><summary>✅ Previous (${previousRows.length})<span class="chev">›</span></summary>${previousRows.map(bookingCard).join("")}</details>`;
   }
   list.innerHTML = html;
-  list.querySelectorAll("[data-add-direct]").forEach(button=>button.onclick=()=>addDirectBooking(button.dataset.addDirect));
-  list.querySelectorAll("[data-confirm-pickup]").forEach(button=>button.onclick=()=>confirmDirectPickup(button.dataset.confirmPickup));
+  list.querySelectorAll("[data-add-direct]").forEach(button=>{
+    const booking=directBookingRows.find(row=>row.id===button.dataset.addDirect);
+    const linkedRun=booking && runContainingBooking(booking.id);
+    if (!linkedRun){ button.onclick=()=>addDirectBooking(button.dataset.addDirect); return; }
+    button.textContent=linkedRun.id===runStore.activeRunId ? "✓ Added to this run" : `Added to ${linkedRun.name}`;
+    if (linkedRun.id===runStore.activeRunId){ button.disabled=true; button.className="good sm"; }
+    else button.onclick=()=>switchRun(linkedRun.id);
+  });
   list.querySelectorAll("[data-complete-direct]").forEach(button=>button.onclick=()=>completeDirectBooking(button.dataset.completeDirect));
   list.querySelectorAll("[data-uncomplete-direct]").forEach(button=>button.onclick=()=>uncompleteDirectBooking(button.dataset.uncompleteDirect));
   list.querySelectorAll("[data-restore-direct]").forEach(button=>button.onclick=()=>restoreDirectBooking(button.dataset.restoreDirect));
   list.querySelectorAll("[data-delete-direct]").forEach(button=>button.onclick=()=>deleteDirectBooking(button.dataset.deleteDirect));
-  directStatus(`${fresh} new booking${fresh===1?"":"s"}.`);
+  list.querySelectorAll("[data-quote-direct]").forEach(button=>button.onclick=()=>sendBookingQuote(button.dataset.quoteDirect));
+  list.querySelectorAll("[data-photos-direct]").forEach(button=>button.onclick=()=>showBookingPhotos(button.dataset.photosDirect));
+  restoreTownGroups(list,bookingGroupOpen,"naki_booking_group_open_v1",Boolean(bookingSearchText));
+  directStatus(bookingSearchText
+    ? `${visibleRows.length} of ${directBookingRows.length} bookings match.`
+    : `${fresh} new booking${fresh===1?"":"s"}.`);
+}
+// A customer can change their request after it is already on a run. Bring the
+// stop in the run into line so the truck is loaded for what they actually want.
+function bookingPriceFor(b){
+  return b.quotedPrice!=null ? Number(b.quotedPrice) : Number(b.total||0);
+}
+function stopIsFinished(stop){
+  return stop.status==="DONE" || Boolean(stop.collectedAt) || Boolean(stop.invoiceSent) || Boolean(stop.receiptSent);
+}
+// Exact match only: the booking id the stop was created from, or the pickup-run
+// key for a job that started life in this app. Never a fuzzy name/email guess,
+// so a cancellation can't take out somebody else's live pickup.
+function stopBelongsToBooking(stop, b){
+  if (stop.submission_id && stop.submission_id===b.id) return true;
+  if (b.externalKey && historyBookingKey(stop)===b.externalKey) return true;
+  return false;
+}
+function syncBookingChangesIntoRuns(rows){
+  const changes=[], removals=[];
+  let touched=false;
+  (rows||[]).forEach(b=>{
+    const price=bookingPriceFor(b);
+    const items=[...(b.items||[])];
+    const info=String(b.additionalInfo||"");
+    const fingerprint=JSON.stringify([items,info,price]);
+    const dropped=["CANCELLED","DECLINED"].includes(b.status);
+    runStore.runs.forEach(run=>{
+      const data=run.id===runStore.activeRunId ? state : run.data;
+      if (!data) return;
+      // Cancelled or declined: take it off the run so it is not driven to.
+      if (dropped){
+        const doomed=[...(data.stops||[]),...(data.bad||[])]
+          .filter(stop=>stopBelongsToBooking(stop,b) && !stopIsFinished(stop));
+        if (!doomed.length) return;
+        const ids=new Set(doomed.map(stop=>stop.id));
+        data.stops=(data.stops||[]).filter(stop=>!ids.has(stop.id));
+        data.bad=(data.bad||[]).filter(stop=>!ids.has(stop.id));
+        if (Array.isArray(data.messageSelectedIds)){
+          data.messageSelectedIds=data.messageSelectedIds.filter(x=>!ids.has(x));
+        }
+        touched=true;
+        removals.push(`${b.firstName||"A pickup"} taken off ${run.name} (${b.status==="DECLINED"?"declined":"cancelled"})`);
+        return;
+      }
+      [...(data.stops||[]),...(data.bad||[])].forEach(stop=>{
+        if (stop.submission_id!==b.id || stopIsFinished(stop)) return;
+        const seenBefore="bookingFingerprint" in stop;
+        if (seenBefore && stop.bookingFingerprint===fingerprint) return;
+        const wasItems=(stop.appliances||[]).join(", ");
+        const nowItems=items.join(", ");
+        const itemsChanged=wasItems!==nowItems;
+        const priceChanged=Number(stop.amount||0)!==price;
+        stop.bookingFingerprint=fingerprint;
+        touched=true;
+        // The very first time we look at a stop we only trust an item change.
+        // A price on its own is more likely one Woody typed in by hand.
+        if (!seenBefore && !itemsChanged){ return; }
+        if (!itemsChanged && !priceChanged && String(stop.additional_info||"")===info) return;
+        stop.appliances=items;
+        stop.additional_info=info;
+        stop.amount=price;
+        const parts=[];
+        if (itemsChanged) parts.push(`${wasItems||"—"} → ${nowItems||"—"}`);
+        if (priceChanged) parts.push(`$${price.toFixed(2)}`);
+        if (parts.length) changes.push(`${b.firstName||"A booking"} in ${run.name}: ${parts.join(" · ")}`);
+      });
+    });
+  });
+  if (touched){ save(); render(); if (typeof drawRoute==="function") drawRoute(); }
+  return { changes, removals };
 }
 async function loadDirectBookings(showLoading=false){
   if (!ownerToken){ renderDirectBookings(); return; }
@@ -925,7 +1122,15 @@ async function loadDirectBookings(showLoading=false){
     const data=await ownerApi("/owner/bookings");
     directBookingRows=Array.isArray(data.bookings) ? data.bookings : [];
     await flushDirectCompletions();
+    const { changes, removals }=syncBookingChangesIntoRuns(directBookingRows);
     renderDirectBookings();
+    if (removals.length){
+      flash(`✕ ${removals.length} cancelled pickup${removals.length===1?"":"s"} removed from your runs`);
+    }else if (changes.length){
+      flash(`✓ Updated ${changes.length} pickup${changes.length===1?"":"s"} in your runs`);
+    }
+    const notes=[...removals,...changes];
+    if (notes.length) directStatus(notes.join("; "));
   }catch(e){ directStatus(e.message,true); }
 }
 async function addDirectBooking(id){
@@ -954,7 +1159,14 @@ async function addDirectBooking(id){
     status:"NEW"
   };
   try{
-    addFileStops([row],"Direct booking",message=>{ $("#directBookingStatus").innerHTML=message; });
+    const location=await geocode(fullAddr(row));
+    if (location){ row.lat=location.lat; row.lng=location.lng; }
+    const result=addFileStops([row],"Direct booking",message=>{ $("#directBookingStatus").innerHTML=message; });
+    const addedToActiveRun=state.stops.some(stop=>stop.submission_id===b.id);
+    if (!result.accepted || !addedToActiveRun){
+      directStatus(`${b.firstName || "This booking"} needs its address checked before it can be added to ${activeRunName()}.`,true);
+      return;
+    }
     if (b.status==="NEW"){
       await ownerApi(`/owner/bookings/${encodeURIComponent(id)}`,{method:"PATCH",body:JSON.stringify({status:"ADDED_TO_RUN"})});
       b.status="ADDED_TO_RUN";
@@ -1046,6 +1258,96 @@ $("#ownerCode").addEventListener("keydown",event=>{ if(event.key==="Enter"){even
 $("#ownerLogout").onclick=()=>{ownerToken="";localStorage.removeItem(OWNER_TOKEN_KEY);directBookingRows=[];customerRows=[];renderDirectBookings();renderCustomers();};
 $("#directRefresh").onclick=()=>loadDirectBookings(true);
 $("#customersRefresh").onclick=()=>loadCustomers(true);
+$("#bookingSearch").addEventListener("input",event=>{ bookingSearchText=event.target.value.trim().toLowerCase(); renderDirectBookings(); });
+$("#customerSearch").addEventListener("input",event=>{ customerSearchText=event.target.value.trim().toLowerCase(); renderCustomers(); });
+
+// Put a real price on a "quote needed" job and email it to the customer.
+async function sendBookingQuote(id){
+  const b=directBookingRows.find(row=>row.id===id); if(!b) return;
+  const who=[b.firstName,b.lastName].filter(Boolean).join(" ")||"this pickup";
+  const raw=prompt(`Price for ${who}?\n\nThey get an email with this price and it shows in their account.`,
+    b.quotedPrice!=null ? String(b.quotedPrice) : "");
+  if (raw===null) return;
+  const amount=Number(String(raw).replace(/[^0-9.]/g,""));
+  if (!Number.isFinite(amount) || amount<0) return directStatus("Enter the price as a number.",true);
+  const note=prompt("Short note for the customer (optional).", b.quoteNote||"");
+  if (note===null) return;
+  directStatus("Sending the price…");
+  try{
+    const data=await ownerApi(`/owner/bookings/${encodeURIComponent(id)}`,{
+      method:"PATCH",
+      body:JSON.stringify({status:b.status,quoteAmount:amount,quoteNote:String(note).trim(),notifyCustomer:true})
+    });
+    const index=directBookingRows.findIndex(row=>row.id===id);
+    if (index>=0) directBookingRows[index]={...directBookingRows[index],...data.booking};
+    renderDirectBookings();
+    directStatus(data.quoteEmailed===false
+      ? "Price saved, but the email did not send — tell them another way."
+      : `Price sent to ${who}.`);
+  }catch(e){ directStatus(e.message,true); }
+}
+
+// Photos the customer attached when they booked.
+async function showBookingPhotos(id){
+  directStatus("Loading photos…");
+  let photos=[];
+  try{
+    const data=await ownerApi(`/owner/bookings/${encodeURIComponent(id)}/photos`);
+    photos=Array.isArray(data.photoDetails) && data.photoDetails.length
+      ? data.photoDetails
+      : (Array.isArray(data.photos) ? data.photos.map(src=>({item:"",data:src})) : []);
+  }catch(e){ return directStatus(e.message,true); }
+  if (!photos.length) return directStatus("No photos saved for that booking.",true);
+  directStatus("");
+  const wrap=document.createElement("div");
+  wrap.style.cssText="position:fixed;inset:0;z-index:1200;background:rgba(0,0,0,.92);padding:14px;overflow:auto;display:flex;flex-direction:column;gap:10px";
+  photos.forEach((photo,index)=>{
+    const figure=document.createElement("figure");
+    figure.style.cssText="margin:0";
+    const img=document.createElement("img");
+    img.src=photo.data; img.alt=photo.item ? `${photo.item} photo` : `Customer photo ${index+1}`;
+    img.style.cssText="width:100%;border-radius:12px;display:block";
+    figure.append(img);
+    if(photo.item){
+      const caption=document.createElement("figcaption");
+      caption.textContent=photo.item;
+      caption.style.cssText="color:#fff;font-weight:800;padding:7px 3px 2px";
+      figure.append(caption);
+    }
+    wrap.append(figure);
+  });
+  const close=document.createElement("button");
+  close.textContent="Close"; close.className="good";
+  close.style.cssText="position:sticky;bottom:0;width:100%";
+  close.onclick=()=>wrap.remove();
+  wrap.append(close);
+  wrap.onclick=event=>{ if(event.target===wrap) wrap.remove(); };
+  document.body.append(wrap);
+}
+
+// "How did you find us" - collected on every booking, finally visible.
+async function loadInsights(){
+  const card=$("#insightsCard"), body=$("#insightsBody");
+  if (!card || !body) return;
+  if (!ownerToken){ card.style.display="none"; return; }
+  try{
+    const data=await ownerApi("/owner/insights");
+    const sources=(data.sources||[]).filter(row=>row.count>0);
+    const total=sources.reduce((sum,row)=>sum+row.count,0);
+    if (!total){ card.style.display="none"; return; }
+    const rows=sources.map(row=>{
+      const share=Math.round((row.count/total)*100);
+      return `<div class="row" style="justify-content:space-between;gap:10px">
+        <span>${esc(row.source)}</span><b>${row.count} · ${share}%</b>
+      </div>`;
+    }).join("");
+    const towns=(data.towns||[]).slice(0,5).map(row=>`${esc(row.town)} (${row.count})`).join(", ");
+    body.innerHTML=`${rows}
+      <div style="margin-top:8px">Busiest towns: ${towns||"—"}</div>
+      <div>${data.totals.customers} customer${data.totals.customers===1?"":"s"} · ${data.totals.bookings} booking${data.totals.bookings===1?"":"s"} · ${data.totals.completed} collected</div>`;
+    card.style.display="block";
+  }catch(e){ card.style.display="none"; }
+}
 
 /* ---------- Customer profiles (all website customers) ---------- */
 let customerRows = [];
@@ -1060,15 +1362,20 @@ function renderCustomers(){
     customerStatus("Sign in on the Bookings tab to see your customers.");
     return;
   }
+  const search=$("#customerSearch"); if (search) search.style.display=customerRows.length>5 ? "block" : "none";
   if (!customerRows.length){
     list.innerHTML='<div class="card"><b>No customers yet.</b><p class="small muted">People who book through your website will appear here.</p></div>';
     customerStatus("");
     return;
   }
-  const towns={};
-  customerRows.forEach(c=>{ const t=(c.town||"").trim()||"No town"; (towns[t]=towns[t]||[]).push(c); });
-  list.innerHTML = Object.keys(towns).sort((a,b)=>a.localeCompare(b)).map(t=>{
-    const cards = towns[t].map(c=>{
+  const visibleCustomers=customerRows.filter(c=>matchesSearch(c,customerSearchText));
+  if (!visibleCustomers.length){
+    list.innerHTML='<div class="card"><b>Nothing matches that search.</b></div>';
+    customerStatus(`0 of ${customerRows.length} customers.`);
+    return;
+  }
+  list.innerHTML = groupByTown(visibleCustomers).map(group=>{
+    const cards = group.rows.map(c=>{
       const name=esc([c.firstName,c.lastName].filter(Boolean).join(" "))||"(No name yet)";
       const address=esc([c.streetAddress,c.area].filter(Boolean).join(", "));
       const last=c.lastBookingAt ? new Date(c.lastBookingAt).toLocaleDateString("en-NZ",{day:"numeric",month:"short",year:"numeric"}) : "";
@@ -1083,14 +1390,26 @@ function renderCustomers(){
         ${last?`<div class="direct-meta"><span>Last booking: ${esc(last)}</span></div>`:""}
         ${c.accessNotes?`<div class="small muted">📝 ${esc(c.accessNotes)}</div>`:""}
         <div class="direct-actions">
+          ${c.bookings ? `<button class="ghost sm" data-customer-bookings="${esc(c.email)}">📋 Their bookings</button>` : ""}
           <button class="ghost sm" title="Delete this customer" data-delete-customer="${esc(c.id)}">✕ Delete</button>
         </div>
       </article>`;
     }).join("");
-    return `<details class="town-group"><summary>📍 ${esc(t)} (${towns[t].length})<span class="chev">›</span></summary>${cards}</details>`;
+    return `<details class="town-group"${customerSearchText?" open":""}><summary>📍 ${esc(group.label)} (${group.rows.length})<span class="chev">›</span></summary>${cards}</details>`;
   }).join("");
   list.querySelectorAll("[data-delete-customer]").forEach(button=>button.onclick=()=>deleteCustomer(button.dataset.deleteCustomer));
-  customerStatus(`${customerRows.length} customer${customerRows.length===1?"":"s"}.`);
+  // Jump to the Bookings tab already filtered to that person.
+  list.querySelectorAll("[data-customer-bookings]").forEach(button=>button.onclick=()=>{
+    const address=String(button.dataset.customerBookings||"");
+    bookingSearchText=address.toLowerCase();
+    const input=$("#bookingSearch"); if (input){ input.value=address; input.style.display="block"; }
+    setAppView("bookings");
+    renderDirectBookings();
+  });
+  restoreTownGroups(list,customerGroupOpen,"naki_customer_group_open_v1",Boolean(customerSearchText));
+  customerStatus(customerSearchText
+    ? `${visibleCustomers.length} of ${customerRows.length} customers match.`
+    : `${customerRows.length} customer${customerRows.length===1?"":"s"}.`);
 }
 async function deleteCustomer(id){
   const c=customerRows.find(row=>row.id===id); if(!c) return;
@@ -1110,7 +1429,20 @@ async function loadCustomers(showLoading=false){
     const data=await ownerApi("/owner/customers");
     customerRows=Array.isArray(data.customers) ? data.customers : [];
     renderCustomers();
+    loadInsights();
   }catch(e){ customerStatus(e.message,true); }
+}
+let ownerRefreshBusy=false;
+async function refreshOwnerData(){
+  if (!ownerToken || document.visibilityState==="hidden" || ownerRefreshBusy) return;
+  const focused=document.activeElement;
+  if (focused && $("#directBookingList")?.contains(focused)) return;
+  ownerRefreshBusy=true;
+  try{
+    await Promise.all([loadDirectBookings(false),loadCustomers(false)]);
+  }finally{
+    ownerRefreshBusy=false;
+  }
 }
 function setFileStatus(msg){ const el=$("#fileStatus"); if(el) el.innerHTML = msg; }
 
@@ -1217,7 +1549,9 @@ function pickupKeys(s){
   // Only trust an ID that LOOKS like one (long number). Jumbled sheet rows shove
   // words like "Facebook" into the Submission ID column — two people with the
   // same junk "id" would wrongly count as the same pickup. App-made ids (s+12) skipped.
-  if (/^[\d-]{6,}$/.test(submissionId)) keys.push("id:" + normKey(submissionId));
+  if (/^(?:WEB|JOTFORM|PICKUP)-[A-Z0-9_-]{6,}$/i.test(submissionId) || /^\d{6,}$/.test(submissionId)) {
+    return ["id:" + normKey(submissionId)];
+  }
   const address = normKey(fullAddr(s));
   const phone = String(s.phone||"").replace(/\D/g,"");
   const email = normKey(s.email);
@@ -1309,6 +1643,7 @@ function addFileStops(rows, srcName, setStatus, extraNote){
     drawRoute();
     refreshWeather(true);
   })();
+  return {accepted:added+parked+toGeocode.length>0,added,parked,skipped};
 }
 
 // Very small CSV parser (handles simple quoted fields).
@@ -1964,12 +2299,15 @@ async function customerProfileLink(s){
     await syncExternalBooking(s);
     return s.profileInviteUrl;
   }
+  // Minting a private link needs the owner sign-in. Without it the invoice or
+  // receipt still carries the plain account link.
+  if (!ownerToken) return fallback;
   const controller = new AbortController();
   const timeout = setTimeout(()=>controller.abort(), 8000);
   try{
     const res = await fetch(`${API}/customer/profile-invite`, {
       method:"POST",
-      headers:{"Content-Type":"application/json"},
+      headers:{"Content-Type":"application/json",Authorization:`Bearer ${ownerToken}`},
       signal:controller.signal,
       body:JSON.stringify(historyBookingPayload(s))
     });
@@ -2012,17 +2350,32 @@ function bulkMessage(){
   if (messageMode()==="reminder") return reminderBulkMessage().trim();
   return (state.confirmationMessage || confirmationMessage(state.confirmationDate)).trim();
 }
-function messageDay(){ return state.confirmationDate || ""; }
+// No collection day chosen yet (normal in reminder mode) used to mean sent marks
+// were thrown away entirely, so everyone stayed "new customer" forever.
+function messageDay(){ return state.confirmationDate || localIso(new Date()); }
+// Confirmations and reminders go to the same people for the same run, so each mode
+// gets its own bucket - sending one must not wipe the other's "already sent" marks.
+function messageBucket(){ return `${messageMode()}:${messageDay()}`; }
 function messageHistory(){ return state.messageHistory || {}; }
-function isContacted(id){
-  const mark = (messageHistory()[messageDay()]||{})[id] || {};
+// Marks hang off the stable pickup key, not the stop id: a sheet reload that drops
+// and re-adds someone hands out a brand new id, which used to lose their mark.
+function messageMarkKey(s){ return s ? (pickupKeys(s)[0] || "stop:" + s.id) : ""; }
+function markFor(s){
+  if (!s) return {};
+  const history = messageHistory();
+  const bucket = history[messageBucket()] || {};
+  const legacy = history[messageDay()] || {};   // marks saved by older versions
+  return bucket[messageMarkKey(s)] || bucket[s.id] || legacy[messageMarkKey(s)] || legacy[s.id] || {};
+}
+function isContacted(stop){
+  const mark = markFor(typeof stop === "string" ? findStop(stop) : stop);
   return !!(mark.contacted || mark.email || mark.text); // also keeps your existing marks
 }
 function selectedRecipientIds(){
-  const day = messageDay();
-  if (state.messageSelectionDay !== day){
-    state.messageSelectionDay = day;
-    state.messageSelectedIds = state.stops.filter(s => s.status!=="DONE" && !isContacted(s.id)).map(s=>s.id);
+  const bucket = messageBucket();
+  if (state.messageSelectionDay !== bucket){
+    state.messageSelectionDay = bucket;
+    state.messageSelectedIds = state.stops.filter(s => s.status!=="DONE" && !isContacted(s)).map(s=>s.id);
   }
   return new Set(state.messageSelectedIds||[]);
 }
@@ -2039,7 +2392,9 @@ function bulkBookingRecipient(s){
     town:s.town||""
   };
 }
-async function publishBulkPickupDate(recipients,pickupDate=messageDay()){
+// Deliberately NOT messageDay() - that falls back to today for the sent-marks bucket,
+// and a date only ever reaches a customer's account if Woody actually chose one.
+async function publishBulkPickupDate(recipients,pickupDate=state.confirmationDate||""){
   if (!pickupDate || !recipients.length) return {ok:true,updated:0,unmatched:[]};
   if (!ownerToken) throw new Error("Sign in on the Bookings tab once, then tap this button again so the dates can be saved to customer accounts.");
   const data=await ownerApi("/owner/bookings/bulk-confirm",{
@@ -2056,14 +2411,17 @@ async function publishBulkPickupDate(recipients,pickupDate=messageDay()){
   });
   return data;
 }
-function markRecipientsSentLocally(recipients,pickupDate=messageDay(),datesSaved=false){
-  if (!pickupDate) return;
+// pickupDate is only the date that was actually saved to accounts, so it stays
+// blank unless Woody chose one - the bucket the marks live in is separate.
+function markRecipientsSentLocally(recipients,pickupDate=state.confirmationDate||"",datesSaved=false){
   state.messageHistory=state.messageHistory||{};
-  const day=state.messageHistory[pickupDate]=state.messageHistory[pickupDate]||{};
+  const bucket=state.messageHistory[messageBucket()]=state.messageHistory[messageBucket()]||{};
   recipients.forEach(s=>{
-    day[s.id]=day[s.id]||{};
-    day[s.id].contacted=true;
-    if (datesSaved && s.confirmedPickupDate===pickupDate) day[s.id].bookingDateSynced=true;
+    const key=messageMarkKey(s);
+    const mark=bucket[key]=bucket[key]||{};
+    mark.contacted=true;
+    mark.stopId=s.id;
+    if (datesSaved && s.confirmedPickupDate===pickupDate) mark.bookingDateSynced=true;
   });
 }
 function selectedNumbers(){ return [...new Set(selectedRecipients().map(s=>(s.phone||"").trim()).filter(goodPhone))]; }
@@ -2084,7 +2442,7 @@ function renderContacts(){
     return { label:fullName(s)||fullAddr(s)||"Unnamed pickup", fields };
   }).filter(Boolean);
   const recipientRows = pend.map(s => {
-    const flags = isContacted(s.id) ? "already sent" : "new customer";
+    const flags = isContacted(s) ? "already sent" : "new customer";
     return `<label class="missing-contact" style="display:flex;gap:8px;align-items:flex-start;cursor:pointer">
       <input type="checkbox" data-recipient="${s.id}" ${selected.has(s.id)?"checked":""} onchange="setRecipientSelected('${s.id}',this.checked)" style="width:auto;margin-top:3px" />
       <span><b>${esc(fullName(s)||fullAddr(s)||"Unnamed pickup")}</b><br><span class="small muted">${esc(flags)}</span></span>
@@ -2130,8 +2488,7 @@ function renderContacts(){
   const actions = `<div class="message-actions"><b id="selectedCount">${selCount} selected customer${selCount!==1?'s':''}</b>
     <div class="row" style="margin-top:6px"><button class="good grow" onclick="bulkText()">Copy &amp; open text</button><button class="good grow" onclick="bulkEmailAuto()">📧 Email all now</button></div>
     <p class="small muted" style="margin:6px 0 0">Email all records successful sends automatically. In Messages, tap <b>To</b> then <b>Paste</b> once.</p>
-    <div class="row" style="margin-top:6px"><button class="ghost sm grow" onclick="bulkEmail()">Open Gmail instead</button><button class="ghost sm grow" onclick="markSelectedSent()">I sent the texts / Gmail draft</button></div>
-    <p class="small muted" style="margin:6px 0 0">Only use this after sending texts or a Gmail draft. Your phone does not tell the website when you tap Send.</p></div>`;
+    <p class="small muted" style="margin:6px 0 0">Email all now marks these customers as sent. Then send the copied text at the same time.</p></div>`;
   wrap.innerHTML = `<div class="card"><details open>
     <summary>Bulk message<span class="se-sum">${missing.length?` · ${missing.length} missing contact${missing.length!==1?'s':''}`:""}</span><span class="chev">›</span></summary>
     ${preview}
@@ -2183,15 +2540,16 @@ window.setRecipientSelected = (id, checked) => {
 window.selectRecipients = mode => {
   const candidates = state.stops.filter(s => s.status!=="DONE");
   state.messageSelectedIds = mode==="all" ? candidates.map(s=>s.id)
-    : mode==="new" ? candidates.filter(s=>!isContacted(s.id)).map(s=>s.id)
+    : mode==="new" ? candidates.filter(s=>!isContacted(s)).map(s=>s.id)
     : [];
-  state.messageSelectionDay = messageDay(); save();
+  state.messageSelectionDay = messageBucket(); save();
   const selected = new Set(state.messageSelectedIds);
   document.querySelectorAll("[data-recipient]").forEach(el=>{ el.checked=selected.has(el.dataset.recipient); });
   updateSelectedCustomerCount();
 };
 window.markSelectedSent = async () => {
-  if (!messageDay()) return alert("Choose the collection day first.");
+  // Only a confirmation needs a real chosen date - it gets saved to customer accounts.
+  if (messageMode()==="confirm" && !state.confirmationDate) return alert("Choose the collection day first.");
   const recipients = selectedRecipients().filter(s => goodEmail(s.email) || goodPhone(s.phone));
   if (!recipients.length) return alert("Select at least one pickup with a valid email or phone number.");
   let datesSaved=false;
@@ -2206,14 +2564,16 @@ window.markSelectedSent = async () => {
     }
   }
   busy("");
-  markRecipientsSentLocally(recipients,messageDay(),datesSaved);
+  markRecipientsSentLocally(recipients,state.confirmationDate||"",datesSaved);
   save(); render();
   flash(`✓ Saved ${recipients.length} sent message${recipients.length!==1?"s":""}`);
 };
 window.clearMessageMarks = () => {
-  if (!messageDay() || !state.messageHistory?.[messageDay()]) return;
+  const history = state.messageHistory || {};
+  if (!history[messageBucket()] && !history[messageDay()]) return;
   if (!confirm("Clear the email and text sent marks for this collection day?")) return;
-  delete state.messageHistory[messageDay()];
+  delete state.messageHistory[messageBucket()];
+  delete state.messageHistory[messageDay()];   // clear any old-format marks too
   state.messageSelectionDay = ""; state.messageSelectedIds = [];
   save(); render();
 };
@@ -2535,6 +2895,8 @@ window.sendReceipt = async id => {
           name: fullName(s),
           filename: file.name,
           pdfBase64: await fileToBase64(file),
+          // Recorded against their account so they keep a copy of what was paid.
+          amount: s.receiptAmount!=null ? Number(s.receiptAmount) : (s.amount!=null ? Number(s.amount) : null),
           includeFindMyLocalReview: /find\s*my\s*local/i.test(String(s.referral_source||"")) ||
             /found\s+us:\s*find\s*my\s*local/i.test(String(s.additional_info||""))
         })
@@ -2798,13 +3160,15 @@ window.bulkEmailAuto = async () => {
           dateSaveError=e.message;
         }
       }
-      if (messageDay()){
-        markRecipientsSentLocally(sentRecipients,messageDay(),datesSaved);
-        save(); render();
-      }
+      markRecipientsSentLocally(sentRecipients,state.confirmationDate||"",datesSaved);
+      save(); render();
       const fails = (out.failed||[]).length;
       flash(`✓ Emailed ${out.sent} customer${out.sent!==1?'s':''}${fails?` — ${fails} failed`:""}`);
       if (fails) alert("Couldn't send to: " + out.failed.join(", "));
+      if (dateSaveError){
+        alert("The emails were sent, but the date could not be saved yet. Sign in on Bookings and the app will retry automatically.");
+        dateSaveError="";
+      }
       if (dateSaveError) alert(`The emails were sent, but ${dateSaveError} Sign in on the Bookings tab, then use “I sent the texts / Gmail draft” once to retry the dates.`);
       return;
     }
@@ -3286,20 +3650,25 @@ async function syncPastBulkBookingDates(){
   try{
     for (const data of allRunStates()){
       const stops=(data.stops||[]).concat(data.bad||[]);
-      for (const [pickupDate,marks] of Object.entries(data.messageHistory||{})){
-        if (!/^\d{4}-\d{2}-\d{2}$/.test(pickupDate)) continue;
-        const recipients=stops.filter(s=>
-          marks?.[s.id]?.contacted &&
-          !marks[s.id].bookingDateSynced &&
-          s.historyStatus!=="COMPLETED" &&
-          !s.collectedAt
-        );
-        if (!recipients.length) continue;
+      for (const [bucketKey,marks] of Object.entries(data.messageHistory||{})){
+        // Buckets are "<mode>:<date>"; older versions saved the bare date.
+        const [mode,pickupDate] = bucketKey.includes(":") ? bucketKey.split(":") : ["confirm",bucketKey];
+        // Only a confirmation carries a pickup date worth saving to an account.
+        if (mode!=="confirm" || !/^\d{4}-\d{2}-\d{2}$/.test(pickupDate)) continue;
+        const pending=stops
+          .map(s=>({stop:s, mark:marks?.[messageMarkKey(s)] || marks?.[s.id]}))
+          .filter(({stop,mark})=>
+            mark?.contacted &&
+            !mark.bookingDateSynced &&
+            stop.historyStatus!=="COMPLETED" &&
+            !stop.collectedAt
+          );
+        if (!pending.length) continue;
         try{
-          await publishBulkPickupDate(recipients,pickupDate);
-          recipients.forEach(s=>{
-            if (s.confirmedPickupDate===pickupDate){
-              marks[s.id].bookingDateSynced=true;
+          await publishBulkPickupDate(pending.map(p=>p.stop),pickupDate);
+          pending.forEach(({stop,mark})=>{
+            if (stop.confirmedPickupDate===pickupDate){
+              mark.bookingDateSynced=true;
               changed=true;
             }
           });
@@ -3333,9 +3702,11 @@ renderGms();
 refreshWeather(false);
 loadGms(false);
 renderDirectBookings();
-if (ownerToken) loadDirectBookings(false);
+if (ownerToken) refreshOwnerData();
 if (ownerToken) setTimeout(syncPastBulkBookingDates, 1800);
-setInterval(()=>{ if(ownerToken) loadDirectBookings(false); }, 60000);
+setInterval(refreshOwnerData,15000);
+document.addEventListener("visibilitychange",()=>{ if(document.visibilityState==="visible") refreshOwnerData(); });
+window.addEventListener("focus",refreshOwnerData);
 setTimeout(syncSavedProfileBookings, 1500);
 $("#mapPanel").ontoggle = () => {
   if ($("#mapPanel").open) setTimeout(()=>{ map.invalidateSize(); drawRoute(); }, 80);
