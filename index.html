@@ -239,6 +239,36 @@
   .town-group{margin:12px 0}
   .town-group>summary{font-size:16px}
   .town-group .direct-booking{margin-top:10px}
+  /* Compact list: one tappable line per person, details only when you open it. */
+  .mini{padding:0;margin:8px 0;overflow:hidden}
+  .mini>summary{display:flex;align-items:center;gap:11px;padding:11px 13px;cursor:pointer;list-style:none}
+  .mini>summary::-webkit-details-marker{display:none}
+  .mini-main{flex:1;min-width:0}
+  .mini-name{display:block;font-weight:800;font-size:16px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .mini-sub{display:block;color:var(--muted);font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .mini[open]>summary .mini-name,.mini[open]>summary .mini-sub{white-space:normal;overflow:visible}
+  .mini-price{font-weight:800;white-space:nowrap;font-size:15px}
+  .mini-dot{width:9px;height:9px;border-radius:50%;background:var(--muted);flex:0 0 auto}
+  .mini-dot.new{background:var(--accent)}
+  .mini-dot.added{background:var(--good)}
+  .mini-dot.off{background:#ff5b78}
+  .mini-body{padding:2px 13px 13px}
+  .mini[open]{box-shadow:0 8px 20px #0004}
+  .list-toolbar{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+  .list-toolbar .grow{margin-bottom:0}
+  /* Edit popup - a real form instead of a chain of one-line prompts. */
+  .modal-back{position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:10000;
+    display:flex;align-items:center;justify-content:center;padding:16px}
+  .modal-card{background:var(--panel);border:1px solid var(--line);border-radius:16px;
+    padding:18px;max-width:420px;width:100%;max-height:88vh;display:flex;flex-direction:column}
+  .modal-fields{overflow-y:auto;margin-top:10px;padding-right:2px}
+  .modal-fields label{display:block;margin:10px 0 4px;font-size:13px;color:var(--muted);font-weight:700}
+  .modal-fields label:first-child{margin-top:0}
+  .modal-fields input,.modal-fields textarea{width:100%}
+  .modal-fields textarea{resize:vertical;min-height:64px}
+  .modal-row{display:flex;gap:8px}
+  .modal-row>div{flex:1;min-width:0}
+  .modal-actions{display:flex;gap:8px;margin-top:14px;padding-top:12px;border-top:1px solid var(--line)}
   .sync-ok{color:var(--good)}.sync-wait{color:var(--warn)}
   .message-actions{position:sticky;bottom:72px;z-index:20;background:var(--panel);padding:10px 0 2px;
     border-top:1px solid var(--line);box-shadow:0 -8px 14px var(--panel)}
@@ -385,7 +415,10 @@
       </div>
       <div id="ownerLoginStatus" class="small" style="margin-top:8px"></div>
     </div>
-    <input id="bookingSearch" class="grow" placeholder="Search name, town, address, email or phone" style="display:none;margin-bottom:8px" />
+    <div class="list-toolbar" id="bookingToolbar" style="display:none">
+      <input id="bookingSearch" class="grow" placeholder="Search name, town, address, email or phone" />
+      <button class="ghost sm" id="bookingViewToggle" title="Switch between a short list and full cards"></button>
+    </div>
     <div id="directBookingStatus" class="small muted"></div>
     <div id="directBookingList"></div>
   </section>
@@ -400,7 +433,10 @@
       <b>Where customers come from</b>
       <div id="insightsBody" class="small muted">Loading…</div>
     </div>
-    <input id="customerSearch" class="grow" placeholder="Search name, town, address, email or phone" style="display:none;margin-bottom:8px" />
+    <div class="list-toolbar" id="customerToolbar" style="display:none">
+      <input id="customerSearch" class="grow" placeholder="Search name, town, address, email or phone" />
+      <button class="ghost sm" id="customerViewToggle" title="Switch between a short list and full cards"></button>
+    </div>
     <div id="customerStatus" class="small muted"></div>
     <div id="customerList"></div>
   </section>
@@ -499,6 +535,20 @@
   </div>
 </div>
 
+<!-- One tidy edit popup, used anywhere details need changing. -->
+<div id="formModal" class="modal-back" style="display:none">
+  <div class="modal-card">
+    <b id="formModalTitle" style="font-size:1.05em"></b>
+    <p class="small muted" id="formModalNote" style="margin:6px 0 2px"></p>
+    <div id="formModalFields" class="modal-fields"></div>
+    <div id="formModalError" class="small" style="color:var(--bad);display:none;margin-top:8px"></div>
+    <div class="modal-actions">
+      <button class="ghost" style="flex:1" id="formModalCancel">Cancel</button>
+      <button class="good" style="flex:1" id="formModalSave">Save</button>
+    </div>
+  </div>
+</div>
+
 <script>
 "use strict";
 /* ============================================================
@@ -536,6 +586,9 @@ let bookingSearchText = "";
 let customerSearchText = "";
 let bookingGroupOpen = loadJSON("naki_booking_group_open_v1", {});
 let customerGroupOpen = loadJSON("naki_customer_group_open_v1", {});
+// Short list by default - full cards are a lot to scroll past on a phone.
+let bookingCompact = loadBool("naki_booking_compact_v1", true);
+let customerCompact = loadBool("naki_customer_compact_v1", true);
 let routeDrawVersion = 0;   // prevents an old run's road line appearing after a quick switch
 let unpaidOpen = false;     // the Unpaid invoices dropdown stays as you left it across redraws
 // Payment details printed on every invoice + reminder email.
@@ -547,6 +600,9 @@ let weatherState = { key:"", towns:[], loading:false, fetchedAt:0, error:"" };
 let gmsState = { data:null, loading:false, fetchedAt:0, error:"" };
 
 function loadJSON(k, d){ try{ return JSON.parse(localStorage.getItem(k)) || d; }catch(e){ return d; } }
+// loadJSON can't hold a false - "false || default" gives the default back, so a
+// saved off-switch would silently turn itself on again.
+function loadBool(k, d){ const raw=localStorage.getItem(k); return raw===null ? d : raw==="true"; }
 function saveJSON(k, v){
   try{ localStorage.setItem(k, JSON.stringify(v)); }
   catch(e){
@@ -930,7 +986,10 @@ function renderDirectBookings(){
     directStatus("Sign in to see customer bookings.");
     return;
   }
+  const toolbar=$("#bookingToolbar"); if (toolbar) toolbar.style.display=directBookingRows.length ? "flex" : "none";
   const search=$("#bookingSearch"); if (search) search.style.display=directBookingRows.length>5 ? "block" : "none";
+  const viewToggle=$("#bookingViewToggle");
+  if (viewToggle) viewToggle.textContent=bookingCompact ? "⊞ Full" : "☰ List";
   if (!directBookingRows.length){
     list.innerHTML='<div class="card"><b>No direct bookings yet.</b><p class="small muted">New customer requests will appear here automatically.</p></div>';
     directStatus("Up to date.");
@@ -978,9 +1037,7 @@ function renderDirectBookings(){
         ? `<button class="good sm" disabled>✓ Added to this run</button>`
         : `<button class="ghost sm" data-open-booking-run="${esc(linkedRun.id)}">Added to ${esc(linkedRun.name)}</button>`
       : `<button class="good sm" data-add-direct="${esc(b.id)}">Add to active run</button>`;
-    return `<article class="card direct-booking${actuallyAdded?' added':''}${b.status==='CANCELLED'?' cancelled':''}" data-booking-id="${esc(b.id)}">
-      <div class="direct-head"><h3>${name}</h3><b>${esc(price)}</b></div>
-      <div class="direct-meta"><span>${esc(date)}</span><span class="booking-status${statusClass}">${esc(statusText)}</span>${sync}</div>
+    const body = `<div class="direct-meta"><span>${esc(date)}</span><span class="booking-status${statusClass}">${esc(statusText)}</span>${sync}</div>
       <div>${address}</div>
       ${contact}
       <div class="direct-items">${items}</div>
@@ -1004,9 +1061,32 @@ function renderDirectBookings(){
           ? `<button class="good sm" data-quote-direct="${esc(b.id)}">${b.quotedPrice!=null ? "✎ Change price" : "$ Send price"}</button>`
           : ""}
         ${b.photoCount ? `<button class="ghost sm" data-photos-direct="${esc(b.id)}">📷 ${b.photoCount} photo${b.photoCount===1?"":"s"}</button>` : ""}
+        <button class="ghost sm" data-edit-direct="${esc(b.id)}">✎ Edit details</button>
         <button class="ghost sm" title="Delete this booking" data-delete-direct="${esc(b.id)}">✕ Delete</button>
-      </div>
+      </div>`;
+    const classes=`direct-booking${actuallyAdded?' added':''}${b.status==='CANCELLED'?' cancelled':''}`;
+    if (!bookingCompact){
+      return `<article class="card ${classes}" data-booking-id="${esc(b.id)}">
+      <div class="direct-head"><h3>${name}</h3><b>${esc(price)}</b></div>
+      ${body}
     </article>`;
+    }
+    // Compact: name, where and what it costs on one line - open it for the rest.
+    const dot=b.status==="CANCELLED"||b.status==="DECLINED" ? "off" : actuallyAdded ? "added" : isNewBooking(b) ? "new" : "";
+    const where=townLabel(b.town);
+    const sub=[where==="No town"?"":where, statusText].filter(Boolean).join(" · ");
+    return `<details class="card ${classes} mini" data-booking-id="${esc(b.id)}">
+      <summary>
+        <span class="mini-dot ${dot}"></span>
+        <span class="mini-main">
+          <span class="mini-name">${name||"(No name)"}</span>
+          <span class="mini-sub">${esc(sub)}</span>
+        </span>
+        <span class="mini-price">${esc(price)}</span>
+        <span class="chev">›</span>
+      </summary>
+      <div class="mini-body">${body}</div>
+    </details>`;
   };
   const isNewBooking=b=>b.status==="NEW" || (b.status==="ADDED_TO_RUN" && !runContainingBooking(b.id));
   const freshRows = visibleRows.filter(isNewBooking);
@@ -1037,6 +1117,7 @@ function renderDirectBookings(){
   list.querySelectorAll("[data-complete-direct]").forEach(button=>button.onclick=()=>completeDirectBooking(button.dataset.completeDirect));
   list.querySelectorAll("[data-uncomplete-direct]").forEach(button=>button.onclick=()=>uncompleteDirectBooking(button.dataset.uncompleteDirect));
   list.querySelectorAll("[data-restore-direct]").forEach(button=>button.onclick=()=>restoreDirectBooking(button.dataset.restoreDirect));
+  list.querySelectorAll("[data-edit-direct]").forEach(button=>button.onclick=()=>editDirectBooking(button.dataset.editDirect));
   list.querySelectorAll("[data-delete-direct]").forEach(button=>button.onclick=()=>deleteDirectBooking(button.dataset.deleteDirect));
   list.querySelectorAll("[data-quote-direct]").forEach(button=>button.onclick=()=>sendBookingQuote(button.dataset.quoteDirect));
   list.querySelectorAll("[data-photos-direct]").forEach(button=>button.onclick=()=>showBookingPhotos(button.dataset.photosDirect));
@@ -1260,18 +1341,69 @@ $("#directRefresh").onclick=()=>loadDirectBookings(true);
 $("#customersRefresh").onclick=()=>loadCustomers(true);
 $("#bookingSearch").addEventListener("input",event=>{ bookingSearchText=event.target.value.trim().toLowerCase(); renderDirectBookings(); });
 $("#customerSearch").addEventListener("input",event=>{ customerSearchText=event.target.value.trim().toLowerCase(); renderCustomers(); });
+$("#bookingViewToggle").onclick=()=>{
+  bookingCompact=!bookingCompact; saveJSON("naki_booking_compact_v1",bookingCompact); renderDirectBookings();
+};
+$("#customerViewToggle").onclick=()=>{
+  customerCompact=!customerCompact; saveJSON("naki_customer_compact_v1",customerCompact); renderCustomers();
+};
 
+// Fix a customer's details on their booking - typos, a better address, extra items.
+async function editDirectBooking(id){
+  const b=directBookingRows.find(row=>row.id===id); if(!b) return;
+  const result=await openEditForm({
+    title:"✎ Edit booking details",
+    note:"This updates the booking in their online account too.",
+    saveLabel:"Save details",
+    fields:[
+      { key:"firstName", label:"First name", value:b.firstName, half:true },
+      { key:"lastName",  label:"Last name",  value:b.lastName,  half:true },
+      { key:"phone", label:"Phone", value:b.phone, type:"tel", inputmode:"tel", half:true },
+      { key:"town", label:"Town", value:b.town, half:true },
+      { key:"email", label:"Email", value:b.email, type:"email", inputmode:"email",
+        validate:v=>!goodEmail(v) ? "A valid email is needed - it links the booking to their account." : "" },
+      { key:"streetAddress", label:"Street address", value:b.streetAddress },
+      { key:"area", label:"Area (optional)", value:b.area },
+      { key:"items", label:"Items being collected", type:"textarea", value:(b.items||[]).join(", "),
+        placeholder:"Fridge or upright freezer, Microwave" },
+      { key:"additionalInfo", label:"Notes from the customer", type:"textarea", rows:2, value:b.additionalInfo||"" }
+    ]
+  });
+  if (!result) return;
+  directStatus("Saving their details…");
+  try{
+    const data=await ownerApi(`/owner/bookings/${encodeURIComponent(id)}`,{
+      method:"PATCH",
+      body:JSON.stringify({
+        status:b.status,
+        firstName:result.firstName, lastName:result.lastName, phone:result.phone, email:result.email,
+        streetAddress:result.streetAddress, town:result.town, area:result.area,
+        additionalInfo:result.additionalInfo, items:splitItems(result.items)
+      })
+    });
+    const index=directBookingRows.findIndex(row=>row.id===id);
+    if (index>=0) directBookingRows[index]={...directBookingRows[index],...data.booking};
+    renderDirectBookings();
+    directStatus("Details saved.");
+  }catch(e){ directStatus(e.message,true); }
+}
 // Put a real price on a "quote needed" job and email it to the customer.
 async function sendBookingQuote(id){
   const b=directBookingRows.find(row=>row.id===id); if(!b) return;
   const who=[b.firstName,b.lastName].filter(Boolean).join(" ")||"this pickup";
-  const raw=prompt(`Price for ${who}?\n\nThey get an email with this price and it shows in their account.`,
-    b.quotedPrice!=null ? String(b.quotedPrice) : "");
-  if (raw===null) return;
-  const amount=Number(String(raw).replace(/[^0-9.]/g,""));
-  if (!Number.isFinite(amount) || amount<0) return directStatus("Enter the price as a number.",true);
-  const note=prompt("Short note for the customer (optional).", b.quoteNote||"");
-  if (note===null) return;
+  const entered=await openEditForm({
+    title:`$ Price for ${who}`,
+    note:"They get an email with this price and it shows in their account.",
+    saveLabel:"Send price",
+    fields:[
+      { key:"amount", label:"Price ($)", value:b.quotedPrice!=null?String(b.quotedPrice):"", inputmode:"decimal",
+        validate:v=>parseMoney(v)===null ? "Enter the price as a number." : "" },
+      { key:"note", label:"Short note for the customer (optional)", type:"textarea", rows:2, value:b.quoteNote||"" }
+    ]
+  });
+  if (!entered) return;
+  const amount=parseMoney(entered.amount);
+  const note=entered.note;
   directStatus("Sending the price…");
   try{
     const data=await ownerApi(`/owner/bookings/${encodeURIComponent(id)}`,{
@@ -1362,7 +1494,10 @@ function renderCustomers(){
     customerStatus("Sign in on the Bookings tab to see your customers.");
     return;
   }
+  const toolbar=$("#customerToolbar"); if (toolbar) toolbar.style.display=customerRows.length ? "flex" : "none";
   const search=$("#customerSearch"); if (search) search.style.display=customerRows.length>5 ? "block" : "none";
+  const viewToggle=$("#customerViewToggle");
+  if (viewToggle) viewToggle.textContent=customerCompact ? "⊞ Full" : "☰ List";
   if (!customerRows.length){
     list.innerHTML='<div class="card"><b>No customers yet.</b><p class="small muted">People who book through your website will appear here.</p></div>';
     customerStatus("");
@@ -1383,17 +1518,33 @@ function renderCustomers(){
         ${c.phone?`<span>📞 <a href="tel:${esc(String(c.phone).replace(/[^\d+]/g,""))}">${esc(c.phone)}</a></span>`:""}
         ${c.email?`<span>✉️ <a href="mailto:${encodeURIComponent(c.email)}">${esc(c.email)}</a></span>`:""}
       </div>` : "";
-      return `<article class="card direct-booking">
-        <div class="direct-head"><h3>${name}</h3><b>${c.bookings} booking${c.bookings===1?"":"s"}</b></div>
-        <div>${address}</div>
+      const bookingCount=`${c.bookings} booking${c.bookings===1?"":"s"}`;
+      const body=`<div>${address}</div>
         ${contact}
         ${last?`<div class="direct-meta"><span>Last booking: ${esc(last)}</span></div>`:""}
         ${c.accessNotes?`<div class="small muted">📝 ${esc(c.accessNotes)}</div>`:""}
         <div class="direct-actions">
           ${c.bookings ? `<button class="ghost sm" data-customer-bookings="${esc(c.email)}">📋 Their bookings</button>` : ""}
           <button class="ghost sm" title="Delete this customer" data-delete-customer="${esc(c.id)}">✕ Delete</button>
-        </div>
+        </div>`;
+      if (!customerCompact){
+        return `<article class="card direct-booking">
+        <div class="direct-head"><h3>${name}</h3><b>${bookingCount}</b></div>
+        ${body}
       </article>`;
+      }
+      return `<details class="card direct-booking mini">
+        <summary>
+          <span class="mini-dot ${c.bookings?"added":""}"></span>
+          <span class="mini-main">
+            <span class="mini-name">${name}</span>
+            <span class="mini-sub">${esc([c.streetAddress,last?`last ${last}`:""].filter(Boolean).join(" · "))}</span>
+          </span>
+          <span class="mini-price">${c.bookings} job${c.bookings===1?"":"s"}</span>
+          <span class="chev">›</span>
+        </summary>
+        <div class="mini-body">${body}</div>
+      </details>`;
     }).join("");
     return `<details class="town-group"${customerSearchText?" open":""}><summary>📍 ${esc(group.label)} (${group.rows.length})<span class="chev">›</span></summary>${cards}</details>`;
   }).join("");
@@ -2609,18 +2760,94 @@ window.editNote = id => {
   if (v===null) return;                       // cancelled
   s.note = v.trim(); save(); render();
 };
-// Edit what's being collected + the agreed price, so the receipt matches the job.
-window.editStop = id => {
+// One tidy popup for editing details, instead of a chain of one-line prompts.
+// Resolves with {key:value} of trimmed values, or null if it was cancelled.
+function openEditForm({ title, note="", fields, saveLabel="Save" }){
+  return new Promise(resolve=>{
+    const back=$("#formModal"), body=$("#formModalFields");
+    const saveBtn=$("#formModalSave"), cancelBtn=$("#formModalCancel"), errorEl=$("#formModalError");
+    $("#formModalTitle").textContent=title;
+    const noteEl=$("#formModalNote");
+    noteEl.textContent=note; noteEl.style.display=note ? "block" : "none";
+    errorEl.style.display="none"; errorEl.textContent="";
+    const field=f=>{
+      const id=`fm_${f.key}`;
+      const value=f.value==null ? "" : String(f.value);
+      const input=f.type==="textarea"
+        ? `<textarea id="${id}" rows="${f.rows||3}" placeholder="${esc(f.placeholder||"")}">${esc(value)}</textarea>`
+        : `<input id="${id}" type="${f.type||"text"}"${f.inputmode?` inputmode="${f.inputmode}"`:""} placeholder="${esc(f.placeholder||"")}" value="${esc(value)}" />`;
+      return `<label for="${id}">${esc(f.label)}</label>${input}`;
+    };
+    // Fields flagged half sit two-up on one line (first/last name, price/date).
+    let html="", pending=null;
+    fields.forEach(f=>{
+      if (!f.half){ if (pending){ html+=`<div class="modal-row"><div>${field(pending)}</div></div>`; pending=null; } html+=field(f); return; }
+      if (pending){ html+=`<div class="modal-row"><div>${field(pending)}</div><div>${field(f)}</div></div>`; pending=null; }
+      else pending=f;
+    });
+    if (pending) html+=field(pending);
+    body.innerHTML=html;
+    saveBtn.textContent=saveLabel;
+    back.style.display="flex";
+    const first=body.querySelector("input,textarea");
+    if (first) setTimeout(()=>{ first.focus(); first.select?.(); },50);
+    const close=result=>{
+      back.style.display="none";
+      saveBtn.onclick=null; cancelBtn.onclick=null; back.onclick=null;
+      document.removeEventListener("keydown",onKey);
+      resolve(result);
+    };
+    // Escape and tapping the dark area both cancel, like the reminder picker.
+    const onKey=event=>{ if (event.key==="Escape") close(null); };
+    document.addEventListener("keydown",onKey);
+    cancelBtn.onclick=()=>close(null);
+    back.onclick=event=>{ if (event.target===back) close(null); };
+    saveBtn.onclick=()=>{
+      const out={};
+      fields.forEach(f=>{ out[f.key]=(document.getElementById(`fm_${f.key}`)?.value||"").trim(); });
+      const problem=fields.map(f=>f.validate?f.validate(out[f.key],out):"").find(Boolean);
+      if (problem){ errorEl.textContent=problem; errorEl.style.display="block"; return; }
+      close(out);
+    };
+  });
+}
+function parseMoney(text){
+  const trimmed=String(text||"").trim();
+  if (!trimmed) return null;
+  const value=parseFloat(trimmed.replace(/[^0-9.]/g,""));
+  return isFinite(value) && value>=0 ? value : null;
+}
+function splitItems(text){ return String(text||"").split(/[;,\n]/).map(x=>x.trim()).filter(Boolean); }
+const validMoney=v=>v && parseMoney(v)===null ? "Enter the price as a number, or leave it blank." : "";
+const validEmail=v=>v && !goodEmail(v) ? "That email address doesn't look right." : "";
+// Edit who it's for, what's being collected and the agreed price, so the receipt matches the job.
+window.editStop = async id => {
   const s = findStop(id); if(!s) return;
-  const items = prompt("Things you're picking up (separate with commas):", (s.appliances||[]).join(", "));
-  if (items===null) return;                   // cancelled — leave the pickup untouched
-  s.appliances = items.split(/[;,]/).map(x=>x.trim()).filter(Boolean);
-  const a = prompt("Price for this pickup (dollars) — leave blank for none:", s.amount!=null ? String(s.amount) : "");
-  if (a!==null){
-    const t = a.trim();
-    if (t==="") s.amount = null;
-    else { const n = parseFloat(t.replace(/[^0-9.]/g,"")); if (isFinite(n) && n>=0) s.amount = n; }
-  }
+  const result = await openEditForm({
+    title:"✎ Edit pickup",
+    note:"Changes are saved on this phone and sent to their account if they booked online.",
+    saveLabel:"Save pickup",
+    fields:[
+      { key:"first_name", label:"First name", value:s.first_name, half:true },
+      { key:"last_name",  label:"Last name",  value:s.last_name,  half:true },
+      { key:"phone", label:"Phone", value:s.phone, type:"tel", inputmode:"tel", half:true },
+      { key:"amount", label:"Price ($)", value:s.amount!=null?String(s.amount):"", inputmode:"decimal", half:true,
+        placeholder:"Leave blank for none", validate:validMoney },
+      { key:"email", label:"Email", value:s.email, type:"email", inputmode:"email", validate:validEmail },
+      { key:"street", label:"Street address", value:s.street },
+      { key:"town", label:"Town", value:s.town },
+      { key:"appliances", label:"Things you're picking up", type:"textarea", value:(s.appliances||[]).join(", "),
+        placeholder:"Fridge, washing machine" },
+      { key:"note", label:"Note for this pickup", type:"textarea", rows:2, value:s.note||"" }
+    ]
+  });
+  if (!result) return;                        // cancelled — leave the pickup untouched
+  s.first_name=result.first_name; s.last_name=result.last_name;
+  s.phone=result.phone; s.email=result.email;
+  s.street=result.street; s.town=result.town;
+  s.appliances=splitItems(result.appliances);
+  s.amount=parseMoney(result.amount);
+  s.note=result.note;
   save(); render();
   syncExternalBooking(s);
 };

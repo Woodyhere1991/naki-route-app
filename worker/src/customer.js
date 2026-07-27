@@ -1793,12 +1793,44 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
       const quoteCents = hasQuote ? Math.round(rawQuote * 100) : Number(existing.quote_cents || 0);
       const quoteNote = body.quoteNote == null ? existing.quote_note || "" : clean(body.quoteNote, 300);
       const quotedAt = hasQuote ? updatedAt : (existing.quoted_at || null);
+
+      // Owner-edited customer details. Every field is optional - anything left out
+      // keeps what the customer originally sent.
+      const keep = (value, column, max) => value == null ? (existing[column] || "") : clean(value, max);
+      const firstName = keep(body.firstName, "first_name", 60);
+      const lastName = keep(body.lastName, "last_name", 60);
+      const phone = keep(body.phone, "phone", 30);
+      const address = body.email == null ? existing.email : email(body.email);
+      if (!EMAIL_RE.test(address)) return json(request, { error: "Enter a valid email address" }, 400);
+      const streetAddress = keep(body.streetAddress, "street_address", 180);
+      const town = keep(body.town, "town", 100);
+      const area = keep(body.area, "area", 100);
+      const additionalInfo = keep(body.additionalInfo, "additional_info", 1500);
+      let itemsJson = existing.items_json || "[]";
+      let totalCents = Number(existing.total_cents || 0);
+      let quoteRequired = Number(existing.quote_required || 0);
+      if (Array.isArray(body.items)) {
+        const items = body.items.map(item => clean(item, 100)).filter(Boolean).slice(0, 10);
+        itemsJson = JSON.stringify(items);
+        // Only re-price when every item is one of ours - a hand-typed item has no
+        // price we can look up, so the existing total is left alone.
+        if (items.length && items.every(item => Object.hasOwn(ITEM_PRICES, item))) {
+          const priced = calculate(items, existing.rural_option || "");
+          totalCents = priced.cents;
+          quoteRequired = priced.quoteRequired ? 1 : 0;
+        }
+      }
+
       const result = await env.CUSTOMER_DB.prepare(
         `UPDATE ${table} SET status=?1, pickup_date=?2, pickup_window=?3, customer_note=?4,
           quote_cents=?7, quote_note=?8, quoted_at=?9,
+          first_name=?10, last_name=?11, phone=?12, email=?13, street_address=?14, town=?15,
+          area=?16, additional_info=?17, items_json=?18, total_cents=?19, quote_required=?20,
           updated_at=?5${jotform || pickupRun ? ", completed_at = CASE WHEN ?1='COMPLETED' THEN COALESCE(completed_at, ?5) ELSE NULL END" : ""}
          WHERE id=?6`
-      ).bind(status, pickupDate, pickupWindow, customerNote, updatedAt, bookingId, quoteCents, quoteNote, quotedAt).run();
+      ).bind(status, pickupDate, pickupWindow, customerNote, updatedAt, bookingId, quoteCents, quoteNote, quotedAt,
+        firstName, lastName, phone, address, streetAddress, town, area, additionalInfo, itemsJson,
+        totalCents, quoteRequired).run();
       if (!result.meta || !result.meta.changes) return json(request, { error: "Booking not found" }, 404);
       if (!jotform && !pickupRun) {
         await env.CUSTOMER_DB.prepare(
