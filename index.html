@@ -5,13 +5,14 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <title>Naki Pickup Run</title>
 
-<!-- Home-screen app icon and colours -->
+<!-- Home-screen app icon and colours.
+     Deliberately NOT apple-mobile-web-app-capable: on iPhone that launches the
+     app in its own window with its own separate storage, which hides every run
+     saved from Safari. The icon works fine without it. -->
 <link rel="manifest" href="/manifest.webmanifest" />
 <link rel="icon" href="/assets/icon-192.png" />
 <link rel="apple-touch-icon" href="/assets/icon-180.png" />
 <meta name="theme-color" content="#061d2e" />
-<meta name="apple-mobile-web-app-capable" content="yes" />
-<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
 <meta name="apple-mobile-web-app-title" content="Pickup Run" />
 
 <!-- Leaflet map (free OSM tiles) -->
@@ -55,7 +56,9 @@
 
   /* Top bar: live counts */
   header{position:sticky;top:0;z-index:1000;background:linear-gradient(105deg,#08273b,#103e52);
-    border-bottom:2px solid var(--accent);box-shadow:0 4px 14px rgba(0,0,0,.35)}
+    border-bottom:2px solid var(--accent);box-shadow:0 4px 14px rgba(0,0,0,.35);
+    /* Clears the clock and Dynamic Island if this ever runs full-screen. */
+    padding-top:env(safe-area-inset-top)}
   .topbar{display:flex;align-items:center;gap:10px;padding:10px 12px;max-width:760px;margin:0 auto}
   .brand-logo{flex:0 0 48px;width:48px;height:48px;border-radius:50%;overflow:hidden;background:#fff8e9;
     border:2px solid var(--warn);box-shadow:0 0 0 2px #d32050}
@@ -491,6 +494,33 @@
     </details>
   </div>
 
+  <!-- BACKUP — runs live only in this browser, so give them a way out -->
+  <div class="card view-panel view-add">
+    <details id="backupBox">
+      <summary>Back up my runs <span class="chev">›</span></summary>
+      <div style="padding-top:10px">
+        <p class="small muted" style="margin:0 0 10px">
+          Your runs, unpaid list and saved settings live only in this browser. Deleting the app,
+          clearing your history or switching phones loses them. Save a copy here first.
+        </p>
+        <div id="cloudBackup" class="confirmed-day" style="margin:0 0 10px">
+          <span id="cloudBackupState">Checking your saved copy…</span>
+        </div>
+        <div class="row">
+          <button class="good grow" id="cloudSaveNow">☁ Save to my account now</button>
+          <button class="ghost grow" id="cloudRestore">↺ Restore from my account</button>
+        </div>
+        <p class="small muted" style="margin:10px 0 6px">Or keep a copy as a file on your phone:</p>
+        <div class="row">
+          <button class="ghost grow" id="backupSave">⬇ Save a backup file</button>
+          <button class="ghost grow" id="backupLoad">⬆ Restore from file</button>
+        </div>
+        <input type="file" id="backupFile" accept="application/json,.json" style="display:none" />
+        <div id="backupStatus" class="small muted" style="margin-top:8px"></div>
+      </div>
+    </details>
+  </div>
+
   <!-- BANNERS -->
   <div id="bannerSave" class="banner warnb"></div>
   <div id="bannerOsrm" class="banner info"></div>
@@ -579,7 +609,7 @@
 const NP = { lat: -39.0556, lng: 174.0752 };          // New Plymouth default centre
 const LS = "naki_route_v1";                            // old single-run key (kept as a safety backup)
 const RUNS_LS = "naki_pickup_runs_v1";                 // named runs + shared unpaid ledger
-const GEO = "naki_geocache_v1";                        // address -> {lat,lng} cache
+const GEO = "naki_geocache_v2";                        // address -> {lat,lng,label} cache (v1 dropped: it held wrong-town matches)
 const UA  = "NakiPickupRun/1.0 (whiteware pickup route planner; nakiwreckremoval@gmail.com)";
 const API = "https://naki-route-api.nakiwreckremoval.workers.dev/v2";
 const OWNER_TOKEN_KEY = "naki_owner_token_v1";
@@ -708,6 +738,8 @@ function save(){
   }
   runStore.shared.unpaid = Array.isArray(state.unpaid) ? state.unpaid : [];
   saveJSON(RUNS_LS, runStore);
+  // Also keep an off-phone copy, so a wiped phone isn't the end of the runs.
+  if (typeof scheduleCloudBackup === "function") scheduleCloudBackup();
 }
 function activeRunName(){ return activeRunRecord()?.name || "Pickup run"; }
 function allRunStates(){
@@ -1261,7 +1293,7 @@ async function addDirectBooking(id){
   };
   try{
     const location=await geocode(fullAddr(row));
-    if (location){ row.lat=location.lat; row.lng=location.lng; }
+    if (location){ applyGeo(row, location); }
     const result=addFileStops([row],"Direct booking",message=>{ $("#directBookingStatus").innerHTML=message; });
     const addedToActiveRun=state.stops.some(stop=>stop.submission_id===b.id);
     if (!result.accepted || !addedToActiveRun){
@@ -1352,6 +1384,9 @@ $("#ownerCodeVerify").onclick=async()=>{
     ownerToken=data.token; localStorage.setItem(OWNER_TOKEN_KEY,ownerToken); $("#ownerCode").value="";
     await loadDirectBookings(true);
     await syncPastBulkBookingDates();
+    refreshCloudBackupInfo();
+    // A phone that signed in with nothing on it is most likely a restore — say so.
+    offerCloudRestoreIfEmpty();
   }catch(e){ $("#ownerLoginStatus").textContent=e.message; }
   finally{ button.disabled=false; }
 };
@@ -1640,7 +1675,18 @@ async function googleAddressResults(addr, limit=6){
     return Array.isArray(data.results) ? data.results : [];
   }catch(e){ return []; }
 }
+// Same call, but keeps the "did this land in the town we asked for?" answer.
+async function addressLookup(addr, limit=1){
+  try{
+    const res = await fetch(`${API}/address-search?q=${encodeURIComponent(addr)}&limit=${limit}`);
+    if (!res.ok) return { results:[], townMismatch:false };
+    const data = await res.json();
+    return { results: Array.isArray(data.results) ? data.results : [], townMismatch: Boolean(data.townMismatch) };
+  }catch(e){ return { results:[], townMismatch:false }; }
+}
+let lastGeoMismatch = false;   // true when the last lookup landed in a different town than asked
 async function geocode(addr){
+  lastGeoMismatch = false;
   const key = normKey(addr);
   if (!key) return null;
   if (geocache[key]) return geocache[key];                 // cache hit — never re-fetch
@@ -1650,9 +1696,11 @@ async function geocode(addr){
     geocache[key] = hit; saveGeo();
     return hit;
   }
-  const google = await googleAddressResults(addr, 1);
-  if (google.length){
-    const hit = { lat:+google[0].lat, lng:+google[0].lng };
+  const google = await addressLookup(addr, 1);
+  lastGeoMismatch = google.townMismatch;   // the pin is real, it just sits in a different town than typed
+  if (google.results.length){
+    const top = google.results[0];
+    const hit = { lat:+top.lat, lng:+top.lng, label:top.label || "", mismatch:Boolean(google.townMismatch) };
     geocache[key] = hit; saveGeo();
     return hit;
   }
@@ -1671,6 +1719,26 @@ async function geocode(addr){
     }
   }catch(e){ /* network/CORS — treated as a miss below */ }
   return null;
+}
+
+// Save a lookup onto a stop: coords, the address Google actually confirmed, and
+// whether that address sits in a different town than the one on the booking.
+function applyGeo(s, hit){
+  if (!s || !hit) return;
+  s.lat = hit.lat; s.lng = hit.lng;
+  s.geoLabel = hit.label || "";
+  s.addrDiffers = Boolean(hit.mismatch);
+}
+
+// True when Google's confirmed address isn't the one on the booking — a different
+// town, or a vague match that dropped the street entirely. Worth showing on the card.
+function navDiffers(s){
+  if (!s || !s.geoLabel) return false;
+  if (s.addrDiffers) return true;
+  // Compare number + street name only, so "Rata St" and "Rata Street" still agree.
+  const parts = normKey(s.street||"").replace(/[^a-z0-9 ]/g," ").split(/\s+/).filter(Boolean).slice(0,2);
+  const label = normKey(s.geoLabel).replace(/[^a-z0-9 ]/g," ");
+  return parts.length > 0 && !parts.every(p => label.includes(p));
 }
 
 /* ---------- Adding stops ---------- */
@@ -1701,7 +1769,7 @@ async function addAddressLines(lines){
       busy(`Finding addresses ${++done} of ${clean.length}…`);
       const s = stopFromAddress(line);
       const hit = await geocode(fullAddr(s));
-      if (hit){ s.lat = hit.lat; s.lng = hit.lng; state.stops.push(s); }
+      if (hit){ applyGeo(s, hit); state.stops.push(s); }
       else    { state.bad.push(s); }
       state.manual = false; save(); render();
     }
@@ -1794,7 +1862,7 @@ function addFileStops(rows, srcName, setStatus, extraNote){
       if (bi < 0) continue;                    // Woody dropped it while we were looking
       if (hit){
         state.bad.splice(bi, 1);
-        s.lat = hit.lat; s.lng = hit.lng;
+        applyGeo(s, hit);
         // Belt and braces: skip if an overlapping load already added this pickup.
         if (!pickupKeys(s).some(k => knownPickupKeys().has(k))){ state.stops.push(s); located++; }
       }
@@ -2247,6 +2315,7 @@ function renderList(){
       <div class="stopbody">
         <div class="name">${esc(fullName(s)) || esc(fullAddr(s))} ${tag}${asapTag}${invoicedTag}</div>
         <div class="addr">${esc(fullAddr(s))}</div>
+        ${navDiffers(s)?`<div class="addr" style="color:#ffd08a">🧭 Navigates to ${esc(s.geoLabel)}</div>`:""}
         ${apps?`<div class="apps">${apps}</div>`:""}
         ${formNote}
         ${userNote}
@@ -2946,24 +3015,27 @@ async function loadReceiptLogo(){
 }
 loadReceiptLogo();   // warm it up at boot so the first Receipt tap is instant
 function addProfileMessage(doc, y, W, M, profileUrl=`${WEBSITE_URL}/account.html`){
-  const boxH=34;
+  doc.setFont("helvetica", "normal"); doc.setFontSize(9);
+  const message=doc.splitTextToSize(
+    "Create a free account to save your addresses, request your next pickup in seconds and track its progress. "+
+    "Every receipt and invoice we send you is kept there too, and you can message us any time. "+
+    "While you wait for us, there's even a few games to play.",
+    W-M*2-10
+  );
+  const lineH=4.6, boxH=13+message.length*lineH+10;
   if (y+boxH>190){ doc.addPage(); y=18; }
   doc.setFillColor(248, 250, 252);
   doc.setDrawColor(244, 135, 34);
   doc.roundedRect(M, y, W-M*2, boxH, 3, 3, "FD");
   doc.setTextColor(244, 135, 34);
   doc.setFont("helvetica", "bold"); doc.setFontSize(11);
-  doc.text("Book faster next time", M+5, y+7);
+  doc.text("There's more you can do online now", M+5, y+7);
   doc.setTextColor(45, 55, 65);
   doc.setFont("helvetica", "normal"); doc.setFontSize(9);
-  const message=doc.splitTextToSize(
-    "Create a free customer profile so your details are saved. Next time, log in and book without finding the form again.",
-    W-M*2-10
-  );
   doc.text(message, M+5, y+13);
   doc.setTextColor(0, 98, 170);
   doc.setFont("helvetica", "bold"); doc.setFontSize(10);
-  doc.textWithLink(WEBSITE_LABEL, M+5, y+29, {url:profileUrl});
+  doc.textWithLink(WEBSITE_LABEL, M+5, y+13+message.length*lineH+6, {url:profileUrl});
   return y+boxH;
 }
 function addPdfFooters(doc, W, M){
@@ -3454,7 +3526,11 @@ window.togglePriority = id => {
 // Build a Google Maps directions URL using the real street ADDRESS when we have one,
 // so Google finds the exact house number (a pin from rough coords can land next door).
 function navAddress(s){
-  if (!s || !s.street) return "";
+  if (!s) return "";
+  // The address Google itself confirmed (with suburb + postcode) beats our typed
+  // version — it can't be read as a different town with the same street name.
+  if (s.geoLabel) return /new zealand|\bnz\b/i.test(s.geoLabel) ? s.geoLabel : `${s.geoLabel}, New Zealand`;
+  if (!s.street) return "";
   let a = [s.street, s.town].filter(Boolean).join(", ");
   if (!/taranaki|new zealand|nz/i.test(a)) a += ", Taranaki, New Zealand";
   return a;
@@ -3469,6 +3545,21 @@ window.navStop = id => {
   const s = findStop(id); if(!s) return;
   const url = mapsDirUrl(s); if (url) window.open(url, "_blank");
 };
+// Stops saved before this check existed carry no confirmed address, so the card
+// couldn't show where Navigate would really take Woody. Fill them in quietly.
+async function backfillNavLabels(){
+  const pending = state.stops.filter(s => s.street && !s.geoLabel);
+  if (!pending.length || importBusy) return;
+  let changed = false;
+  for (const s of pending){
+    if (importBusy) break;
+    const hit = await geocode(fullAddr(s));
+    const live = findStop(s.id); if (!live || !hit) continue;   // dropped, or a plain miss that retries next load
+    applyGeo(live, hit);
+    changed = true;
+  }
+  if (changed){ save(); render(); drawRoute(); }
+}
 window.callStop = id => { const s=findStop(id); if(s&&s.phone) location.href="tel:"+s.phone.replace(/\s+/g,""); };
 window.delStop = id => {
   state.stops = state.stops.filter(x=>x.id!==id);
@@ -3505,7 +3596,7 @@ window.retryBad = async id => {
   if (hit){
     const t = state.bad[j]; const parts = addr.split(",").map(x=>x.trim());
     t.street = parts[0]||t.street; t.town = parts[1]||t.town;
-    t.lat = hit.lat; t.lng = hit.lng;
+    applyGeo(t, hit);
     state.bad.splice(j,1); state.stops.push(t); save(); render(); drawRoute();
   } else alert("Still couldn't find that address — add the town, or paste coordinates from Google Maps.");
 };
@@ -3539,7 +3630,7 @@ $("#oneAdd").onclick = async () => {
   $("#acOne").classList.remove("show");
   const s = oneDetails(stopFromAddress(v));
   if (oneAddrPicked){   // exact spot chosen from suggestions — skip the lookup
-    s.lat=oneAddrPicked.lat; s.lng=oneAddrPicked.lng; oneAddrPicked=null;
+    s.lat=oneAddrPicked.lat; s.lng=oneAddrPicked.lng; s.geoLabel=oneAddrPicked.label||""; oneAddrPicked=null;
     state.stops.push(s);
   } else {
     importBusy=true;
@@ -3547,7 +3638,7 @@ $("#oneAdd").onclick = async () => {
     let hit=null;
     try{ hit = await geocode(fullAddr(s)); }
     finally { importBusy=false; busy(""); }
-    if (hit){ s.lat=hit.lat; s.lng=hit.lng; state.stops.push(s); }
+    if (hit){ applyGeo(s, hit); state.stops.push(s); }
     else state.bad.push(s);   // park it in "Needs address" below
   }
   state.manual=false; clearOneInputs();
@@ -3677,6 +3768,131 @@ function startLiveGps(){
   },{enableHighAccuracy:true,maximumAge:3000,timeout:15000});
 }
 $("#gpsToggle").onclick=()=>gpsWatchId===null?startLiveGps():stopLiveGps();
+
+/* ---------- Backup and restore ----------
+   Everything lives in this browser's storage, which a phone can wipe without
+   warning. These two buttons move it in and out as a plain file. */
+function backupStatus(message, bad=false){
+  const el=$("#backupStatus"); if(!el) return;
+  el.textContent=message||""; el.style.color=bad ? "var(--bad)" : "";
+}
+function nakiStorageKeys(){
+  return Object.keys(localStorage).filter(key=>key.startsWith("naki_"));
+}
+$("#backupSave").onclick=()=>{
+  try{
+    const data={};
+    nakiStorageKeys().forEach(key=>{ data[key]=localStorage.getItem(key); });
+    const runCount=(loadJSON(RUNS_LS,{}).runs||[]).length;
+    const payload=JSON.stringify({ app:"naki-pickup-run", savedAt:new Date().toISOString(), data }, null, 2);
+    const url=URL.createObjectURL(new Blob([payload],{type:"application/json"}));
+    const link=document.createElement("a");
+    link.href=url;
+    link.download=`naki-pickup-backup-${localIso(new Date())}.json`;
+    document.body.appendChild(link); link.click(); link.remove();
+    setTimeout(()=>URL.revokeObjectURL(url), 4000);
+    backupStatus(`Saved a backup of ${runCount} run${runCount===1?"":"s"}. Keep it somewhere safe.`);
+  }catch(e){ backupStatus("Couldn't make the backup file: "+e.message, true); }
+};
+/* ---- Off-phone copy, kept against the owner login ----
+   Deleting the home-screen app wipes this browser's storage, so a copy lives on
+   the server too. It saves itself a few seconds after any change. */
+let cloudBackupTimer=null, cloudBackupBusy=false, lastCloudPush="";
+function backupPayload(){
+  const data={};
+  nakiStorageKeys().forEach(key=>{ data[key]=localStorage.getItem(key); });
+  return { runCount:(loadJSON(RUNS_LS,{}).runs||[]).length, data };
+}
+function whenText(stamp){
+  if (!stamp) return "";
+  const mins=Math.round((Date.now()-stamp)/60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins} min ago`;
+  return new Date(stamp).toLocaleString("en-NZ",{weekday:"short",hour:"numeric",minute:"2-digit"});
+}
+function paintCloudState(text){ const el=$("#cloudBackupState"); if (el) el.textContent=text; }
+async function refreshCloudBackupInfo(){
+  if (!ownerToken){ paintCloudState("Sign in on the Bookings tab to save a copy to your account."); return; }
+  try{
+    const info=await ownerApi("/owner/backup/info");
+    paintCloudState(info.latest
+      ? `✓ Saved to your account ${whenText(info.latest.savedAt)} · ${info.latest.runCount} run${info.latest.runCount===1?"":"s"}`
+      : "Nothing saved to your account yet — tap Save now.");
+  }catch(e){ paintCloudState("Couldn't check your saved copy right now."); }
+}
+async function pushCloudBackup(quiet=true){
+  if (!ownerToken || cloudBackupBusy) return;
+  const payload=backupPayload();
+  const stamp=JSON.stringify(payload);
+  if (quiet && stamp===lastCloudPush) return;         // nothing actually changed
+  cloudBackupBusy=true;
+  try{
+    await ownerApi("/owner/backup",{ method:"PUT", body:stamp });
+    lastCloudPush=stamp;
+    paintCloudState(`✓ Saved to your account just now · ${payload.runCount} run${payload.runCount===1?"":"s"}`);
+    if (!quiet) backupStatus("Saved to your account.");
+  }catch(e){
+    if (!quiet) backupStatus("Couldn't save to your account: "+e.message, true);
+  }finally{ cloudBackupBusy=false; }
+}
+// Called from save(); waits for things to settle so a drag isn't 20 uploads.
+function scheduleCloudBackup(){
+  if (!ownerToken) return;
+  clearTimeout(cloudBackupTimer);
+  cloudBackupTimer=setTimeout(()=>pushCloudBackup(true), 8000);
+}
+// A fresh or wiped phone shouldn't have to know the backup exists — tell it.
+async function offerCloudRestoreIfEmpty(){
+  if (!ownerToken) return;
+  const runs=(loadJSON(RUNS_LS,{}).runs||[]);
+  const empty=runs.length<=1 && runs.every(run=>!(run.data?.stops||[]).length);
+  if (!empty) return;
+  try{
+    const info=await ownerApi("/owner/backup/info");
+    if (!info.latest || !info.latest.runCount) return;
+    setAppView("add");
+    $("#backupBox").open=true;
+    paintCloudState(`You have ${info.latest.runCount} run${info.latest.runCount===1?"":"s"} saved from ${whenText(info.latest.savedAt)} — tap Restore to bring them back.`);
+    backupStatus("This phone has no runs on it, but your account does.");
+  }catch(e){ /* nothing saved, or offline — leave it alone */ }
+}
+$("#cloudSaveNow").onclick=()=>{
+  if (!ownerToken) return backupStatus("Sign in on the Bookings tab first.", true);
+  backupStatus("Saving…");
+  pushCloudBackup(false);
+};
+$("#cloudRestore").onclick=async ()=>{
+  if (!ownerToken) return backupStatus("Sign in on the Bookings tab first.", true);
+  backupStatus("Fetching your saved copy…");
+  try{
+    const saved=await ownerApi("/owner/backup");
+    const incoming=JSON.parse(saved.data[RUNS_LS]||"{}").runs||[];
+    const current=(loadJSON(RUNS_LS,{}).runs||[]).length;
+    if (!confirm(`Restore ${incoming.length} run${incoming.length===1?"":"s"} saved ${whenText(saved.savedAt)}?\n\nThis replaces the ${current} run${current===1?"":"s"} on this phone.`)) {
+      backupStatus(""); return;
+    }
+    Object.entries(saved.data).forEach(([key,value])=>{ if (typeof value==="string") localStorage.setItem(key,value); });
+    backupStatus("Restored. Reloading…");
+    setTimeout(()=>location.reload(), 700);
+  }catch(e){ backupStatus("Couldn't restore: "+e.message, true); }
+};
+$("#backupLoad").onclick=()=>$("#backupFile").click();
+$("#backupFile").onchange=async event=>{
+  const file=event.target.files && event.target.files[0];
+  event.target.value="";                       // let the same file be picked twice
+  if (!file) return;
+  try{
+    const parsed=JSON.parse(await file.text());
+    const data=parsed && parsed.data;
+    if (!data || typeof data!=="object" || !Object.keys(data).length) throw new Error("That file has no Naki data in it");
+    const incoming=JSON.parse(data[RUNS_LS]||"{}").runs||[];
+    const current=(loadJSON(RUNS_LS,{}).runs||[]).length;
+    if (!confirm(`Restore ${incoming.length} run${incoming.length===1?"":"s"} from this backup?\n\nThis replaces the ${current} run${current===1?"":"s"} on this phone.`)) return;
+    Object.entries(data).forEach(([key,value])=>{ if (typeof value==="string") localStorage.setItem(key,value); });
+    backupStatus("Restored. Reloading…");
+    setTimeout(()=>location.reload(), 700);
+  }catch(e){ backupStatus("Couldn't read that backup: "+e.message, true); }
+};
 $("#setStart").onclick = async () => {
   const v = $("#startAddr").value.trim(); if(!v) return;
   if (runChangeBusy){ alert("Please wait for the current action to finish."); return; }
@@ -3927,7 +4143,7 @@ function attachAutocomplete(input, listEl, onPick){
         el.onclick = () => {
           const r = results[+el.dataset.i];
           input.value = r.label; close();
-          geocache[normKey(r.label)] = { lat:r.lat, lng:r.lng }; saveGeo();   // cache the pick
+          geocache[normKey(r.label)] = { lat:r.lat, lng:r.lng, label:r.label }; saveGeo();   // cache the pick
           onPick(r);
         };
       });
@@ -4016,14 +4232,19 @@ loadGms(false);
 renderDirectBookings();
 if (ownerToken) refreshOwnerData();
 if (ownerToken) setTimeout(syncPastBulkBookingDates, 1800);
+refreshCloudBackupInfo();
+if (ownerToken) setTimeout(offerCloudRestoreIfEmpty, 2500);
+// Last chance to push before the app is closed or backgrounded.
+document.addEventListener("visibilitychange",()=>{ if (document.hidden) pushCloudBackup(true); });
 setInterval(refreshOwnerData,15000);
 document.addEventListener("visibilitychange",()=>{ if(document.visibilityState==="visible") refreshOwnerData(); });
 window.addEventListener("focus",refreshOwnerData);
 setTimeout(syncSavedProfileBookings, 1500);
+setTimeout(backfillNavLabels, 2500);
 $("#mapPanel").ontoggle = () => {
   if ($("#mapPanel").open) setTimeout(()=>{ map.invalidateSize(); drawRoute(); }, 80);
 };
-attachAutocomplete($("#oneAddr"), $("#acOne"), r => { oneAddrPicked = { lat:r.lat, lng:r.lng }; });
+attachAutocomplete($("#oneAddr"), $("#acOne"), r => { oneAddrPicked = { lat:r.lat, lng:r.lng, label:r.label }; });
 attachAutocomplete($("#startAddr"), $("#acStart"), r => {
   routeStartOverride=null; state.start = { lat:r.lat, lng:r.lng, label:r.label }; save(); render(); replanIfAuto();
   flash("✓ Start set: " + r.label);

@@ -366,26 +366,72 @@ async function handleGms(request, env) {
   });
 }
 
+// "New Plymouth" is both a city and the district that contains Inglewood, Waitara,
+// Ōakura and friends, so Google will happily answer "81 Rata Street, New Plymouth"
+// with the Inglewood house. Pull the town out of the query so we can check the answer
+// actually landed in that town, and re-ask with a hard locality filter when it didn't.
+function townFromQuery(q) {
+  const parts = String(q).split(",").map(part => part.trim()).filter(Boolean);
+  for (const part of parts.slice(1)) {
+    const town = part.replace(/\b\d{4}\b/g, "").trim();
+    if (!town) continue;
+    if (/^(taranaki|new zealand|nz|aotearoa)$/i.test(town)) continue;
+    return town;
+  }
+  return "";
+}
+
+function looseKey(text) {
+  return String(text).toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function labelInTown(label, town) {
+  if (!town) return true;
+  return looseKey(label).includes(looseKey(town));
+}
+
+async function googleGeocode(env, address, components, limit) {
+  const params = new URLSearchParams({ address, key: env.GOOGLE_API_KEY, region: "nz", components });
+  const response = await fetch(`https://maps.googleapis.com/maps/api/geocode/json?${params}`);
+  if (!response.ok) return [];
+  const payload = await response.json();
+  return (payload.results || []).slice(0, limit).map(result => ({
+    label: String(result.formatted_address || "").replace(/, New Zealand$/, ""),
+    lat: number((((result.geometry || {}).location || {}).lat), NaN),
+    lng: number((((result.geometry || {}).location || {}).lng), NaN),
+    // ROOFTOP without partial_match = a real letterbox. Anything else is Google
+    // guessing along the street, which is how a made-up house number gets a pin.
+    exact: ((result.geometry || {}).location_type === "ROOFTOP") && !result.partial_match
+  })).filter(result => result.label && Number.isFinite(result.lat) && Number.isFinite(result.lng));
+}
+
 async function handleAddress(request, env) {
   const url = new URL(request.url);
   const q = (url.searchParams.get("q") || "").trim().slice(0, 180);
   const limit = Math.max(1, Math.min(6, number(url.searchParams.get("limit"), 6)));
   if (q.length < 3) return json(request, { results: [] });
-  const key = cacheRequest(request, "address-v2", [q.toLowerCase(), String(limit)]);
+  const key = cacheRequest(request, "address-v3", [q.toLowerCase(), String(limit)]);
   return cached(request, key, 2592000, async () => {
     const address = /new zealand|\bnz\b/i.test(q) ? q : `${q}, Taranaki, New Zealand`;
+    const town = townFromQuery(q);
+    const street = String(q).split(",")[0].trim();
     if (env.GOOGLE_API_KEY) {
       try {
-        const params = new URLSearchParams({ address, key: env.GOOGLE_API_KEY, region: "nz", components: "country:NZ" });
-        const response = await fetch(`https://maps.googleapis.com/maps/api/geocode/json?${params}`);
-        if (response.ok) {
-          const payload = await response.json();
-          const results = (payload.results || []).slice(0, limit).map(result => ({
-            label: String(result.formatted_address || "").replace(/, New Zealand$/, ""),
-            lat: number((((result.geometry || {}).location || {}).lat), NaN),
-            lng: number((((result.geometry || {}).location || {}).lng), NaN)
-          })).filter(result => result.label && Number.isFinite(result.lat) && Number.isFinite(result.lng));
-          if (results.length) return json(request, { results, source: "Google" }, 200, "public, max-age=2592000");
+        let results = await googleGeocode(env, address, "country:NZ", limit);
+        const townChecked = Boolean(town);
+        if (town && results.length && !results.some(result => labelInTown(result.label, town))) {
+          // Wrong town: ask again, this time forcing Google to stay inside it.
+          // Only a real letterbox counts — an interpolated guess in the right town
+          // is worse than an exact match in the neighbouring one.
+          const strict = await googleGeocode(env, `${street}, New Zealand`, `country:NZ|locality:${town}`, limit);
+          const inTown = strict.filter(result => labelInTown(result.label, town) && result.exact);
+          if (inTown.length) results = inTown;
+        }
+        if (results.length) {
+          // Town matches first, so a single-result caller never gets the wrong town silently.
+          results.sort((a, b) => Number(labelInTown(b.label, town)) - Number(labelInTown(a.label, town)));
+          const townMismatch = townChecked && !labelInTown(results[0].label, town);
+          return json(request, { results, source: "Google", town, townMismatch }, 200, "public, max-age=2592000");
         }
       } catch { /* use the no-cost fallback below */ }
     }

@@ -1573,6 +1573,44 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
     const session = await sessionFor(request, env, "owner");
     if (!session) return json(request, { error: "Owner login required" }, 401);
 
+    /* ---- Off-phone backup of the pickup runs ----
+       The runs live in one browser's storage, which a phone can wipe without
+       warning (deleting the home-screen app does exactly that). The app pushes
+       a copy here so a wiped or replaced phone can pull it straight back.
+       The previous copy is kept too, so one bad overwrite isn't the end. */
+    if (path === "/owner/backup" && request.method === "PUT") {
+      const body = await request.text();
+      if (body.length > 4 * 1024 * 1024) return json(request, { error: "That backup is too big to store" }, 413);
+      let parsed;
+      try { parsed = JSON.parse(body); } catch { return json(request, { error: "Backup was not valid JSON" }, 400); }
+      if (!parsed || typeof parsed !== "object" || !parsed.data) {
+        return json(request, { error: "Backup has no data in it" }, 400);
+      }
+      const key = `backup:${session.email.toLowerCase()}`;
+      const savedAt = now();
+      const record = JSON.stringify({ savedAt, runCount: Number(parsed.runCount) || 0, data: parsed.data });
+      // Roll the current copy back one slot before overwriting it.
+      const existing = await env.REMINDERS.get(key);
+      if (existing) await env.REMINDERS.put(`${key}:prev`, existing);
+      await env.REMINDERS.put(key, record);
+      return json(request, { ok: true, savedAt });
+    }
+
+    if (path === "/owner/backup" && request.method === "GET") {
+      const key = `backup:${session.email.toLowerCase()}`;
+      const which = new URL(request.url).searchParams.get("which") === "prev" ? `${key}:prev` : key;
+      const stored = await env.REMINDERS.get(which, "json");
+      if (!stored) return json(request, { error: "No backup saved yet" }, 404);
+      return json(request, stored);
+    }
+
+    if (path === "/owner/backup/info" && request.method === "GET") {
+      const key = `backup:${session.email.toLowerCase()}`;
+      const [latest, prev] = await Promise.all([env.REMINDERS.get(key), env.REMINDERS.get(`${key}:prev`)]);
+      const peek = raw => { try { const v = JSON.parse(raw); return { savedAt: v.savedAt, runCount: v.runCount }; } catch { return null; } };
+      return json(request, { latest: latest ? peek(latest) : null, previous: prev ? peek(prev) : null });
+    }
+
     if (path === "/owner/customers" && request.method === "GET") {
       const rows = await env.CUSTOMER_DB.prepare(
         `SELECT c.*,
