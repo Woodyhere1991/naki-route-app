@@ -128,6 +128,9 @@
   .stopbody{flex:1 1 auto;min-width:0}
   .name{font-weight:700;font-size:17px}
   .addr{color:var(--txt)} .note{color:var(--warn);font-size:14px;margin-top:4px}
+  .stopphone{margin-top:4px;font-size:16px;font-weight:800}
+  .stopphone a{color:#ffd36b;text-decoration:none}
+  .stopphone.missing{color:var(--muted);font-size:13px;font-weight:600}
   .note.callfirst{color:#fff;background:var(--bad);border-radius:8px;padding:4px 8px;font-weight:700;display:inline-block}
   .apps{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
   .chip{background:#08283d;border:1px solid var(--line);border-radius:999px;padding:3px 10px;font-size:13px}
@@ -2380,6 +2383,9 @@ function renderList(){
     const userNote = s.note ? `<div class="usernote">✏️ ${esc(s.note)}</div>` : "";
     const noteBtn  = `<button class="ghost sm" onclick="editNote('${s.id}')">✏️ ${s.note?'Edit note':'Note'}</button>`;
     const editBtn  = `<button class="ghost sm" onclick="editStop('${s.id}')">✎ Edit pickup</button>`;
+    const phoneLine = s.phone
+      ? `<div class="stopphone">?? <a href="tel:${esc(String(s.phone).replace(/[^\d+]/g,""))}">${esc(s.phone)}</a></div>`
+      : `<div class="stopphone missing">?? No mobile number</div>`;
     const phone    = s.phone ? `<button class="ghost sm" onclick="callStop('${s.id}')">📞 Call</button>` : "";
     const textBtn  = s.phone ? `<button class="ghost sm" onclick="textStop('${s.id}')">💬 Text</button>` : "";
     const emailBtn = goodEmail(s.email) ? `<button class="ghost sm" onclick="gmailStop('${s.id}')">Email</button>` : "";
@@ -2403,6 +2409,7 @@ function renderList(){
       <div class="num">${num}</div>
       <div class="stopbody">
         <div class="name">${esc(fullName(s)) || esc(fullAddr(s))} ${tag}${asapTag}${invoicedTag}</div>
+        ${phoneLine}
         <div class="addr">${esc(fullAddr(s))}</div>
         ${navDiffers(s)?`<div class="addr" style="color:#ffd08a">🧭 Navigates to ${esc(s.geoLabel)}</div>`:""}
         ${apps?`<div class="apps">${apps}</div>`:""}
