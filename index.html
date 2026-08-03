@@ -1845,7 +1845,14 @@ function knownPickupKeys(){
 // Add stops from a parsed file/paste (keeps coords already present).
 function addFileStops(rows, srcName, setStatus, extraNote){
   let added = 0, parked = 0, skipped = 0, toGeocode = [];
-  const known = knownPickupKeys();
+  // A Google Sheet is being added to the active run. An older copy of the same
+  // customer in another named run or in Unpaid must not make this row disappear
+  // from Today. Still dedupe against this run so loading the sheet twice is safe.
+  const activeStops=(state.stops||[]).concat(state.bad||[]);
+  const sheetImport=srcName==="Google Sheet";
+  const known = sheetImport
+    ? new Set(activeStops.flatMap(stop=>pickupKeys(stop)))
+    : knownPickupKeys();
   const status = setStatus || setFileStatus;
   const note = extraNote || "";
   rows.forEach(r => {
