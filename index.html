@@ -1839,9 +1839,8 @@ function knownPickupKeys(){
   return known;
 }
 
-// The sheet is the source of truth for cancellations: delete the row there and
-// the reload removes the stop here (see loadFromSheet). Deleting a stop in the
-// app only affects the app — if its row is still in the sheet, it comes back.
+// Sheet loads are additive. Existing stops stay put and genuine repeats are
+// skipped, so loading another tab/date range cannot wipe Today's run.
 
 // Add stops from a parsed file/paste (keeps coords already present).
 function addFileStops(rows, srcName, setStatus, extraNote){
@@ -3750,10 +3749,11 @@ async function loadFromSheet(url){
       : 'Couldn\'t access that sheet. In Sheets: <b>Share → Anyone with the link → Viewer</b>, then copy the link while you are on the pickups tab and try again.');
     return;
   }
-  // Keep rows that have an address/name and aren't already collected.
+  // Import every customer row. Status and submission-date text are deliberately
+  // ignored here: if the row is in the selected sheet, it belongs in this load.
+  // Only genuinely empty/non-customer separator rows are left out.
   const rows = normalizeRows(parsed).filter(r =>
-    ((r.street||"").trim() || (r.first_name||"").trim() || (r.last_name||"").trim()) &&
-    !/^(done|complete|completed|collected|cancelled|canceled|declined)$/i.test((r.status||"").trim()));
+    (r.street||"").trim() || (r.first_name||"").trim() || (r.last_name||"").trim());
   if (!rows.length){ importBusy=false; setSheetStatus("No pending pickups found in that sheet."); return; }
   state.sheetUrl = url.trim(); save();
   // Imports are additive only. A sheet may be filtered, split into date sections,
