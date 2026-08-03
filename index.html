@@ -1967,8 +1967,29 @@ function parseCSV(text){
   };
   const headerIndex=records.slice(0,20).findIndex(looksLikeHeader);
   if (headerIndex<0) return null;
-  const header = records[headerIndex].map(h=>h.toLowerCase().trim());
-  return records.slice(headerIndex+1).map(cells=>{
+  // Google gviz can fold the first customer's values into the headings when a
+  // date column starts with text (the live example becomes "First Name Merv",
+  // "Last Name Sharp", "Street Address 153a ..."). Split those fixed headings
+  // back out and restore that otherwise-invisible first customer as a data row.
+  const fusedPrefixes=[
+    "Submission Date","First Name","Last Name","Phone Number","Phone","Email",
+    "Street Address","Address","Town","Submission ID","Total",
+    ...Array.from({length:10},(_,index)=>`Appliance ${index+1}`)
+  ].sort((a,b)=>b.length-a.length);
+  const fused=records[headerIndex].map(cell=>{
+    const value=String(cell||"").trim();
+    const prefix=fusedPrefixes.find(label=>
+      value.toLowerCase()===label.toLowerCase() ||
+      value.toLowerCase().startsWith(label.toLowerCase()+" "));
+    return prefix ? {header:prefix,value:value.slice(prefix.length).trim()} : {header:value,value:""};
+  });
+  const restoredValues=fused.filter(part=>part.value).length;
+  const restoresCustomer=restoredValues>=2 && fused.some(part=>
+    part.value && /^(first name|last name|street address|address)$/i.test(part.header));
+  const header = fused.map(part=>part.header.toLowerCase().trim());
+  const dataRecords=records.slice(headerIndex+1);
+  if(restoresCustomer) dataRecords.unshift(fused.map(part=>part.value));
+  return dataRecords.map(cells=>{
     const o={};
     header.forEach((h,i)=> o[h]= cells[i]!==undefined ? cells[i] : "");
     if (o.appliances) o.appliances = o.appliances.split(/[;|]/).map(x=>x.trim()).filter(Boolean);
