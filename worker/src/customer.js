@@ -1063,6 +1063,23 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
     try { body = await request.json(); } catch { /* handled below */ }
     const address = email(body.email);
     if (!EMAIL_RE.test(address)) return json(request, { error: "A valid customer email is needed" }, 400);
+    const existingCustomer = await env.CUSTOMER_DB.prepare(
+      "SELECT id FROM customers WHERE email = ?1 COLLATE NOCASE"
+    ).bind(address).first();
+    if (existingCustomer) {
+      const bookingSyncToken = randomToken();
+      const bookingLinked = await upsertExternalBooking(
+        env,
+        externalBookingFields(body, now()),
+        bookingSyncToken
+      );
+      return json(request, {
+        ok: true,
+        url: CUSTOMER_ACCOUNT_URL,
+        hasProfile: true,
+        bookingSyncToken: bookingLinked ? bookingSyncToken : ""
+      });
+    }
     const token = randomToken();
     const bookingSyncToken = randomToken();
     const createdAt = now();
@@ -1090,6 +1107,7 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
     return json(request, {
       ok: true,
       url: `${CUSTOMER_ACCOUNT_URL}?invite=${encodeURIComponent(token)}`,
+      hasProfile: false,
       bookingSyncToken: bookingLinked ? bookingSyncToken : ""
     }, 201);
   }

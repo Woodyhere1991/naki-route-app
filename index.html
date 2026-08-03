@@ -2636,16 +2636,21 @@ async function syncExternalBooking(s){
 async function customerProfileLink(s){
   const fallback = `${WEBSITE_URL}/account.html`;
   const address = String(s.email||"").trim().toLowerCase();
-  if (!goodEmail(address)) return fallback;
+  if (!goodEmail(address)){
+    s.profileHasAccount=null;
+    return fallback;
+  }
   const stillFresh = s.profileInviteUrl && s.profileInviteEmail===address &&
     Number(s.profileInviteCreatedAt||0) > Date.now() - 80*24*60*60*1000;
-  if (stillFresh && s.historySyncToken){
-    await syncExternalBooking(s);
-    return s.profileInviteUrl;
+  if (!ownerToken){
+    if (stillFresh && s.historySyncToken){
+      s.profileHasAccount=false;
+      await syncExternalBooking(s);
+      return s.profileInviteUrl;
+    }
+    s.profileHasAccount=null;
+    return fallback;
   }
-  // Minting a private link needs the owner sign-in. Without it the invoice or
-  // receipt still carries the plain account link.
-  if (!ownerToken) return fallback;
   const controller = new AbortController();
   const timeout = setTimeout(()=>controller.abort(), 8000);
   try{
@@ -2656,14 +2661,16 @@ async function customerProfileLink(s){
       body:JSON.stringify(historyBookingPayload(s))
     });
     const out = await res.json().catch(()=>({}));
-    if (!res.ok || !/^https:\/\/nakiwhitewareremoval\.vip\/account\.html\?invite=/.test(String(out.url||""))) return fallback;
-    s.profileInviteUrl=out.url;
+    if (!res.ok || !/^https:\/\/nakiwhitewareremoval\.vip\/account\.html(?:\?invite=.+)?$/.test(String(out.url||""))) return fallback;
+    s.profileHasAccount=out.hasProfile===true;
+    s.profileInviteUrl=s.profileHasAccount ? "" : out.url;
     s.profileInviteEmail=address;
     s.profileInviteCreatedAt=Date.now();
     s.historySyncToken=String(out.bookingSyncToken||"");
     save();
     return out.url;
   }catch(e){
+    s.profileHasAccount=null;
     return fallback;
   }finally{
     clearTimeout(timeout);
@@ -3110,14 +3117,14 @@ async function loadReceiptLogo(){
   return receiptLogo;
 }
 loadReceiptLogo();   // warm it up at boot so the first Receipt tap is instant
-function addProfileMessage(doc, y, W, M, profileUrl=`${WEBSITE_URL}/account.html`){
+function addProfileMessage(doc, y, W, M, profileUrl=`${WEBSITE_URL}/account.html`, hasProfile=null){
+  const copy=hasProfile===true
+    ? { title:"Your online account is ready", message:"Sign in to view your pickup history and every receipt or invoice we've sent you.", link:"View your account" }
+    : hasProfile===false
+      ? { title:"Set up your free online account", message:"Save your addresses, request your next pickup in seconds, and keep every receipt and invoice in one place.", link:"Set up your account" }
+      : { title:"Your account page", message:"Sign in if you already have an account, or set up a free account if you have not made one yet.", link:"Open the account page" };
   doc.setFont("helvetica", "normal"); doc.setFontSize(9);
-  const message=doc.splitTextToSize(
-    "Create a free account to save your addresses, request your next pickup in seconds and track its progress. "+
-    "Every receipt and invoice we send you is kept there too, and you can message us any time. "+
-    "While you wait for us, there's even a few games to play.",
-    W-M*2-10
-  );
+  const message=doc.splitTextToSize(copy.message, W-M*2-10);
   const lineH=4.6, boxH=13+message.length*lineH+10;
   if (y+boxH>190){ doc.addPage(); y=18; }
   doc.setFillColor(248, 250, 252);
@@ -3125,13 +3132,13 @@ function addProfileMessage(doc, y, W, M, profileUrl=`${WEBSITE_URL}/account.html
   doc.roundedRect(M, y, W-M*2, boxH, 3, 3, "FD");
   doc.setTextColor(244, 135, 34);
   doc.setFont("helvetica", "bold"); doc.setFontSize(11);
-  doc.text("There's more you can do online now", M+5, y+7);
+  doc.text(copy.title, M+5, y+7);
   doc.setTextColor(45, 55, 65);
   doc.setFont("helvetica", "normal"); doc.setFontSize(9);
   doc.text(message, M+5, y+13);
   doc.setTextColor(0, 98, 170);
   doc.setFont("helvetica", "bold"); doc.setFontSize(10);
-  doc.textWithLink(WEBSITE_LABEL, M+5, y+13+message.length*lineH+6, {url:profileUrl});
+  doc.textWithLink(copy.link, M+5, y+13+message.length*lineH+6, {url:profileUrl});
   return y+boxH;
 }
 function addPdfFooters(doc, W, M){
@@ -3189,7 +3196,7 @@ async function buildReceiptPdf(s, amt, profileUrl){
   doc.setFont("helvetica", "normal"); doc.setFontSize(10);
   doc.text("Payment received in full — thank you!", M, y);
   y += 10;
-  addProfileMessage(doc, y, W, M, profileUrl);
+  addProfileMessage(doc, y, W, M, profileUrl, s.profileHasAccount);
   addPdfFooters(doc, W, M);
   return doc.output("blob");
 }
@@ -3241,7 +3248,7 @@ async function buildInvoicePdf(s, amt, profileUrl){
   doc.setFont("helvetica", "normal"); doc.setFontSize(10);
   doc.text(`Bank account: ${BANK_ACCOUNT}  (${BANK_NAME})`, M, y); y += 6;
   doc.text(`Reference: ${fullName(s) || fullAddr(s)}`, M, y); y += 10;
-  addProfileMessage(doc, y, W, M, profileUrl);
+  addProfileMessage(doc, y, W, M, profileUrl, s.profileHasAccount);
   addPdfFooters(doc, W, M);
   return doc.output("blob");
 }
@@ -3260,8 +3267,8 @@ window.receiptStop = async id => {
   if (!isFinite(amt) || amt<0) return alert("Enter the dollar amount, e.g. 40");
   s.receiptAmount = amt;
   busy("Preparing their private profile link...");
-  const profileUrl = await customerProfileLink(s);
-  const blob = await buildReceiptPdf(s, amt, profileUrl);
+  s.profileUrl = await customerProfileLink(s);
+  const blob = await buildReceiptPdf(s, amt, s.profileUrl);
   busy("");
   const fname = `Receipt - ${(fullName(s)||"pickup").replace(/[^\w \-]/g,"")}.pdf`;
   pendingReceipts[id] = new File([blob], fname, { type:"application/pdf" });
@@ -3335,6 +3342,8 @@ window.sendReceipt = async id => {
           pdfBase64: await fileToBase64(file),
           // Recorded against their account so they keep a copy of what was paid.
           amount: s.receiptAmount!=null ? Number(s.receiptAmount) : (s.amount!=null ? Number(s.amount) : null),
+          profileUrl: s.profileUrl || "",
+          profileStatus: s.profileHasAccount===true ? "existing" : s.profileHasAccount===false ? "invite" : "unknown",
           includeFindMyLocalReview: /find\s*my\s*local/i.test(String(s.referral_source||"")) ||
             /found\s+us:\s*find\s*my\s*local/i.test(String(s.additional_info||""))
         })
@@ -3379,8 +3388,8 @@ window.invoiceStop = async id => {
   if (!isFinite(amt) || amt<0) return alert("Enter the dollar amount, e.g. 40");
   s.invoiceAmount = amt; s.amount = amt;
   busy("Preparing their private profile link...");
-  const profileUrl = await customerProfileLink(s);
-  const blob = await buildInvoicePdf(s, amt, profileUrl);
+  s.profileUrl = await customerProfileLink(s);
+  const blob = await buildInvoicePdf(s, amt, s.profileUrl);
   busy("");
   const fname = `Invoice - ${(fullName(s)||"pickup").replace(/[^\w \-]/g,"")}.pdf`;
   pendingInvoices[id] = new File([blob], fname, { type:"application/pdf" });
@@ -3460,7 +3469,9 @@ window.sendInvoice = async id => {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ to, name: fullName(s), filename: file.name,
-          pdfBase64: await fileToBase64(file), amount: amt, reminderDate })
+          pdfBase64: await fileToBase64(file), amount: amt, reminderDate,
+          profileUrl: s.profileUrl || "",
+          profileStatus: s.profileHasAccount===true ? "existing" : s.profileHasAccount===false ? "invite" : "unknown" })
       });
       const out = await res.json().catch(()=>({}));
       busy("");

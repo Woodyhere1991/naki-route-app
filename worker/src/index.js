@@ -474,7 +474,7 @@ async function handleSendReceipt(request, env) {
   const sent = await sendMail(env, {
     to, name,
     subject: "Your whiteware collection receipt",
-    text: `Hey${first ? " " + first : ""},\n\nThanks heaps! Your receipt for the whiteware collection is attached.${reviewRequest}\n\nCheers,\nWoody\nNaki Whiteware Removal\nnakiwhitewareremoval@gmail.com`,
+    text: `${profileLinkLine(body.profileUrl, body.profileStatus)}Hey${first ? " " + first : ""},\n\nThanks heaps! Your receipt for the whiteware collection is attached.${reviewRequest}\n\nCheers,\nWoody\nNaki Whiteware Removal\nnakiwhitewareremoval@gmail.com`,
     attachment: [{ name: filename, content: pdf }]
   });
   if (!sent) return json(request, { error: "Email could not be sent" }, 502);
@@ -638,10 +638,19 @@ const REF_LINE = "Reference: please use your name or address, as it was on the c
 
 function firstName(name) { return String(name || "").trim().split(/\s+/)[0] || ""; }
 
-function invoiceText(name, amount) {
+const PROFILE_URL_RE = /^https:\/\/nakiwhitewareremoval\.vip\/account\.html(\?[^\s]*)?$/;
+function profileLinkLine(url, status) {
+  const value = String(url || "").trim();
+  if (!PROFILE_URL_RE.test(value)) return "";
+  if (status === "existing") return `View your account, pickup history and every receipt/invoice we've sent you: ${value}\n\n`;
+  if (status === "invite") return `Set up your free online account to view your pickup history and keep every receipt/invoice in one place: ${value}\n\n`;
+  return `Open your account page to sign in or set up an account: ${value}\n\n`;
+}
+
+function invoiceText(name, amount, profileUrl, profileStatus) {
   const first = firstName(name);
   const amt = Number.isFinite(Number(amount)) ? ` for $${Number(amount).toFixed(2)}` : "";
-  return `Hi${first ? " " + first : ""},\n\nYour invoice${amt} for the whiteware collection is attached.\n\n${BANK_LINE}\n${REF_LINE}\n\nCheers,\nWoody\nNaki Whiteware Removal\nnakiwhitewareremoval@gmail.com`;
+  return `${profileLinkLine(profileUrl, profileStatus)}Hi${first ? " " + first : ""},\n\nYour invoice${amt} for the whiteware collection is attached.\n\n${BANK_LINE}\n${REF_LINE}\n\nCheers,\nWoody\nNaki Whiteware Removal\nnakiwhitewareremoval@gmail.com`;
 }
 
 function reminderText(name, amount) {
@@ -666,7 +675,7 @@ async function handleSendInvoice(request, env) {
   const sent = await sendMail(env, {
     to, name,
     subject: "Invoice - whiteware collection",
-    text: invoiceText(name, amount),
+    text: invoiceText(name, amount, body.profileUrl, body.profileStatus),
     attachment: [{ name: filename, content: pdf }]
   });
   if (!sent) return json(request, { error: "Email could not be sent" }, 502);
