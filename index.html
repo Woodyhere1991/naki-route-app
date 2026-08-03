@@ -262,6 +262,8 @@
   .town-group{margin:12px 0}
   .town-group>summary{font-size:16px}
   .town-group .direct-booking{margin-top:10px}
+  .town-bulk-actions{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin:10px 0 4px;padding:9px 11px;border-radius:12px;background:rgba(41,182,246,.09);border:1px solid var(--line)}
+  .town-bulk-actions .small{flex:1 1 150px}
   /* Compact list: one tappable line per person, details only when you open it. */
   .mini{padding:0;margin:8px 0;overflow:hidden}
   .mini>summary{display:flex;align-items:center;gap:11px;padding:11px 13px;cursor:pointer;list-style:none}
@@ -1000,12 +1002,12 @@ function townLabel(value){
   const tidy=tidyTown(value);
   return tidy ? tidy.replace(/\S+/g,word=>word[0].toUpperCase()+word.slice(1).toLowerCase()) : "No town";
 }
-// { key: {label, rows} }, sorted by label, so one town is always one group.
+// { key, label, rows }, sorted by label, so one town is always one group.
 function groupByTown(rows){
   const groups={};
   rows.forEach(row=>{
     const key=townKey(row.town)||"no town";
-    (groups[key]=groups[key]||{label:townLabel(row.town),rows:[]}).rows.push(row);
+    (groups[key]=groups[key]||{key,label:townLabel(row.town),rows:[]}).rows.push(row);
   });
   return Object.values(groups).sort((a,b)=>a.label.localeCompare(b.label));
 }
@@ -1141,18 +1143,23 @@ function renderDirectBookings(){
     </details>`;
   };
   const isNewBooking=b=>b.status==="NEW" || (b.status==="ADDED_TO_RUN" && !runContainingBooking(b.id));
-  const freshRows = visibleRows.filter(isNewBooking);
   const previousRows = visibleRows.filter(b=>["COMPLETED","DECLINED","CANCELLED"].includes(b.status));
-  const rest = visibleRows.filter(b=>!isNewBooking(b) && !["COMPLETED","DECLINED","CANCELLED"].includes(b.status));
-  const townGroups = groupByTown(rest);
+  const activeRows = visibleRows.filter(b=>!["COMPLETED","DECLINED","CANCELLED"].includes(b.status));
+  const townGroups = groupByTown(activeRows);
   let html = "";
-  if (freshRows.length){
-    html += `<details class="town-group" open><summary>🆕 New requests (${freshRows.length})<span class="chev">›</span></summary>${freshRows.map(bookingCard).join("")}</details>`;
-  }
   // A search should show what it found, not hide it inside collapsed towns.
   const openWhenSearching = bookingSearchText ? " open" : "";
   townGroups.forEach(group=>{
-    html += `<details class="town-group"${openWhenSearching}><summary>📍 ${esc(group.label)} (${group.rows.length})<span class="chev">›</span></summary>${group.rows.map(bookingCard).join("")}</details>`;
+    const hasFresh = group.rows.some(isNewBooking);
+    const addable = directBookingRows.filter(b=>
+      !["COMPLETED","DECLINED","CANCELLED"].includes(b.status) &&
+      (townKey(b.town)||"no town")===group.key &&
+      !runContainingBooking(b.id));
+    const openAttr = openWhenSearching || (hasFresh ? " open" : "");
+    const bulkAction = addable.length
+      ? `<div class="town-bulk-actions"><button class="good sm" data-add-town="${esc(group.key)}">Add all ${addable.length} to active run</button><span class="small muted">Adds every waiting ${esc(group.label)} booking to ${esc(activeRunName())}.</span></div>`
+      : "";
+    html += `<details class="town-group"${openAttr}><summary>${hasFresh?"?? ":"?? "}${esc(group.label)} (${group.rows.length})<span class="chev">?</span></summary>${bulkAction}${group.rows.map(bookingCard).join("")}</details>`;
   });
   if (previousRows.length){
     html += `<details class="town-group"${openWhenSearching}><summary>✅ Previous (${previousRows.length})<span class="chev">›</span></summary>${previousRows.map(bookingCard).join("")}</details>`;
@@ -1166,6 +1173,7 @@ function renderDirectBookings(){
     if (linkedRun.id===runStore.activeRunId){ button.disabled=true; button.className="good sm"; }
     else button.onclick=()=>switchRun(linkedRun.id);
   });
+  list.querySelectorAll("[data-add-town]").forEach(button=>button.onclick=()=>addTownBookings(button.dataset.addTown,button));
   list.querySelectorAll("[data-complete-direct]").forEach(button=>button.onclick=()=>completeDirectBooking(button.dataset.completeDirect));
   list.querySelectorAll("[data-uncomplete-direct]").forEach(button=>button.onclick=()=>uncompleteDirectBooking(button.dataset.uncompleteDirect));
   list.querySelectorAll("[data-restore-direct]").forEach(button=>button.onclick=()=>restoreDirectBooking(button.dataset.restoreDirect));
@@ -1266,47 +1274,69 @@ async function loadDirectBookings(showLoading=false){
     if (notes.length) directStatus(notes.join("; "));
   }catch(e){ directStatus(e.message,true); }
 }
-async function addDirectBooking(id){
+async function addDirectBooking(id,options={}){
+  const renderAfter=options.renderAfter!==false;
+  const announce=options.announce!==false;
+  const updateStatus=options.updateStatus!==false;
   const b=directBookingRows.find(row=>row.id===id); if(!b) return;
   const existingRun=runStore.runs.find(run=>{
     const data=run.id===runStore.activeRunId ? state : run.data;
     return (data.stops||[]).concat(data.bad||[]).some(s=>s.submission_id===b.id);
   });
   if (existingRun){
-    flash(`${b.firstName || "That booking"} is already in ${existingRun.name}`);
-    return;
+    if (announce) flash(`${b.firstName || "That booking"} is already in ${existingRun.name}`);
+    return {status:"already",run:existingRun};
   }
   const row={
-    submission_id:b.id,
-    first_name:b.firstName,
-    last_name:b.lastName,
-    phone:b.phone,
-    email:b.email,
-    street:b.streetAddress,
-    town:b.town,
-    area:b.area,
-    appliances:b.items,
-    additional_info:b.additionalInfo,
-    referral_source:b.referralSource,
-    amount:b.total,
-    status:"NEW"
+    submission_id:b.id, first_name:b.firstName, last_name:b.lastName, phone:b.phone, email:b.email,
+    street:b.streetAddress, town:b.town, area:b.area, appliances:b.items,
+    additional_info:b.additionalInfo, referral_source:b.referralSource, amount:b.total, status:"NEW"
   };
   try{
     const location=await geocode(fullAddr(row));
     if (location){ applyGeo(row, location); }
-    const result=addFileStops([row],"Direct booking",message=>{ $("#directBookingStatus").innerHTML=message; });
+    const result=addFileStops([row],"Direct booking",updateStatus ? message=>{ $("#directBookingStatus").innerHTML=message; } : ()=>{});
     const addedToActiveRun=state.stops.some(stop=>stop.submission_id===b.id);
     if (!result.accepted || !addedToActiveRun){
-      directStatus(`${b.firstName || "This booking"} needs its address checked before it can be added to ${activeRunName()}.`,true);
-      return;
+      if (updateStatus) directStatus(`${b.firstName || "This booking"} needs its address checked before it can be added to ${activeRunName()}.`,true);
+      return {status:"needs-address"};
     }
     if (b.status==="NEW"){
       await ownerApi(`/owner/bookings/${encodeURIComponent(id)}`,{method:"PATCH",body:JSON.stringify({status:"ADDED_TO_RUN"})});
       b.status="ADDED_TO_RUN";
     }
-    renderDirectBookings();
-    flash(`✓ ${b.firstName || "Booking"} added to ${activeRunName()}`);
-  }catch(e){ directStatus(e.message,true); }
+    if (renderAfter) renderDirectBookings();
+    if (announce) flash(`? ${b.firstName || "Booking"} added to ${activeRunName()}`);
+    return {status:"added"};
+  }catch(e){
+    if (updateStatus) directStatus(e.message,true);
+    return {status:"error",error:e};
+  }
+}
+async function addTownBookings(key,button){
+  const waiting=directBookingRows.filter(b=>
+    !["COMPLETED","DECLINED","CANCELLED"].includes(b.status) &&
+    (townKey(b.town)||"no town")===key &&
+    !runContainingBooking(b.id));
+  if (!waiting.length){ directStatus("Every booking in that town is already assigned to a pickup run."); renderDirectBookings(); return; }
+  const label=townLabel(waiting[0].town);
+  button.disabled=true;
+  let added=0,needsAddress=0,failed=0;
+  for (let i=0;i<waiting.length;i++){
+    button.textContent=`Adding ${i+1} of ${waiting.length}...`;
+    const result=await addDirectBooking(waiting[i].id,{renderAfter:false,announce:false,updateStatus:false});
+    if (result?.status==="added") added++;
+    else if (result?.status==="needs-address") needsAddress++;
+    else if (result?.status!=="already") failed++;
+  }
+  renderDirectBookings();
+  const parts=[];
+  if (added) parts.push(`${added} added`);
+  if (needsAddress) parts.push(`${needsAddress} sent to Needs address`);
+  if (failed) parts.push(`${failed} could not be added`);
+  const message=`${label}: ${parts.join(", ")} to ${activeRunName()}.`;
+  directStatus(message,Boolean(failed));
+  flash(message);
 }
 async function confirmDirectPickup(id){
   const b=directBookingRows.find(row=>row.id===id); if(!b) return;
