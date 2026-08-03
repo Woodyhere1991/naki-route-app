@@ -1929,8 +1929,19 @@ function parseCSV(text){
   };
   // Real sheets often have a title or a note above the headings. Find the first
   // row that looks like pickup columns instead of assuming line one is it.
-  const looksLikeHeader = cells => cells.some(value=>
-    /(?:^|\b)(street|address|town|suburb|city|customer|name|surname|phone|mobile|email|appliance|item|whiteware|status|submission|total|amount|price|rural)(?:\b|_)/i.test(value));
+  const looksLikeHeader = cells => {
+    const joined=cells.join(" ");
+    const signals=[
+      /\b(street|address|location)\b/i, /\b(town|suburb|city)\b/i,
+      /\b(customer|name|surname)\b/i, /\b(phone|mobile|email)\b/i,
+      /\b(appliance|item|whiteware)\b/i, /\b(status|submission)\b/i,
+      /\b(total|amount|price|rural)\b/i
+    ].filter(pattern=>pattern.test(joined)).length;
+    // Two different column ideas means a real heading row. Still allow a
+    // deliberately simple one-column address sheet, but don't mistake a note
+    // such as "Submission date after 3rd August" for the headings.
+    return signals>=2 || (cells.length===1 && /^(street|address|location)$/i.test(cells[0].trim()));
+  };
   const headerIndex=lines.slice(0,20).findIndex(line=>looksLikeHeader(split(line)));
   if (headerIndex<0) return null;
   const header = split(lines[headerIndex]).map(h=>h.toLowerCase().trim());
@@ -3699,10 +3710,11 @@ function setSheetStatus(msg){ const el=$("#sheetStatus"); if(el) el.innerHTML = 
 // leading rows into the header and the whole load fails.
 function sheetCsvUrls(url){
   url = (url||"").trim(); if(!url) return [];
-  if (/output=csv|format=csv|tqx=out:csv/i.test(url)) return [url];           // already a CSV link
   const match=url.match(/\/spreadsheets\/d\/(e\/)?([a-zA-Z0-9-_]+)/);
   const id = match?.[2];
-  if (!id) return [];
+  // Non-Google CSV links can be used as-is. Google links are rebuilt below so
+  // even an old saved gviz URL tries the faithful export endpoint first.
+  if (!id) return /output=csv|format=csv|tqx=out:csv/i.test(url) ? [url] : [];
   const gid = (url.match(/[#&?]gid=(\d+)/)||[])[1] || "0";
   if (match[1]) return [
     `https://docs.google.com/spreadsheets/d/e/${id}/pub?output=csv&gid=${gid}&single=true`
@@ -3744,29 +3756,12 @@ async function loadFromSheet(url){
     !/^(done|complete|completed|collected|cancelled|canceled|declined)$/i.test((r.status||"").trim()));
   if (!rows.length){ importBusy=false; setSheetStatus("No pending pickups found in that sheet."); return; }
   state.sheetUrl = url.trim(); save();
-  // Rows Woody deleted from the sheet = cancellations. Drop pending stops that
-  // came from a sheet but no longer match any row in this one. Matches by the
-  // same keys used for dedupe (submission ID, or address+contact for hand-made
-  // sheets with no ID column). Uses ALL rows so a row marked done isn't "vanished".
-  let removedGone = 0;
-  {
-    const sheetKeys = new Set();
-    normalizeRows(parsed).forEach(r => pickupKeys(r).forEach(k => sheetKeys.add(k)));
-    // Older stops (added before src tagging) count as sheet stops when they carry a real submission ID.
-    const fromSheet = s => s.src==="sheet" ||
-      (String(s.submission_id||"").trim() && !/^s[a-z0-9]{12}$/i.test(String(s.submission_id).trim()));
-    const vanished = s => fromSheet(s) && !pickupKeys(s).some(k => sheetKeys.has(k));
-    const goneStops = state.stops.filter(s => s.status!=="DONE" && vanished(s));
-    goneStops.forEach(s => { if (Array.isArray(state.messageSelectedIds)) state.messageSelectedIds = state.messageSelectedIds.filter(x=>x!==s.id); });
-    state.stops = state.stops.filter(s => !(s.status!=="DONE" && vanished(s)));
-    state.bad = (state.bad||[]).filter(s => !vanished(s));
-    removedGone = goneStops.length;
-    if (removedGone) save();
-  }
+  // Imports are additive only. A sheet may be filtered, split into date sections,
+  // or contain just the next batch; none of those should remove uncollected stops
+  // already on Today's run. addFileStops safely skips genuine duplicates.
   setSheetStatus(`✓ Found ${rows.length} pickup${rows.length!==1?'s':''} — adding…`);
   importBusy=false;
-  addFileStops(rows, "Google Sheet", setSheetStatus,
-    removedGone ? ` Removed ${removedGone} no longer in the sheet.` : "");
+  addFileStops(rows, "Google Sheet", setSheetStatus);
 }
 $("#sheetLoad").onclick = () => loadFromSheet($("#sheetUrl").value);
 if (state.sheetUrl) $("#sheetUrl").value = state.sheetUrl;   // remember the last sheet
