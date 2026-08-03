@@ -1917,7 +1917,7 @@ function addFileStops(rows, srcName, setStatus, extraNote){
 
 // Very small CSV parser (handles simple quoted fields).
 function parseCSV(text){
-  const lines = text.split(/\r?\n/).filter(l=>l.trim()!=="");
+  const lines = String(text||"").replace(/^\uFEFF/,"").split(/\r?\n/).filter(l=>l.trim()!=="");
   if (!lines.length) return [];
   const split = l => {
     const out=[]; let cur="", q=false;
@@ -1927,11 +1927,14 @@ function parseCSV(text){
       else cur+=c;
     } out.push(cur); return out.map(s=>s.trim());
   };
-  const header = split(lines[0]).map(h=>h.toLowerCase());
-  // If it doesn't look like our schema, treat every line as a plain address.
-  const known = ["street","town","lat","lng","first_name","last_name","phone","area","address","name","info","latitude","longitude","appliance 1","status"];
-  if (!header.some(h=>known.includes(h))) return null; // signal: plain address list
-  return lines.slice(1).map(l=>{
+  // Real sheets often have a title or a note above the headings. Find the first
+  // row that looks like pickup columns instead of assuming line one is it.
+  const looksLikeHeader = cells => cells.some(value=>
+    /(?:^|\b)(street|address|town|suburb|city|customer|name|surname|phone|mobile|email|appliance|item|whiteware|status|submission|total|amount|price|rural)(?:\b|_)/i.test(value));
+  const headerIndex=lines.slice(0,20).findIndex(line=>looksLikeHeader(split(line)));
+  if (headerIndex<0) return null;
+  const header = split(lines[headerIndex]).map(h=>h.toLowerCase().trim());
+  return lines.slice(headerIndex+1).map(l=>{
     const cells = split(l), o={};
     header.forEach((h,i)=> o[h]= cells[i]!==undefined ? cells[i] : "");
     if (o.appliances) o.appliances = o.appliances.split(/[;|]/).map(x=>x.trim()).filter(Boolean);
@@ -1971,12 +1974,13 @@ function mapRow(raw){
         if (k.includes(a) && String(low[k]).trim()!=="") return low[k];
     return "";
   };
-  // Appliances: a single column, or spread across "Appliance 1".."Appliance 10".
+  // Appliances/items: a single column, or spread across numbered columns.
   let appliances = [];
-  if (Array.isArray(low.appliances)) appliances = low.appliances.slice();
-  else if (low.appliances) appliances = String(low.appliances).split(/[;,|]/).map(x=>x.trim()).filter(Boolean);
   Object.keys(low).forEach(k => {
-    if (k!=="appliances" && /^appliance\s*\d*$/.test(k)){ const v=String(low[k]||"").trim(); if (v) appliances.push(v); }
+    if (/^(appliances?|items?|whiteware)(?:\s*\d+)?$/.test(k)){
+      const values=Array.isArray(low[k]) ? low[k] : String(low[k]||"").split(/[;,|]/);
+      values.map(x=>String(x).trim()).filter(Boolean).forEach(value=>appliances.push(value));
+    }
   });
   const first = pick("first_name"), last = pick("last_name"), name = pick("name");
 
@@ -3696,9 +3700,13 @@ function setSheetStatus(msg){ const el=$("#sheetStatus"); if(el) el.innerHTML = 
 function sheetCsvUrls(url){
   url = (url||"").trim(); if(!url) return [];
   if (/output=csv|format=csv|tqx=out:csv/i.test(url)) return [url];           // already a CSV link
-  const id = (url.match(/\/spreadsheets\/d\/(?:e\/)?([a-zA-Z0-9-_]+)/)||[])[1];
+  const match=url.match(/\/spreadsheets\/d\/(e\/)?([a-zA-Z0-9-_]+)/);
+  const id = match?.[2];
   if (!id) return [];
   const gid = (url.match(/[#&?]gid=(\d+)/)||[])[1] || "0";
+  if (match[1]) return [
+    `https://docs.google.com/spreadsheets/d/e/${id}/pub?output=csv&gid=${gid}&single=true`
+  ];
   return [
     `https://docs.google.com/spreadsheets/d/${id}/export?format=csv&gid=${gid}`,
     `https://docs.google.com/spreadsheets/d/${id}/gviz/tq?tqx=out:csv&gid=${gid}`,
@@ -3711,17 +3719,23 @@ async function loadFromSheet(url){
   importBusy=true;
   setSheetStatus('<span class="spinner"></span> Fetching your sheet…');
   let parsed = null;
+  let downloaded = false;
   for (const csvUrl of candidates){
     try{
-      const res = await fetch(csvUrl);
+      const res = await fetch(csvUrl,{cache:"no-store",credentials:"omit"});
       if (!res.ok) throw 0;
-      const p = parseCSV(await res.text());
+      const text=await res.text();
+      if (/^\s*</.test(text)) throw 0; // sign-in/error HTML, not a CSV file
+      downloaded=true;
+      const p = parseCSV(text);
       if (p && p.length){ parsed = p; break; }               // clean read — use it
     }catch(e){ /* try the next link style */ }
   }
   if (!parsed){
     importBusy=false;
-    setSheetStatus('Couldn\'t read that sheet. In Sheets: <b>Share → Anyone with the link → Viewer</b>, then paste the link again (make sure you copy it while on your pickups tab).');
+    setSheetStatus(downloaded
+      ? 'The sheet opened, but I couldn\'t find the pickup headings. Keep headings such as <b>Name, Street/Address, Town, Phone and Items/Appliances</b> within the first 20 non-empty rows.'
+      : 'Couldn\'t access that sheet. In Sheets: <b>Share → Anyone with the link → Viewer</b>, then copy the link while you are on the pickups tab and try again.');
     return;
   }
   // Keep rows that have an address/name and aren't already collected.
