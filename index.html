@@ -1923,16 +1923,33 @@ function addFileStops(rows, srcName, setStatus, extraNote){
 
 // Very small CSV parser (handles simple quoted fields).
 function parseCSV(text){
-  const lines = String(text||"").replace(/^\uFEFF/,"").split(/\r?\n/).filter(l=>l.trim()!=="");
-  if (!lines.length) return [];
-  const split = l => {
-    const out=[]; let cur="", q=false;
-    for (let i=0;i<l.length;i++){ const c=l[i];
-      if (c==='"'){ if (q && l[i+1]==='"'){ cur+='"'; i++; } else q=!q; }
-      else if (c===',' && !q){ out.push(cur); cur=""; }
-      else cur+=c;
-    } out.push(cur); return out.map(s=>s.trim());
+  // Parse the whole file as one stream. Splitting on newlines first breaks a
+  // perfectly valid Google Sheet row when a quoted notes/address cell contains
+  // a line break, making just that customer silently disappear.
+  const source=String(text||"").replace(/^\uFEFF/,"");
+  const records=[]; let row=[],cell="",quoted=false;
+  const finishCell=()=>{ row.push(cell.trim()); cell=""; };
+  const finishRow=()=>{
+    finishCell();
+    if (row.some(value=>value!=="")) records.push(row);
+    row=[];
   };
+  for(let i=0;i<source.length;i++){
+    const char=source[i];
+    if(quoted){
+      if(char==='"' && source[i+1]==='"'){ cell+='"'; i++; }
+      else if(char==='"') quoted=false;
+      else cell+=char;
+    }else if(char==='"') quoted=true;
+    else if(char===',') finishCell();
+    else if(char==='\n') finishRow();
+    else if(char==='\r'){
+      if(source[i+1]==='\n') i++;
+      finishRow();
+    }else cell+=char;
+  }
+  if(cell!=="" || row.length) finishRow();
+  if (!records.length) return [];
   // Real sheets often have a title or a note above the headings. Find the first
   // row that looks like pickup columns instead of assuming line one is it.
   const looksLikeHeader = cells => {
@@ -1948,11 +1965,11 @@ function parseCSV(text){
     // such as "Submission date after 3rd August" for the headings.
     return signals>=2 || (cells.length===1 && /^(street|address|location)$/i.test(cells[0].trim()));
   };
-  const headerIndex=lines.slice(0,20).findIndex(line=>looksLikeHeader(split(line)));
+  const headerIndex=records.slice(0,20).findIndex(looksLikeHeader);
   if (headerIndex<0) return null;
-  const header = split(lines[headerIndex]).map(h=>h.toLowerCase().trim());
-  return lines.slice(headerIndex+1).map(l=>{
-    const cells = split(l), o={};
+  const header = records[headerIndex].map(h=>h.toLowerCase().trim());
+  return records.slice(headerIndex+1).map(cells=>{
+    const o={};
     header.forEach((h,i)=> o[h]= cells[i]!==undefined ? cells[i] : "");
     if (o.appliances) o.appliances = o.appliances.split(/[;|]/).map(x=>x.trim()).filter(Boolean);
     return o;
