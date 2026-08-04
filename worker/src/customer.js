@@ -48,6 +48,39 @@ const RURAL_PRICES = {
 
 const REFERRAL_OPTIONS = new Set(["Google", "Facebook", "Find My Local", "AI", "Word of mouth", "Other", ""]);
 const OWNER_STATUSES = new Set(["NEW", "ADDED_TO_RUN", "CONTACTED", "CONFIRMED", "COMPLETED", "DECLINED", "CANCELLED"]);
+// The arcade games. Anything else posting a score is rejected.
+const ARCADE_GAMES = new Set(["stack", "flap", "tower", "invade", "dash", "wio", "squad"]);
+// Arcade chat guard rails. Short lines, a handful a minute, kept a month.
+const CHAT_MAX_LEN = 140;
+const CHAT_KEEP_MS = 30 * 24 * 60 * 60 * 1000;
+const CHAT_PER_MINUTE = 4;
+const CHAT_FETCH = 60;
+const FRIEND_SEARCH_LIMIT = 10;
+const LOBBY_INVITE_TTL_MS = 24 * 60 * 60 * 1000;
+const ARCADE_INVITE_COOLDOWN_MS = 2 * 60 * 1000;
+const ARCADE_INVITE_DAY_MS = 24 * 60 * 60 * 1000;
+const ARCADE_INVITE_MAX_PER_DAY = 10;
+const ARCADE_ONLINE_MS = 75 * 1000;
+const DIRECT_CHAT_KEEP_MS = 90 * 24 * 60 * 60 * 1000;
+const DIRECT_CHAT_PER_MINUTE = 10;
+// Family-safe chat view. These are stable account ids, not changeable arcade
+// nicknames, so another player cannot impersonate someone on the trusted list.
+const CHAT_RESTRICTED_VIEWERS = new Set([
+  "812581f5-ebce-4337-9160-17ee73a9c1bd", // Maddie
+  "8dd18c74-4c57-4df7-a288-50bd3f366947"  // Kaylee
+]);
+const CHAT_TRUSTED_AUTHORS = [
+  "15d66880-9a74-4d7f-895d-e566e9549320", // Rene
+  "a35ea2ce-1897-4ee0-bc67-7b70daeb17c4", // Sin
+  "89ff9ebb-44eb-492d-9ab3-2f991d32d950", // Woody
+  "c76ed0d5-73a4-4a43-ad30-6cc4b27e2524"  // Chloe
+];
+const CHAT_TRUSTED_AUTHOR_SET = new Set(CHAT_TRUSTED_AUTHORS);
+// Public Arcade chat stays available to restricted accounts, but their server
+// view, unread count and reply previews contain only their own messages plus
+// these approved authors. Private chat and friend features use the same rule.
+// No prize is offered for the monthly boards - kept empty so the page hides the prize card.
+const ARCADE_PRIZE = "";
 const JOTFORM_FORM_IDS = new Set(["251768488640874", "240411186193047"]);
 const JOTFORM_APPLIANCE_QIDS = {
   "251768488640874": [7, 8, 54, 55, 56, 57, 58, 59, 60, 61],
@@ -65,6 +98,222 @@ function email(value) {
 
 function now() {
   return Date.now();
+}
+
+function friendPair(a, b) {
+  return String(a) < String(b) ? [a, b] : [b, a];
+}
+
+function arcadeDisplayName(row) {
+  return clean(row?.nickname || row?.first_name || "Player", 20);
+}
+
+function directChatAllowed(a, b) {
+  return arcadeContactAllowed(a, b);
+}
+
+// One account-level policy covers friend requests, play invites and private
+// messages. Names are editable, so this must never use nicknames.
+function arcadeContactAllowed(a, b) {
+  const left = String(a || "");
+  const right = String(b || "");
+  if (CHAT_RESTRICTED_VIEWERS.has(left) && !CHAT_TRUSTED_AUTHOR_SET.has(right)) return false;
+  if (CHAT_RESTRICTED_VIEWERS.has(right) && !CHAT_TRUSTED_AUTHOR_SET.has(left)) return false;
+  return true;
+}
+
+async function acceptedArcadeFriends(env, a, b) {
+  const [low, high] = friendPair(a, b);
+  const row = await env.CUSTOMER_DB.prepare(
+    "SELECT status FROM arcade_friendships WHERE user_low = ?1 AND user_high = ?2"
+  ).bind(low, high).first();
+  return row?.status === "accepted";
+}
+
+function arcadeFriendRequestEmail(sender) {
+  const name = arcadeDisplayName(sender);
+  return `Hi,
+
+${name} sent you a friend request in Naki Arcade.
+
+Open Naki Arcade, sign in, then accept or decline it under Arcade friends:
+${CUSTOMER_ACCOUNT_URL.replace("account.html", "game.html")}
+
+Your email address stays private. Your arcade name can change whenever you like — the friendship is safely tied to your Naki account.
+
+Naki Whiteware Removal`;
+}
+
+function arcadePlayInviteEmail(sender) {
+  const name = arcadeDisplayName(sender);
+  return `Hi,
+
+${name} invited you to come play in Naki Arcade.
+
+Play now:
+${CUSTOMER_ACCOUNT_URL.replace("account.html", "game.html?invite=1")}
+
+Naki Arcade is the free games area from Naki Whiteware Removal. You can play straight away. Sign in with your email if you want to add friends, chat and join the scoreboards.
+
+Naki Whiteware Removal`;
+}
+
+async function createArcadeFriendRequest(env, sendMail, sender, recipient) {
+  const [low, high] = friendPair(sender.id, recipient.id);
+  const existing = await env.CUSTOMER_DB.prepare(
+    "SELECT status, requested_by FROM arcade_friendships WHERE user_low = ?1 AND user_high = ?2"
+  ).bind(low, high).first();
+  if (existing?.status === "accepted") return { accepted: true, pending: false, emailSent: false };
+  if (existing?.status === "pending") {
+    if (existing.requested_by !== sender.id) {
+      await env.CUSTOMER_DB.prepare(
+        "UPDATE arcade_friendships SET status = 'accepted', updated_at = ?3 WHERE user_low = ?1 AND user_high = ?2"
+      ).bind(low, high, now()).run();
+      return { accepted: true, pending: false, emailSent: false };
+    }
+    return { accepted: false, pending: true, emailSent: false };
+  }
+  const stamp = now();
+  await env.CUSTOMER_DB.prepare(
+    `INSERT INTO arcade_friendships
+      (user_low, user_high, requested_by, status, created_at, updated_at)
+     VALUES (?1, ?2, ?3, 'pending', ?4, ?4)`
+  ).bind(low, high, sender.id, stamp).run();
+  // The request is already safely saved. A temporary mail issue must never
+  // turn it into the vague "live service" error the player just saw.
+  const emailSent = await sendMail(env, {
+    to: recipient.email,
+    name: arcadeDisplayName(recipient),
+    subject: "Naki Arcade friend request",
+    text: arcadeFriendRequestEmail(sender)
+  }).catch(() => false);
+  return { accepted: false, pending: true, emailSent };
+}
+
+/* ---------- Arcade months ----------
+   Worked out in Auckland, never UTC. The worker's clock is 12-13 hours behind
+   NZ, so a run at 11pm on the 31st would otherwise be filed under the month the
+   player had already finished - and the prize would go to the wrong board. */
+function aucklandMonth(at = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-NZ", {
+    timeZone: "Pacific/Auckland", year: "numeric", month: "2-digit"
+  }).formatToParts(at);
+  const get = type => (parts.find(p => p.type === type) || {}).value || "";
+  return `${get("year")}-${get("month")}`;
+}
+
+function previousMonth(month) {
+  const [year, mon] = String(month).split("-").map(Number);
+  if (!year || !mon) return month;
+  return mon <= 1 ? `${year - 1}-12` : `${year}-${String(mon - 1).padStart(2, "0")}`;
+}
+
+// Same Auckland-not-UTC reasoning as the month, at day and ISO-week grain.
+function aucklandDay(at = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-NZ", {
+    timeZone: "Pacific/Auckland", year: "numeric", month: "2-digit", day: "2-digit"
+  }).formatToParts(at);
+  const get = type => (parts.find(p => p.type === type) || {}).value || "";
+  return `${get("year")}-${get("month")}-${get("day")}`;
+}
+
+function aucklandWeek(at = new Date()) {
+  const [y, m, d] = aucklandDay(at).split("-").map(Number);
+  const date = new Date(Date.UTC(y, m - 1, d));
+  const dayNum = (date.getUTCDay() + 6) % 7; // Mon=0..Sun=6
+  date.setUTCDate(date.getUTCDate() - dayNum + 3); // nearest Thursday decides the ISO week's year
+  const firstThursday = new Date(Date.UTC(date.getUTCFullYear(), 0, 4));
+  const firstDayNum = (firstThursday.getUTCDay() + 6) % 7;
+  firstThursday.setUTCDate(firstThursday.getUTCDate() - firstDayNum + 3);
+  const week = 1 + Math.round((date - firstThursday) / (7 * 24 * 60 * 60 * 1000));
+  return `${date.getUTCFullYear()}-W${String(week).padStart(2, "0")}`;
+}
+
+const MONTH_NAMES = ["January", "February", "March", "April", "May", "June",
+                     "July", "August", "September", "October", "November", "December"];
+function monthLabel(month) {
+  const [year, mon] = String(month).split("-").map(Number);
+  return MONTH_NAMES[mon - 1] ? `${MONTH_NAMES[mon - 1]} ${year}` : String(month);
+}
+
+/* ---------- Arcade chat moderation ----------
+   A word list only ever catches words, so this is a first pass and not a
+   promise. What actually covers the rest is that the owner sees a delete button
+   on every message, so anything this misses can be pulled down in a tap. */
+const BANNED_WORDS = new Set([
+  "fuck", "fucker", "fuk", "fck", "shit", "shite", "bullshit", "crap", "piss",
+  "cunt", "twat", "bitch", "bastard", "wanker", "wank", "dick", "dickhead",
+  "prick", "cock", "knob", "arsehole", "asshole", "arse", "ass", "bollocks",
+  "slut", "whore", "hoe", "nigger", "nigga", "faggot", "fag", "dyke", "tranny",
+  "retard", "retarded", "spastic", "coon", "kike", "chink", "gook", "paki",
+  "wog", "abo", "raghead", "towelhead", "jizz", "cum", "wtf", "stfu", "gtfo",
+  "milf", "porn", "rape", "rapist", "pedo", "paedo", "nonce", "hitler", "nazi",
+  "kys", "suicide"
+]);
+// Words that innocently contain one of the above. Checked before the filter, so
+// the classic Scunthorpe problem doesn't quietly eat a real message.
+const FILTER_ALLOW = new Set([
+  "scunthorpe", "penistone", "cockburn", "cocktail", "cockpit", "cockatoo",
+  "cockle", "hancock", "shiitake", "shitake", "class", "classic", "classes",
+  "assess", "assessment", "assassin", "assist", "assume", "asset", "assemble",
+  "assign", "associate", "bass", "grass", "pass", "passing", "glass", "mass",
+  "brass", "compass", "grasshopper", "massive", "classify", "analysis",
+  "analyse", "analytics", "titan", "titanium", "dickens", "cumulative",
+  "circumstance", "document", "accumulate", "scrape", "grape", "drape",
+  "therapist", "cassette", "embassy", "canvass", "harass", "surpass"
+]);
+// Contact details and links are blocked outright. A public arcade board is not
+// the place to hand out a phone number, and links are how spam arrives.
+const CHAT_CONTACT_RE = /(https?:\/\/)|(\bwww\.)|([a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,})|(\b\d[\d\s().+-]{6,}\d\b)/i;
+
+// "f u c k" and "f.u.c.k" collapse back to one word. A run of single letters is
+// never how ordinary text is written, so real words are left alone.
+function joinSpacedLetters(text) {
+  return text.replace(/\b(?:[a-z][\s.\-_*+]+){2,}[a-z]\b/g, match => match.replace(/[^a-z]/g, ""));
+}
+
+// Common leetspeak folded back to letters, then everything that isn't a letter
+// becomes a word gap.
+function normaliseForFilter(text) {
+  return text
+    .replace(/@/g, "a").replace(/\$/g, "s")
+    .replace(/0/g, "o").replace(/1/g, "i").replace(/3/g, "e")
+    .replace(/4/g, "a").replace(/5/g, "s").replace(/7/g, "t")
+    .replace(/[^a-z]+/g, " ")
+    .trim();
+}
+
+// Returns a message to show the sender, or "" when the line is fine.
+function chatProblem(body) {
+  if (CHAT_CONTACT_RE.test(body)) {
+    return "Leave out phone numbers, emails and links.";
+  }
+  const words = normaliseForFilter(joinSpacedLetters(body.toLowerCase())).split(" ").filter(Boolean);
+  for (const word of words) {
+    if (FILTER_ALLOW.has(word)) continue;
+    // "fuuuuck" -> "fuck", and a trailing s/ing/ed/er so plurals and -ing forms
+    // don't slip straight through.
+    const flat = word.replace(/(.)\1+/g, "$1");
+    const stems = new Set([word, flat]);
+    for (const form of [word, flat]) {
+      for (const suffix of ["ing", "ers", "er", "ed", "es", "s", "y", "in", "az"]) {
+        if (form.length > suffix.length + 2 && form.endsWith(suffix)) {
+          stems.add(form.slice(0, -suffix.length));
+        }
+      }
+    }
+    for (const stem of stems) {
+      if (BANNED_WORDS.has(stem)) return "Keep it clean, please.";
+    }
+    // Compounds like "bullshit". Only substrings of 4+ letters are considered,
+    // which is what keeps three-letter entries from firing inside normal words.
+    for (const banned of BANNED_WORDS) {
+      if (banned.length >= 4 && word.length > banned.length && word.includes(banned)) {
+        return "Keep it clean, please.";
+      }
+    }
+  }
+  return "";
 }
 
 function bytesToBase64Url(bytes) {
@@ -135,6 +384,7 @@ function profileFrom(row, addresses = []) {
     referralSource: row.referral_source || "",
     referralDetails: row.referral_details || "",
     accessNotes: row.access_notes || "",
+    nickname: row.nickname || "",
     addresses
   };
 }
@@ -700,6 +950,66 @@ export async function purgeExpiredAuth(env) {
   };
 }
 
+/* ---- Whole-database snapshot ----
+   The customers, bookings, quotes and document records live in D1, so losing a
+   phone never loses them. Losing the DATABASE would. Once a night the lot is
+   dumped to R2 as one JSON file and yesterday's ones are kept for a month, so
+   there is always something to rebuild from. Sign-in codes and live sessions are
+   deliberately left out - they are secrets, and they are worthless a day later. */
+const SNAPSHOT_SKIP = new Set([
+  "_cf_KV", "d1_migrations", "sqlite_sequence", "sessions", "login_codes"
+]);
+const SNAPSHOT_PREFIX = "db-backups/";
+const SNAPSHOT_KEEP_DAYS = 30;
+
+export async function dumpDatabase(env) {
+  if (!env.CUSTOMER_DB) throw new Error("No database bound");
+  const tableRows = await env.CUSTOMER_DB.prepare(
+    "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name"
+  ).all();
+  const tables = {};
+  let rowCount = 0;
+  for (const row of (tableRows.results || [])) {
+    const name = String(row.name || "");
+    if (!name || SNAPSHOT_SKIP.has(name) || name.startsWith("sqlite_")) continue;
+    // Table names come from sqlite_master, not from a request, so they are safe
+    // to interpolate - D1 cannot bind an identifier.
+    const data = await env.CUSTOMER_DB.prepare(`SELECT * FROM "${name}"`).all();
+    // Hashed invite/sync tokens are credential material - a downloaded file that
+    // gets forwarded or left on a laptop shouldn't carry them. Nothing is rebuilt
+    // from them anyway: invites expire, sync tokens are re-issued.
+    tables[name] = (data.results || []).map(row => {
+      const clean = {};
+      for (const [column, value] of Object.entries(row)) {
+        clean[column] = /(_hash|_secret)$/i.test(column) && value ? "[removed]" : value;
+      }
+      return clean;
+    });
+    rowCount += tables[name].length;
+  }
+  return { app: "naki-route-api", savedAt: now(), rowCount, tables };
+}
+
+export async function snapshotDatabase(env) {
+  if (!env.DOCUMENTS) return { ok: false, reason: "No R2 bucket bound" };
+  const dump = await dumpDatabase(env);
+  const day = new Date(dump.savedAt).toISOString().slice(0, 10);
+  const key = `${SNAPSHOT_PREFIX}${day}.json`;
+  await env.DOCUMENTS.put(key, JSON.stringify(dump), {
+    httpMetadata: { contentType: "application/json" }
+  });
+  // Drop anything older than a month so this never grows without limit.
+  const cutoff = dump.savedAt - SNAPSHOT_KEEP_DAYS * 24 * 60 * 60 * 1000;
+  const cutoffDay = new Date(cutoff).toISOString().slice(0, 10);
+  let removed = 0;
+  const listed = await env.DOCUMENTS.list({ prefix: SNAPSHOT_PREFIX, limit: 200 });
+  for (const object of (listed.objects || [])) {
+    const stamp = object.key.slice(SNAPSHOT_PREFIX.length, SNAPSHOT_PREFIX.length + 10);
+    if (stamp && stamp < cutoffDay) { await env.DOCUMENTS.delete(object.key); removed++; }
+  }
+  return { ok: true, key, rowCount: dump.rowCount, tables: Object.keys(dump.tables).length, removed };
+}
+
 export async function retryPendingSheetBackups(env) {
   if (!env.CUSTOMER_DB) return { synced: 0 };
   const [website, jotform] = await Promise.all([
@@ -1009,22 +1319,44 @@ async function latestBookingIdForEmail(env, address) {
   return row?.id || "";
 }
 
+function base64ToBytes(b64) {
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return bytes;
+}
+
 // Called after an invoice or receipt is emailed so the customer keeps a copy in
-// their account instead of having to ask for it again.
-export async function recordBookingDocument(env, { email: rawEmail, kind, amount, reference }) {
+// their account instead of having to ask for it again. bookingId/items/address
+// come straight from the same data the PDF was built from, so what lands in
+// the account always matches what was actually sent - no re-deriving later.
+export async function recordBookingDocument(env, { email: rawEmail, kind, amount, reference, bookingId, items, address, filename, pdfBase64 }) {
   if (!env.CUSTOMER_DB) return false;
-  const address = email(rawEmail);
+  const emailAddress = email(rawEmail);
   const type = kind === "RECEIPT" ? "RECEIPT" : "INVOICE";
-  if (!EMAIL_RE.test(address)) return false;
+  if (!EMAIL_RE.test(emailAddress)) return false;
   const cents = Number.isFinite(Number(amount)) && Number(amount) >= 0 && Number(amount) <= 100000
     ? Math.round(Number(amount) * 100)
     : 0;
+  const resolvedBookingId = String(bookingId || "").trim().slice(0, 64) || await latestBookingIdForEmail(env, emailAddress);
+  const itemList = JSON.stringify(
+    (Array.isArray(items) ? items : []).map(item => clean(item, 80)).filter(Boolean).slice(0, 20)
+  );
+  const id = crypto.randomUUID();
+  let r2Key = "";
+  if (env.DOCUMENTS && typeof pdfBase64 === "string" && /^[A-Za-z0-9+/=]+$/.test(pdfBase64) && pdfBase64.length > 100 && pdfBase64.length <= 2000000) {
+    try {
+      await env.DOCUMENTS.put(`doc:${id}.pdf`, base64ToBytes(pdfBase64), { httpMetadata: { contentType: "application/pdf" } });
+      r2Key = `doc:${id}.pdf`;
+    } catch { /* the email already went out - a storage hiccup shouldn't break that */ }
+  }
   try {
     await env.CUSTOMER_DB.prepare(
-      "INSERT INTO booking_documents (id, booking_id, email, kind, amount_cents, reference, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"
+      `INSERT INTO booking_documents (id, booking_id, email, kind, amount_cents, reference, created_at, items_json, address, filename, r2_key)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)`
     ).bind(
-      crypto.randomUUID(), await latestBookingIdForEmail(env, address), address,
-      type, cents, clean(reference, 120), now()
+      id, resolvedBookingId, emailAddress, type, cents, clean(reference, 120), now(),
+      itemList, clean(address, 300), clean(filename, 120), r2Key
     ).run();
     return true;
   } catch {
@@ -1037,14 +1369,21 @@ async function customerDocuments(env, address) {
   const rows = await env.CUSTOMER_DB.prepare(
     "SELECT * FROM booking_documents WHERE email = ?1 COLLATE NOCASE ORDER BY created_at DESC LIMIT 50"
   ).bind(address).all();
-  return (rows.results || []).map(row => ({
-    id: row.id,
-    bookingId: row.booking_id || "",
-    kind: row.kind,
-    amount: Number(row.amount_cents || 0) / 100,
-    reference: row.reference || "",
-    createdAt: new Date(row.created_at).toISOString()
-  }));
+  return (rows.results || []).map(row => {
+    let items = [];
+    try { items = JSON.parse(row.items_json || "[]"); } catch { items = []; }
+    return {
+      id: row.id,
+      bookingId: row.booking_id || "",
+      kind: row.kind,
+      amount: Number(row.amount_cents || 0) / 100,
+      reference: row.reference || "",
+      items,
+      address: row.address || "",
+      hasPdf: Boolean(row.r2_key),
+      createdAt: new Date(row.created_at).toISOString()
+    };
+  });
 }
 
 export async function handlePortalRequest({ request, env, path, json, sendMail }) {
@@ -1249,6 +1588,20 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
     return json(request, { token: verified.token });
   }
 
+  if (path === "/customer/arcade/stats" && request.method === "GET") {
+    const stamp = now();
+    const [members, online] = await Promise.all([
+      env.CUSTOMER_DB.prepare("SELECT COUNT(*) AS total FROM customers").first(),
+      env.CUSTOMER_DB.prepare(
+        "SELECT COUNT(*) AS total FROM arcade_presence WHERE last_seen > ?1"
+      ).bind(stamp - ARCADE_ONLINE_MS).first()
+    ]);
+    return json(request, {
+      members: Number(members?.total || 0),
+      online: Number(online?.total || 0)
+    }, 200, "public, max-age=30");
+  }
+
   if (path.startsWith("/customer/")) {
     const session = await sessionFor(request, env, "customer");
     if (!session) return json(request, { error: "Please sign in again" }, 401);
@@ -1264,6 +1617,698 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
         bookings,
         documents
       });
+    }
+
+    // ---------- Naki Arcade ----------
+    // Scores live server-side so the leaderboard is shared. Only a first name
+    // (or the nickname they chose) ever leaves here - never a surname, email,
+    // phone or address.
+    if (path === "/customer/arcade" && request.method === "GET") {
+      // The boards are per month so the prize is winnable by someone who only
+      // joined last week. Personal bests stay all-time - that's the number a
+      // player wants to see creep up, and resetting it monthly would feel mean.
+      const day = aucklandDay();
+      const week = aucklandWeek();
+      const month = aucklandMonth();
+      const last = previousMonth(month);
+      // Same shape for all four periods: newest run wins ties, top 20 per game.
+      const periodBoard = (table, column) => `SELECT s.game, s.best_score, s.customer_id,
+                  COALESCE(NULLIF(TRIM(c.nickname), ''), NULLIF(TRIM(c.first_name), ''), 'Player') AS display_name
+             FROM ${table} s JOIN customers c ON c.id = s.customer_id
+            WHERE s.${column} = ?1 AND s.best_score > 0
+            ORDER BY s.game, s.best_score DESC, s.updated_at`;
+      const overallBoard = `SELECT s.game, s.best_score, s.customer_id,
+                  COALESCE(NULLIF(TRIM(c.nickname), ''), NULLIF(TRIM(c.first_name), ''), 'Player') AS display_name
+             FROM game_scores s JOIN customers c ON c.id = s.customer_id
+            WHERE s.best_score > 0
+            ORDER BY s.game, s.best_score DESC, s.updated_at`;
+      const monthlyBoard = periodBoard("game_scores_monthly", "month");
+      const [mine, dayRows, weekRows, monthRows, overallRows, lastBoards, me] = await Promise.all([
+        env.CUSTOMER_DB.prepare(
+          "SELECT game, best_score FROM game_scores WHERE customer_id = ?1"
+        ).bind(session.customer_id).all(),
+        env.CUSTOMER_DB.prepare(periodBoard("game_scores_daily", "day")).bind(day).all(),
+        env.CUSTOMER_DB.prepare(periodBoard("game_scores_weekly", "week")).bind(week).all(),
+        env.CUSTOMER_DB.prepare(monthlyBoard).bind(month).all(),
+        env.CUSTOMER_DB.prepare(overallBoard).all(),
+        env.CUSTOMER_DB.prepare(monthlyBoard).bind(last).all(),
+        customerProfile(env, session.customer_id)
+      ]);
+      const scores = {};
+      (mine.results || []).forEach(row => { scores[row.game] = Number(row.best_score || 0); });
+      const buildBoard = rows => {
+        const board = {};
+        (rows || []).forEach(row => {
+          const list = board[row.game] = board[row.game] || [];
+          if (list.length >= 20) return;                     // top 20 per game
+          list.push({
+            name: row.display_name,
+            score: Number(row.best_score || 0),
+            isMe: row.customer_id === session.customer_id
+          });
+        });
+        return board;
+      };
+      const leaderboards = {
+        day: buildBoard(dayRows.results),
+        week: buildBoard(weekRows.results),
+        month: buildBoard(monthRows.results),
+        overall: buildBoard(overallRows.results)
+      };
+      // Last month's champion per game. The rows are already sorted, so the
+      // first one seen for a game is the winner.
+      const winners = [];
+      const claimed = new Set();
+      (lastBoards.results || []).forEach(row => {
+        if (claimed.has(row.game)) return;
+        claimed.add(row.game);
+        winners.push({
+          game: row.game,
+          name: row.display_name,
+          score: Number(row.best_score || 0),
+          isMe: row.customer_id === session.customer_id
+        });
+      });
+      return json(request, {
+        nickname: me?.nickname || "",
+        firstName: me?.first_name || "",
+        scores,
+        leaderboards,
+        month,
+        monthName: monthLabel(month),
+        prize: ARCADE_PRIZE,
+        lastMonth: { month: last, monthName: monthLabel(last), winners }
+      });
+    }
+
+    if (path === "/customer/arcade/nickname" && request.method === "PUT") {
+      let body = {};
+      try { body = await request.json(); } catch { /* handled below */ }
+      // Letters, numbers, spaces, dash and underscore only - keeps the board tidy
+      // and stops anyone smuggling markup into another player's screen.
+      const nickname = clean(body.nickname, 20).replace(/[^A-Za-z0-9 _-]/g, "").trim();
+      if (nickname && nickname.length < 2) {
+        return json(request, { error: "Nicknames need at least 2 characters" }, 400);
+      }
+      await env.CUSTOMER_DB.prepare("UPDATE customers SET nickname = ?1, updated_at = ?2 WHERE id = ?3")
+        .bind(nickname, now(), session.customer_id).run();
+      return json(request, { ok: true, nickname });
+    }
+
+    /* ---- Arcade friends and play-now invites ----
+       Only public arcade names and opaque account ids are returned. Contact
+       details never leave the account system. */
+    if (path === "/customer/arcade/friends" && request.method === "GET") {
+      const me = session.customer_id;
+      const stamp = now();
+      const personSql = `
+        SELECT c.id, c.nickname, c.first_name, f.status, f.requested_by, f.updated_at,
+               p.activity, p.last_seen,
+               (SELECT COUNT(*) FROM arcade_direct_messages dm
+                 WHERE dm.sender_id = c.id AND dm.recipient_id = ?1
+                   AND dm.read_at IS NULL AND dm.hidden_by_recipient = 0) AS unread_count
+          FROM arcade_friendships f
+          JOIN customers c ON c.id = CASE WHEN f.user_low = ?1 THEN f.user_high ELSE f.user_low END
+          LEFT JOIN arcade_presence p ON p.customer_id = c.id
+         WHERE (f.user_low = ?1 OR f.user_high = ?1)`;
+      const [rows, inviteRows] = await Promise.all([
+        env.CUSTOMER_DB.prepare(personSql + " ORDER BY f.updated_at DESC").bind(me).all(),
+        env.CUSTOMER_DB.prepare(
+          `SELECT i.id, i.game, i.room, i.created_at, i.expires_at, c.id AS sender_id,
+                  c.nickname, c.first_name
+             FROM arcade_lobby_invites i JOIN customers c ON c.id = i.sender_id
+            WHERE i.recipient_id = ?1 AND i.expires_at > ?2
+            ORDER BY i.created_at DESC LIMIT 20`
+        ).bind(me, stamp).all()
+      ]);
+      const friends = [], incoming = [], outgoing = [];
+      (rows.results || []).forEach(row => {
+        if (!arcadeContactAllowed(me, row.id)) return;
+        const online = Number(row.last_seen || 0) > stamp - ARCADE_ONLINE_MS;
+        const item = {
+          id: row.id,
+          name: arcadeDisplayName(row),
+          online,
+          activity: online ? clean(row.activity, 20) : "",
+          canMessage: directChatAllowed(me, row.id),
+          unread: Number(row.unread_count || 0)
+        };
+        if (row.status === "accepted") friends.push(item);
+        else if (row.requested_by === me) outgoing.push(item);
+        else incoming.push(item);
+      });
+      friends.sort((a, b) => Number(b.online) - Number(a.online) || a.name.localeCompare(b.name));
+      const invites = (inviteRows.results || [])
+        .filter(row => arcadeContactAllowed(me, row.sender_id))
+        .map(row => ({
+        id: row.id,
+        fromId: row.sender_id,
+        from: arcadeDisplayName(row),
+        game: row.game === "squad" ? "squad" : "wio",
+        room: row.room,
+        at: Number(row.created_at || 0),
+        expiresAt: Number(row.expires_at || 0)
+      }));
+      return json(request, {
+        friends,
+        incoming,
+        outgoing,
+        invites,
+        restricted: CHAT_RESTRICTED_VIEWERS.has(me)
+      });
+    }
+
+    if (path === "/customer/arcade/presence" && request.method === "POST") {
+      let body = {};
+      try { body = await request.json(); } catch { /* default to the arcade menu */ }
+      const requested = clean(body.activity, 20).toLowerCase();
+      const activity = requested === "menu" || ARCADE_GAMES.has(requested) ? requested : "menu";
+      const stamp = now();
+      await env.CUSTOMER_DB.batch([
+        env.CUSTOMER_DB.prepare(
+          `INSERT INTO arcade_presence (customer_id, activity, last_seen)
+           VALUES (?1, ?2, ?3)
+           ON CONFLICT(customer_id) DO UPDATE SET
+             activity = excluded.activity,
+             last_seen = excluded.last_seen`
+        ).bind(session.customer_id, activity, stamp),
+        env.CUSTOMER_DB.prepare(
+          "DELETE FROM arcade_presence WHERE last_seen < ?1"
+        ).bind(stamp - 7 * 24 * 60 * 60 * 1000)
+      ]);
+      return json(request, { ok: true, activity });
+    }
+
+    if (path === "/customer/arcade/friends/search" && request.method === "GET") {
+      const q = clean(new URL(request.url).searchParams.get("q"), 20)
+        .replace(/[^A-Za-z0-9 _-]/g, "").trim();
+      if (q.length < 2) return json(request, { results: [] });
+      const [people, linked] = await Promise.all([
+        env.CUSTOMER_DB.prepare(
+        `SELECT c.id, c.nickname, c.first_name
+           FROM customers c
+          WHERE c.id <> ?1
+            AND LOWER(COALESCE(NULLIF(TRIM(c.nickname), ''), NULLIF(TRIM(c.first_name), '')))
+                LIKE LOWER(?2)
+          ORDER BY CASE WHEN LOWER(COALESCE(NULLIF(TRIM(c.nickname), ''), NULLIF(TRIM(c.first_name), '')))
+                              = LOWER(?3) THEN 0 ELSE 1 END,
+                   COALESCE(NULLIF(TRIM(c.nickname), ''), NULLIF(TRIM(c.first_name), ''))
+          LIMIT ?4`
+        ).bind(session.customer_id, `${q}%`, q, FRIEND_SEARCH_LIMIT).all(),
+        env.CUSTOMER_DB.prepare(
+          `SELECT CASE WHEN user_low = ?1 THEN user_high ELSE user_low END AS customer_id
+             FROM arcade_friendships
+            WHERE user_low = ?1 OR user_high = ?1`
+        ).bind(session.customer_id).all()
+      ]);
+      const alreadyLinked = new Set((linked.results || []).map(row => row.customer_id));
+      return json(request, {
+        results: (people.results || [])
+          .filter(row => !alreadyLinked.has(row.id))
+          .filter(row => arcadeContactAllowed(session.customer_id, row.id))
+          .map(row => ({ id: row.id, name: arcadeDisplayName(row) }))
+      });
+    }
+
+    if (path === "/customer/arcade/friends/request" && request.method === "POST") {
+      let body = {};
+      try { body = await request.json(); } catch { /* handled below */ }
+      const target = clean(body.customerId, 80);
+      const me = session.customer_id;
+      if (!target || target === me) return json(request, { error: "Choose another player" }, 400);
+      if (!arcadeContactAllowed(me, target)) {
+        return json(request, { error: "That player is not available for your Arcade account" }, 403);
+      }
+      const [sender, person] = await Promise.all([
+        env.CUSTOMER_DB.prepare("SELECT id, email, nickname, first_name FROM customers WHERE id = ?1").bind(me).first(),
+        env.CUSTOMER_DB.prepare("SELECT id, email, nickname, first_name FROM customers WHERE id = ?1").bind(target).first()
+      ]);
+      if (!person) return json(request, { error: "That player could not be found" }, 404);
+      if (!sender) return json(request, { error: "Please sign in again" }, 401);
+      return json(request, { ok: true, ...await createArcadeFriendRequest(env, sendMail, sender, person) });
+    }
+
+    if (path === "/customer/arcade/friends/request-email" && request.method === "POST") {
+      let body = {};
+      try { body = await request.json(); } catch { /* handled below */ }
+      const address = email(body.email);
+      if (!EMAIL_RE.test(address)) return json(request, { error: "Enter a valid email address" }, 400);
+      const [sender, person] = await Promise.all([
+        env.CUSTOMER_DB.prepare("SELECT id, email, nickname, first_name FROM customers WHERE id = ?1").bind(session.customer_id).first(),
+        env.CUSTOMER_DB.prepare("SELECT id, email, nickname, first_name FROM customers WHERE email = ?1 COLLATE NOCASE").bind(address).first()
+      ]);
+      if (!sender) return json(request, { error: "Please sign in again" }, 401);
+      if (person && person.id === sender.id) return json(request, { error: "Choose another player" }, 400);
+      // Do not reveal whether an email address has a Naki account.
+      if (!person) return json(request, { ok: true, pending: false, emailSent: false });
+      if (!arcadeContactAllowed(sender.id, person.id)) {
+        return json(request, { ok: true, pending: false, emailSent: false });
+      }
+      return json(request, { ok: true, ...await createArcadeFriendRequest(env, sendMail, sender, person) });
+    }
+
+    if (path === "/customer/arcade/friends/respond" && request.method === "POST") {
+      let body = {};
+      try { body = await request.json(); } catch { /* handled below */ }
+      const requester = clean(body.customerId, 80);
+      const me = session.customer_id;
+      if (!arcadeContactAllowed(me, requester)) {
+        return json(request, { error: "That friend request is not available for your Arcade account" }, 403);
+      }
+      const [low, high] = friendPair(me, requester);
+      const existing = await env.CUSTOMER_DB.prepare(
+        `SELECT status, requested_by FROM arcade_friendships
+          WHERE user_low = ?1 AND user_high = ?2`
+      ).bind(low, high).first();
+      if (!existing || existing.status !== "pending" || existing.requested_by !== requester) {
+        return json(request, { error: "That friend request is no longer waiting" }, 404);
+      }
+      if (body.accept === true) {
+        await env.CUSTOMER_DB.prepare(
+          "UPDATE arcade_friendships SET status = 'accepted', updated_at = ?3 WHERE user_low = ?1 AND user_high = ?2"
+        ).bind(low, high, now()).run();
+      } else {
+        await env.CUSTOMER_DB.prepare(
+          "DELETE FROM arcade_friendships WHERE user_low = ?1 AND user_high = ?2"
+        ).bind(low, high).run();
+      }
+      return json(request, { ok: true });
+    }
+
+    const friendDelete = path.match(/^\/customer\/arcade\/friends\/([^/]+)$/);
+    if (friendDelete && request.method === "DELETE") {
+      const other = decodeURIComponent(friendDelete[1]);
+      const [low, high] = friendPair(session.customer_id, other);
+      await env.CUSTOMER_DB.prepare(
+        "DELETE FROM arcade_friendships WHERE user_low = ?1 AND user_high = ?2"
+      ).bind(low, high).run();
+      return json(request, { ok: true });
+    }
+
+    if (path === "/customer/arcade/invites" && request.method === "POST") {
+      let body = {};
+      try { body = await request.json(); } catch { /* handled below */ }
+      const recipient = clean(body.customerId, 80);
+      const game = clean(body.game || "wio", 20).toLowerCase();
+      const inApp = body.inApp === true;
+      if (game !== "wio" && game !== "squad") {
+        return json(request, { error: "Choose a multiplayer game" }, 400);
+      }
+      const requestedRoom = clean(body.room, 24);
+      const room = game === "squad"
+        ? (requestedRoom.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 5)
+            || randomToken(5).toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 5))
+        : (requestedRoom.toLowerCase().replace(/[^a-z0-9_-]/g, "").slice(0, 24)
+            || randomToken(12).toLowerCase().replace(/[^a-z0-9_-]/g, "").slice(0, 24));
+      if (!room) return json(request, { error: "Could not make a game room. Please try again." }, 500);
+      if (!recipient) return json(request, { error: "Choose a friend" }, 400);
+      const me = session.customer_id;
+      if (!arcadeContactAllowed(me, recipient)) {
+        return json(request, { error: "You can only invite approved Arcade contacts" }, 403);
+      }
+      const [low, high] = friendPair(me, recipient);
+      const friendship = await env.CUSTOMER_DB.prepare(
+        `SELECT status FROM arcade_friendships
+          WHERE user_low = ?1 AND user_high = ?2`
+      ).bind(low, high).first();
+      if (friendship?.status !== "accepted") {
+        return json(request, { error: "You can only invite accepted friends" }, 403);
+      }
+      const [sender, person] = await Promise.all([
+        env.CUSTOMER_DB.prepare("SELECT id, nickname, first_name FROM customers WHERE id = ?1").bind(me).first(),
+        env.CUSTOMER_DB.prepare("SELECT id, email, nickname, first_name FROM customers WHERE id = ?1").bind(recipient).first()
+      ]);
+      if (!sender || !person) return json(request, { error: "That friend could not be found" }, 404);
+      const stamp = now();
+      if (!inApp) {
+      const inviteHistory = await env.CUSTOMER_DB.prepare(
+        `SELECT MAX(created_at) AS last_sent,
+                SUM(CASE WHEN created_at > ?2 THEN 1 ELSE 0 END) AS sent_today
+           FROM arcade_invite_sends
+          WHERE sender_id = ?1`
+      ).bind(me, stamp - ARCADE_INVITE_DAY_MS).first();
+      const lastSent = Number(inviteHistory?.last_sent || 0);
+      const sentToday = Number(inviteHistory?.sent_today || 0);
+      if (lastSent > stamp - ARCADE_INVITE_COOLDOWN_MS) {
+        const seconds = Math.max(1, Math.ceil((lastSent + ARCADE_INVITE_COOLDOWN_MS - stamp) / 1000));
+        return json(request, { error: `Please wait ${seconds}s before sending another invite` }, 429);
+      }
+      if (sentToday >= ARCADE_INVITE_MAX_PER_DAY) {
+        return json(request, { error: "You have reached today’s limit of 10 Arcade invites" }, 429);
+      }
+      }
+      await env.CUSTOMER_DB.batch([
+        env.CUSTOMER_DB.prepare(
+          "DELETE FROM arcade_lobby_invites WHERE expires_at <= ?1 OR (sender_id = ?2 AND recipient_id = ?3)"
+        ).bind(stamp, me, recipient),
+        env.CUSTOMER_DB.prepare(
+          `INSERT INTO arcade_lobby_invites
+            (id, sender_id, recipient_id, game, room, created_at, expires_at)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)`
+        ).bind(randomToken(12), me, recipient, game, room, stamp, stamp + LOBBY_INVITE_TTL_MS)
+        ,
+        ...(inApp ? [] : [env.CUSTOMER_DB.prepare(
+          `INSERT INTO arcade_invite_sends (id, sender_id, recipient_id, created_at)
+           VALUES (?1, ?2, ?3, ?4)`
+        ).bind(randomToken(12), me, recipient, stamp)])
+      ]);
+      if (inApp) return json(request, { ok: true, game, room, emailSent: false });
+      const emailSent = await sendMail(env, {
+        to: person.email,
+        name: arcadeDisplayName(person),
+        subject: "Come play in Naki Arcade",
+        text: arcadePlayInviteEmail(sender)
+      }).catch(() => false);
+      return json(request, { ok: true, game, room, emailSent });
+    }
+
+    // The sender cancelling, not the recipient dismissing - used when someone invites
+    // friends to a squad/IO lobby then leaves before anyone joins, so the invite left
+    // behind doesn't point a friend at a room nobody is in.
+    const inviteCancelRoom = path.match(/^\/customer\/arcade\/invites\/room\/([^/]+)$/);
+    if (inviteCancelRoom && request.method === "DELETE") {
+      const room = clean(decodeURIComponent(inviteCancelRoom[1]), 24);
+      if (room) {
+        await env.CUSTOMER_DB.prepare(
+          "DELETE FROM arcade_lobby_invites WHERE sender_id = ?1 AND room = ?2"
+        ).bind(session.customer_id, room).run();
+      }
+      return json(request, { ok: true });
+    }
+
+    const inviteDelete = path.match(/^\/customer\/arcade\/invites\/([^/]+)$/);
+    if (inviteDelete && request.method === "DELETE") {
+      await env.CUSTOMER_DB.prepare(
+        "DELETE FROM arcade_lobby_invites WHERE id = ?1 AND recipient_id = ?2"
+      ).bind(decodeURIComponent(inviteDelete[1]), session.customer_id).run();
+      return json(request, { ok: true });
+    }
+
+    if (path === "/customer/arcade/score" && request.method === "POST") {
+      let body = {};
+      try { body = await request.json(); } catch { /* handled below */ }
+      const game = clean(body.game, 20).toLowerCase();
+      if (!ARCADE_GAMES.has(game)) return json(request, { error: "Unknown game" }, 400);
+      const raw = Number(body.score);
+      if (!Number.isFinite(raw) || raw < 0) return json(request, { error: "Invalid score" }, 400);
+      // Cap what a single run can claim, so a fiddled request can't park an
+      // unbeatable number at the top of the board forever.
+      const score = Math.min(Math.floor(raw), 1000000);
+      const stamp = now();
+      const day = aucklandDay();
+      const week = aucklandWeek();
+      const month = aucklandMonth();
+      // All four boards move together: the all-time personal best, and the
+      // daily/weekly/monthly rows each period's leaderboard is read from.
+      await env.CUSTOMER_DB.batch([
+        env.CUSTOMER_DB.prepare(
+          `INSERT INTO game_scores (customer_id, game, best_score, played_count, created_at, updated_at)
+           VALUES (?1, ?2, ?3, 1, ?4, ?4)
+           ON CONFLICT(customer_id, game) DO UPDATE SET
+             played_count = played_count + 1,
+             best_score = MAX(best_score, excluded.best_score),
+             updated_at = CASE WHEN excluded.best_score > best_score THEN ?4 ELSE updated_at END`
+        ).bind(session.customer_id, game, score, stamp),
+        env.CUSTOMER_DB.prepare(
+          `INSERT INTO game_scores_daily (customer_id, game, day, best_score, created_at, updated_at)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?5)
+           ON CONFLICT(customer_id, game, day) DO UPDATE SET
+             best_score = MAX(best_score, excluded.best_score),
+             updated_at = CASE WHEN excluded.best_score > best_score THEN ?5 ELSE updated_at END`
+        ).bind(session.customer_id, game, day, score, stamp),
+        env.CUSTOMER_DB.prepare(
+          `INSERT INTO game_scores_weekly (customer_id, game, week, best_score, created_at, updated_at)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?5)
+           ON CONFLICT(customer_id, game, week) DO UPDATE SET
+             best_score = MAX(best_score, excluded.best_score),
+             updated_at = CASE WHEN excluded.best_score > best_score THEN ?5 ELSE updated_at END`
+        ).bind(session.customer_id, game, week, score, stamp),
+        env.CUSTOMER_DB.prepare(
+          `INSERT INTO game_scores_monthly (customer_id, game, month, best_score, created_at, updated_at)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?5)
+           ON CONFLICT(customer_id, game, month) DO UPDATE SET
+             best_score = MAX(best_score, excluded.best_score),
+             updated_at = CASE WHEN excluded.best_score > best_score THEN ?5 ELSE updated_at END`
+        ).bind(session.customer_id, game, month, score, stamp)
+      ]);
+      const row = await env.CUSTOMER_DB.prepare(
+        "SELECT best_score FROM game_scores WHERE customer_id = ?1 AND game = ?2"
+      ).bind(session.customer_id, game).first();
+      return json(request, { ok: true, best: Number(row?.best_score || 0) });
+    }
+
+    /* ---- Arcade chat ----
+       Signed-in customers only, so every line has a real account behind it.
+       Only the display name is ever returned - the same rule as the boards.
+       Woody signs in with the owner address and gets a delete on every message,
+       which is the part that actually handles anything the filter misses. */
+    const chatOwner = String(session.email || "").toLowerCase() === OWNER_EMAIL;
+
+    if (path === "/customer/arcade/chat/unread" && request.method === "GET") {
+      const restrictedChat = CHAT_RESTRICTED_VIEWERS.has(session.customer_id);
+      const stamp = now();
+      const read = await env.CUSTOMER_DB.prepare(
+        "SELECT public_read_at FROM arcade_chat_reads WHERE customer_id = ?1"
+      ).bind(session.customer_id).first();
+      let publicUnread = 0;
+      if (!read) {
+        await env.CUSTOMER_DB.prepare(
+          "INSERT INTO arcade_chat_reads (customer_id, public_read_at) VALUES (?1, ?2)"
+        ).bind(session.customer_id, stamp).run();
+      } else {
+        const allowed = restrictedChat ? [session.customer_id, ...CHAT_TRUSTED_AUTHORS] : [];
+        const allowedSql = restrictedChat
+          ? ` AND customer_id IN (${allowed.map((_, index) => `?${index + 3}`).join(", ")})`
+          : "";
+        const statement = env.CUSTOMER_DB.prepare(
+          `SELECT COUNT(*) AS unread FROM arcade_messages
+            WHERE hidden = 0 AND created_at > ?1 AND customer_id <> ?2${allowedSql}`);
+        const row = restrictedChat
+          ? await statement.bind(Number(read.public_read_at || 0), session.customer_id, ...allowed).first()
+          : await statement.bind(Number(read.public_read_at || 0), session.customer_id).first();
+        publicUnread = Number(row?.unread || 0);
+      }
+      const directAllowed = restrictedChat ? CHAT_TRUSTED_AUTHORS : [];
+      const directAllowedSql = restrictedChat
+        ? ` AND sender_id IN (${directAllowed.map((_, index) => `?${index + 2}`).join(", ")})`
+        : "";
+      const directStatement = env.CUSTOMER_DB.prepare(
+        `SELECT COUNT(*) AS unread FROM arcade_direct_messages
+          WHERE recipient_id = ?1 AND read_at IS NULL AND hidden_by_recipient = 0${directAllowedSql}`
+      );
+      const direct = restrictedChat
+        ? await directStatement.bind(session.customer_id, ...directAllowed).first()
+        : await directStatement.bind(session.customer_id).first();
+      const directUnread = Number(direct?.unread || 0);
+      return json(request, {
+        publicUnread,
+        directUnread,
+        total: publicUnread + directUnread
+      });
+    }
+
+    if (path === "/customer/arcade/chat" && request.method === "GET") {
+      const restrictedChat = CHAT_RESTRICTED_VIEWERS.has(session.customer_id);
+      const allowed = restrictedChat ? [session.customer_id, ...CHAT_TRUSTED_AUTHORS] : [];
+      const allowedSql = restrictedChat
+        ? ` AND m.customer_id IN (${allowed.map((_, index) => `?${index + 2}`).join(", ")})`
+        : "";
+      const replyAllowedSql = restrictedChat
+        ? ` AND rm.customer_id IN (${allowed.map((_, index) => `?${index + 2}`).join(", ")})`
+        : "";
+      const limitParam = restrictedChat ? allowed.length + 2 : 2;
+      const statement = env.CUSTOMER_DB.prepare(
+        `SELECT m.id, m.body, m.created_at, m.customer_id, m.reply_to,
+                 COALESCE(NULLIF(TRIM(c.nickname), ''), NULLIF(TRIM(c.first_name), ''), 'Player') AS display_name,
+                 CASE WHEN rm.hidden = 0${replyAllowedSql} THEN rm.body ELSE NULL END AS reply_body,
+                 CASE WHEN rm.hidden = 0${replyAllowedSql}
+                      THEN COALESCE(NULLIF(TRIM(rc.nickname), ''), NULLIF(TRIM(rc.first_name), ''), 'Player')
+                      ELSE NULL END AS reply_name
+            FROM arcade_messages m JOIN customers c ON c.id = m.customer_id
+            LEFT JOIN arcade_messages rm ON rm.id = m.reply_to
+            LEFT JOIN customers rc ON rc.id = rm.customer_id
+           WHERE m.hidden = 0 AND m.created_at > ?1${allowedSql}
+           ORDER BY m.created_at DESC
+           LIMIT ?${limitParam}`);
+      const rows = restrictedChat
+        ? await statement.bind(now() - CHAT_KEEP_MS, ...allowed, CHAT_FETCH).all()
+        : await statement.bind(now() - CHAT_KEEP_MS, CHAT_FETCH).all();
+      // Newest first out of the database, oldest first on screen.
+      const messages = (rows.results || []).reverse().map(row => ({
+        id: row.id,
+        name: row.display_name,
+        body: row.body,
+        at: Number(row.created_at || 0),
+        isMe: row.customer_id === session.customer_id,
+        canDelete: chatOwner || row.customer_id === session.customer_id,
+        reply: row.reply_body ? { name: row.reply_name, body: row.reply_body } : null
+      }));
+      await env.CUSTOMER_DB.prepare(
+        `INSERT INTO arcade_chat_reads (customer_id, public_read_at)
+         VALUES (?1, ?2)
+         ON CONFLICT(customer_id) DO UPDATE SET public_read_at = excluded.public_read_at`
+      ).bind(session.customer_id, now()).run();
+      return json(request, {
+        messages,
+        isOwner: chatOwner,
+        restricted: restrictedChat,
+        maxLength: CHAT_MAX_LEN
+      });
+    }
+
+    if (path === "/customer/arcade/chat" && request.method === "POST") {
+      let body = {};
+      try { body = await request.json(); } catch { /* handled below */ }
+      // Collapse any run of whitespace so a wall of newlines can't shove the
+      // rest of the chat off the screen.
+      const text = clean(body.body, CHAT_MAX_LEN).replace(/\s+/g, " ").trim();
+      if (!text) return json(request, { error: "Type a message first" }, 400);
+      const problem = chatProblem(text);
+      if (problem) return json(request, { error: problem }, 400);
+      const replyTo = clean(body.replyTo, 80);
+      if (replyTo) {
+        const reply = await env.CUSTOMER_DB.prepare(
+          "SELECT customer_id FROM arcade_messages WHERE id = ?1 AND hidden = 0"
+        ).bind(replyTo).first();
+        const allowedReply = reply && (!CHAT_RESTRICTED_VIEWERS.has(session.customer_id)
+          || reply.customer_id === session.customer_id
+          || CHAT_TRUSTED_AUTHOR_SET.has(reply.customer_id));
+        if (!allowedReply) return json(request, { error: "That message is no longer available" }, 400);
+      }
+      const recent = await env.CUSTOMER_DB.prepare(
+        "SELECT COUNT(*) AS sent FROM arcade_messages WHERE customer_id = ?1 AND created_at > ?2"
+      ).bind(session.customer_id, now() - 60000).first();
+      if (Number(recent?.sent || 0) >= CHAT_PER_MINUTE) {
+        return json(request, { error: "Slow down a moment - a few messages a minute is the limit." }, 429);
+      }
+      const stamp = now();
+      await env.CUSTOMER_DB.batch([
+        env.CUSTOMER_DB.prepare(
+          `INSERT INTO arcade_messages (id, customer_id, body, reply_to, created_at, hidden)
+           VALUES (?1, ?2, ?3, ?4, ?5, 0)`
+        ).bind(randomToken(12), session.customer_id, text, replyTo || null, stamp),
+        // Old lines go on the way past rather than needing a scheduled job.
+        env.CUSTOMER_DB.prepare("DELETE FROM arcade_messages WHERE created_at < ?1")
+          .bind(stamp - CHAT_KEEP_MS)
+      ]);
+      return json(request, { ok: true });
+    }
+
+    if (path === "/customer/arcade/direct" && request.method === "GET") {
+      const friendId = clean(new URL(request.url).searchParams.get("friendId"), 80);
+      if (!friendId || !await acceptedArcadeFriends(env, session.customer_id, friendId)) {
+        return json(request, { error: "Private messages are only for accepted friends" }, 403);
+      }
+      if (!directChatAllowed(session.customer_id, friendId)) {
+        return json(request, { error: "Private messaging is not available for this friend" }, 403);
+      }
+      const friend = await env.CUSTOMER_DB.prepare(
+        "SELECT id, nickname, first_name FROM customers WHERE id = ?1"
+      ).bind(friendId).first();
+      if (!friend) return json(request, { error: "That friend could not be found" }, 404);
+      const rows = await env.CUSTOMER_DB.prepare(
+        `SELECT m.id, m.body, m.created_at, m.read_at, m.sender_id, m.reply_to,
+                COALESCE(NULLIF(TRIM(c.nickname), ''), NULLIF(TRIM(c.first_name), ''), 'Player') AS display_name,
+                rm.body AS reply_body,
+                COALESCE(NULLIF(TRIM(rc.nickname), ''), NULLIF(TRIM(rc.first_name), ''), 'Player') AS reply_name
+           FROM arcade_direct_messages m
+           JOIN customers c ON c.id = m.sender_id
+           LEFT JOIN arcade_direct_messages rm ON rm.id = m.reply_to
+           LEFT JOIN customers rc ON rc.id = rm.sender_id
+          WHERE ((m.sender_id = ?1 AND m.recipient_id = ?2 AND m.hidden_by_sender = 0)
+              OR (m.sender_id = ?2 AND m.recipient_id = ?1 AND m.hidden_by_recipient = 0))
+            AND m.created_at > ?3
+          ORDER BY m.created_at DESC LIMIT 100`
+      ).bind(session.customer_id, friendId, now() - DIRECT_CHAT_KEEP_MS).all();
+      const stamp = now();
+      await env.CUSTOMER_DB.prepare(
+        `UPDATE arcade_direct_messages SET read_at = ?3
+          WHERE sender_id = ?1 AND recipient_id = ?2 AND read_at IS NULL`
+      ).bind(friendId, session.customer_id, stamp).run();
+      const messages = (rows.results || []).reverse().map(row => ({
+        id: row.id,
+        name: row.display_name,
+        body: row.body,
+        at: Number(row.created_at || 0),
+        readAt: row.read_at ? Number(row.read_at) : null,
+        isMe: row.sender_id === session.customer_id,
+        reply: row.reply_body ? { name: row.reply_name, body: row.reply_body } : null
+      }));
+      return json(request, {
+        friend: { id: friend.id, name: arcadeDisplayName(friend) },
+        messages
+      });
+    }
+
+    if (path === "/customer/arcade/direct" && request.method === "POST") {
+      let body = {};
+      try { body = await request.json(); } catch { /* handled below */ }
+      const friendId = clean(body.friendId, 80);
+      if (!friendId || !await acceptedArcadeFriends(env, session.customer_id, friendId)) {
+        return json(request, { error: "Private messages are only for accepted friends" }, 403);
+      }
+      if (!directChatAllowed(session.customer_id, friendId)) {
+        return json(request, { error: "Private messaging is not available for this friend" }, 403);
+      }
+      const text = clean(body.body, CHAT_MAX_LEN).replace(/\s+/g, " ").trim();
+      if (!text) return json(request, { error: "Type a message first" }, 400);
+      const problem = chatProblem(text);
+      if (problem) return json(request, { error: problem }, 400);
+      const replyTo = clean(body.replyTo, 80);
+      if (replyTo) {
+        const reply = await env.CUSTOMER_DB.prepare(
+          `SELECT id FROM arcade_direct_messages
+            WHERE id = ?1
+              AND ((sender_id = ?2 AND recipient_id = ?3)
+                OR (sender_id = ?3 AND recipient_id = ?2))`
+        ).bind(replyTo, session.customer_id, friendId).first();
+        if (!reply) return json(request, { error: "That message is no longer available" }, 400);
+      }
+      const recent = await env.CUSTOMER_DB.prepare(
+        "SELECT COUNT(*) AS sent FROM arcade_direct_messages WHERE sender_id = ?1 AND created_at > ?2"
+      ).bind(session.customer_id, now() - 60000).first();
+      if (Number(recent?.sent || 0) >= DIRECT_CHAT_PER_MINUTE) {
+        return json(request, { error: "Slow down a moment before sending more messages" }, 429);
+      }
+      const stamp = now();
+      await env.CUSTOMER_DB.batch([
+        env.CUSTOMER_DB.prepare(
+          `INSERT INTO arcade_direct_messages
+            (id, sender_id, recipient_id, body, reply_to, created_at, read_at)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL)`
+        ).bind(randomToken(12), session.customer_id, friendId, text, replyTo || null, stamp),
+        env.CUSTOMER_DB.prepare(
+          "DELETE FROM arcade_direct_messages WHERE created_at < ?1"
+        ).bind(stamp - DIRECT_CHAT_KEEP_MS)
+      ]);
+      return json(request, { ok: true });
+    }
+
+    const chatDelete = path.match(/^\/customer\/arcade\/chat\/([^/]+)$/);
+    if (chatDelete && request.method === "DELETE") {
+      const id = decodeURIComponent(chatDelete[1]);
+      // Hidden rather than deleted, so a removed message still leaves a trace.
+      const result = chatOwner
+        ? await env.CUSTOMER_DB.prepare("UPDATE arcade_messages SET hidden = 1 WHERE id = ?1")
+            .bind(id).run()
+        : await env.CUSTOMER_DB.prepare("UPDATE arcade_messages SET hidden = 1 WHERE id = ?1 AND customer_id = ?2")
+            .bind(id, session.customer_id).run();
+      if (!result?.meta?.changes) return json(request, { error: "That message isn't yours to remove" }, 403);
+      return json(request, { ok: true });
+    }
+
+    const pdfMatch = path.match(/^\/customer\/documents\/([^/]+)\/pdf$/);
+    if (pdfMatch && request.method === "GET") {
+      const docId = decodeURIComponent(pdfMatch[1]);
+      const doc = await env.CUSTOMER_DB.prepare(
+        "SELECT r2_key, filename FROM booking_documents WHERE id = ?1 AND email = ?2 COLLATE NOCASE"
+      ).bind(docId, session.email).first();
+      const object = doc?.r2_key && env.DOCUMENTS ? await env.DOCUMENTS.get(doc.r2_key) : null;
+      if (!object) return json(request, { error: "That document isn't available" }, 404);
+      const bytes = new Uint8Array(await object.arrayBuffer());
+      let bin = "";
+      for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+      return json(request, { pdfBase64: btoa(bin), filename: doc.filename || "Document.pdf" });
     }
 
     if (path === "/customer/profile" && request.method === "PUT") {
@@ -1629,6 +2674,27 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
       return json(request, { latest: latest ? peek(latest) : null, previous: prev ? peek(prev) : null });
     }
 
+    /* Everything the business owns, as one file, on demand. The nightly R2
+       snapshot is the automatic safety net; this is the copy Woody can keep
+       himself, off Cloudflare entirely. */
+    if (path === "/owner/export" && request.method === "GET") {
+      const dump = await dumpDatabase(env);
+      return json(request, dump);
+    }
+
+    if (path === "/owner/snapshots" && request.method === "GET") {
+      if (!env.DOCUMENTS) return json(request, { snapshots: [] });
+      const listed = await env.DOCUMENTS.list({ prefix: SNAPSHOT_PREFIX, limit: 200 });
+      const snapshots = (listed.objects || [])
+        .map(object => ({ day: object.key.slice(SNAPSHOT_PREFIX.length).replace(/\.json$/, ""), size: object.size }))
+        .sort((a, b) => b.day.localeCompare(a.day));
+      return json(request, { snapshots });
+    }
+
+    if (path === "/owner/snapshot" && request.method === "POST") {
+      return json(request, await snapshotDatabase(env));
+    }
+
     if (path === "/owner/customers" && request.method === "GET") {
       const rows = await env.CUSTOMER_DB.prepare(
         `SELECT c.*,
@@ -1653,6 +2719,48 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
     }
 
     const customerMatch = path.match(/^\/owner\/customers\/([^/]+)$/);
+    // Woody fixing a typo'd phone number or address from the Customers tab —
+    // email stays put since bookings, invites and sign-in are all matched on it.
+    if (customerMatch && request.method === "PUT") {
+      const customerId = decodeURIComponent(customerMatch[1]);
+      const existing = await env.CUSTOMER_DB.prepare("SELECT id FROM customers WHERE id = ?1").bind(customerId).first();
+      if (!existing) return json(request, { error: "Customer not found" }, 404);
+      let body = {};
+      try { body = await request.json(); } catch { /* handled below */ }
+      const firstName = clean(body.firstName, 60);
+      const lastName = clean(body.lastName, 60);
+      const phone = clean(body.phone, 30);
+      const streetAddress = clean(body.streetAddress, 180);
+      const town = clean(body.town, 100);
+      const area = clean(body.area, 100);
+      const accessNotes = clean(body.accessNotes, 1000);
+      if (!firstName || !lastName) return json(request, { error: "Enter a first and last name" }, 400);
+      await env.CUSTOMER_DB.prepare(
+        `UPDATE customers SET first_name=?1, last_name=?2, phone=?3, street_address=?4, town=?5,
+          area=?6, access_notes=?7, updated_at=?8 WHERE id=?9`
+      ).bind(firstName, lastName, phone, streetAddress, town, area, accessNotes, now(), customerId).run();
+      const row = await env.CUSTOMER_DB.prepare(
+        `SELECT c.*,
+           ((SELECT COUNT(*) FROM bookings b WHERE b.customer_id = c.id) +
+            (SELECT COUNT(*) FROM external_bookings e WHERE e.customer_id = c.id OR e.email = c.email COLLATE NOCASE) +
+            (SELECT COUNT(*) FROM jotform_bookings j WHERE j.customer_id = c.id OR j.email = c.email COLLATE NOCASE)) AS booking_count,
+           MAX(
+             COALESCE((SELECT MAX(created_at) FROM bookings b WHERE b.customer_id = c.id), 0),
+             COALESCE((SELECT MAX(created_at) FROM external_bookings e WHERE e.customer_id = c.id OR e.email = c.email COLLATE NOCASE), 0),
+             COALESCE((SELECT MAX(created_at) FROM jotform_bookings j WHERE j.customer_id = c.id OR j.email = c.email COLLATE NOCASE), 0)
+           ) AS last_booking_at
+         FROM customers c WHERE c.id = ?1`
+      ).bind(customerId).first();
+      const customer = {
+        id: row.id,
+        ...profileFrom(row),
+        bookings: Number(row.booking_count || 0),
+        lastBookingAt: row.last_booking_at ? new Date(row.last_booking_at).toISOString() : "",
+        joinedAt: new Date(row.created_at).toISOString()
+      };
+      return json(request, { ok: true, customer });
+    }
+
     if (customerMatch && request.method === "DELETE") {
       const customerId = decodeURIComponent(customerMatch[1]);
       const existing = await env.CUSTOMER_DB.prepare("SELECT email FROM customers WHERE id = ?1").bind(customerId).first();
@@ -1777,15 +2885,26 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
            ) GROUP BY source ORDER BY count DESC`
         ).all(),
         env.CUSTOMER_DB.prepare(
-          // Towns are typed by hand, so "New plymouth" must count as "New Plymouth".
-          // MIN() picks one spelling to show - capitals sort first, so it favours the tidy one.
-          `SELECT MIN(town) AS town, COUNT(*) AS count FROM (
+          // Towns are typed by hand. Keep New Plymouth and its suburbs together
+          // in the summary, just like the owner page does. Westtown is a common
+          // spelling of the Westown suburb.
+          `SELECT CASE
+             WHEN LOWER(TRIM(town)) IN ('fitzroy', 'westown', 'westtown', 'highlands park', 'merrilands', 'vogeltown', 'lower vogeltown', 'brooklands', 'strandon', 'moturoa', 'spotswood', 'lynmouth', 'blagdon', 'ferndale', 'frankleigh park', 'hurdon', 'marfell', 'welbourn', 'whalers gate', 'kawaroa')
+               OR LOWER(TRIM(town)) LIKE '%new plymouth%'
+               THEN 'New Plymouth'
+             ELSE MIN(town)
+           END AS town, COUNT(*) AS count FROM (
              SELECT COALESCE(NULLIF(TRIM(town), ''), 'No town') AS town FROM bookings
              UNION ALL
              SELECT COALESCE(NULLIF(TRIM(town), ''), 'No town') AS town FROM jotform_bookings
              UNION ALL
              SELECT COALESCE(NULLIF(TRIM(town), ''), 'No town') AS town FROM external_bookings
-           ) GROUP BY LOWER(town) ORDER BY count DESC LIMIT 20`
+           ) GROUP BY CASE
+             WHEN LOWER(TRIM(town)) IN ('fitzroy', 'westown', 'westtown', 'highlands park', 'merrilands', 'vogeltown', 'lower vogeltown', 'brooklands', 'strandon', 'moturoa', 'spotswood', 'lynmouth', 'blagdon', 'ferndale', 'frankleigh park', 'hurdon', 'marfell', 'welbourn', 'whalers gate', 'kawaroa')
+               OR LOWER(TRIM(town)) LIKE '%new plymouth%'
+               THEN 'new plymouth'
+             ELSE LOWER(TRIM(town))
+           END ORDER BY count DESC LIMIT 20`
         ).all(),
         env.CUSTOMER_DB.prepare(
           `SELECT
@@ -1921,3 +3040,7 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
 
   return json(request, { error: "Not found" }, 404);
 }
+
+// Exported only for the focused permission-policy test; the Worker routes
+// above remain the public API.
+export { arcadeContactAllowed, directChatAllowed };

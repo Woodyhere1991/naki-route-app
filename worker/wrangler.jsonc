@@ -16,6 +16,9 @@
       "database_id": "cb443bbc-167b-446f-b524-b21c3f018046"
     }
   ],
+  "r2_buckets": [
+    { "binding": "DOCUMENTS", "bucket_name": "naki-booking-documents" }
+  ],
   "vars": {
     "GOOGLE_SHEET_ID": "18D6Z6TpjTS9MPXedcF-s4qMMOs_J3b65bj63SRGj5L0"
   },

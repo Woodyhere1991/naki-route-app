@@ -156,9 +156,6 @@
   .badrow input{flex:1 1 auto}
   .sectitle{font-size:14px;text-transform:uppercase;letter-spacing:1px;color:var(--muted);margin:18px 0 4px}
   footer{ text-align:center;color:var(--muted);font-size:12px;padding:20px 0 10px}
-  .areafilter{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
-  .areafilter button{min-height:38px;font-size:13px;background:#113a54;border:1px solid var(--line);color:var(--txt)}
-  .areafilter button.on{background:var(--accent);border-color:var(--accent)}
 
   /* Address autocomplete dropdown */
   .acw{position:relative}
@@ -240,7 +237,13 @@
   body[data-view="add"] .view-add,
   body[data-view="customers"] .view-customers,
   body[data-view="bookings"] .view-bookings{display:block}
-  .today-map{order:5}.today-actions{order:10}.today-filter{order:20}.today-list{order:30}.today-bad{order:40}.today-unpaid{order:50}
+  .today-map{order:5}.today-actions{order:10}.today-list{order:30}.today-bad{order:40}.today-unpaid{order:50}
+  /* Stop count, km and the run picker only describe the run you're driving, so
+     they'd just be noise sitting above the Bookings, Customers and Messages
+     lists. They stay on Today and on Add & setup, where you build that run. */
+  body[data-view="bookings"] .stats, body[data-view="customers"] .stats, body[data-view="messages"] .stats,
+  body[data-view="bookings"] .run-switcher, body[data-view="customers"] .run-switcher,
+  body[data-view="messages"] .run-switcher{display:none}
   #bannerSave,#bannerOsrm{order:5} footer{order:100}
   .bottom-nav{position:fixed;left:0;right:0;bottom:0;z-index:2000;background:rgba(7,29,46,.98);
     border-top:1px solid var(--line);padding:8px max(10px,env(safe-area-inset-right)) calc(8px + env(safe-area-inset-bottom)) max(10px,env(safe-area-inset-left));
@@ -276,6 +279,11 @@
   .mini-sub{display:block;color:var(--muted);font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .mini[open]>summary .mini-name,.mini[open]>summary .mini-sub{white-space:normal;overflow:visible}
   .mini-price{font-weight:800;white-space:nowrap;font-size:15px}
+  /* Price badge on a pickup card, so the amount is visible without opening anything. */
+  .pricetag{display:inline-block;margin-left:6px;padding:1px 7px;border-radius:999px;font-weight:800;
+    font-size:13px;white-space:nowrap;background:#1d6b45;color:#eafff2}
+  .pricetag.none{background:#3a3f4a;color:var(--muted);font-weight:600}
+  .pricetag.est{background:#4a3f1d;color:#ffe9b0}   /* worked out, not agreed */
   .mini-dot{width:9px;height:9px;border-radius:50%;background:var(--muted);flex:0 0 auto}
   .mini-dot.new{background:var(--accent)}
   .mini-dot.added{background:var(--good)}
@@ -284,6 +292,20 @@
   .mini[open]{box-shadow:0 8px 20px #0004}
   .list-toolbar{display:flex;align-items:center;gap:8px;margin-bottom:8px}
   .list-toolbar .grow{margin-bottom:0}
+  /* "Showing one customer" banner. Always on screen while a focus filter is on,
+     so a filter that matches nothing still has a visible way back to the list. */
+  .filter-chip{display:flex;align-items:center;gap:8px;margin-bottom:8px;padding:8px 12px;
+    background:#0d3350;border:1px solid var(--accent);border-radius:12px;font-size:14px}
+  .filter-chip .who{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .filter-chip button{flex:0 0 auto}
+  /* Stage filter for the bookings list. Deliberately NOT class "tabs" - that one
+     has a global handler wired to the Add-pickups panes and would hijack these. */
+  .stage-tabs{display:flex;gap:6px;margin-bottom:8px}
+  .stage-tabs button{flex:1 1 0;min-height:44px;background:#113a54;color:var(--txt);
+    border:1px solid var(--line);font-size:13px;padding:5px 4px;line-height:1.15}
+  .stage-tabs button.on{background:var(--accent);border-color:var(--accent);color:#fff}
+  .stage-tabs .n{display:block;font-size:11px;font-weight:800;opacity:.75}
+  .stage-tabs button.on .n{opacity:1}
   /* Edit popup - a real form instead of a chain of one-line prompts. */
   .modal-back{position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:10000;
     display:flex;align-items:center;justify-content:center;padding:16px}
@@ -447,6 +469,8 @@
       <input id="bookingSearch" class="grow" placeholder="Search name, town, address, email or phone" />
       <button class="ghost sm" id="bookingViewToggle" title="Switch between a short list and full cards"></button>
     </div>
+    <div class="stage-tabs" id="bookingStageTabs" style="display:none"></div>
+    <div class="filter-chip" id="bookingFilterChip" style="display:none"></div>
     <div id="directBookingStatus" class="small muted"></div>
     <div id="directBookingList"></div>
   </section>
@@ -511,14 +535,32 @@
         <div id="cloudBackup" class="confirmed-day" style="margin:0 0 10px">
           <span id="cloudBackupState">Checking your saved copy…</span>
         </div>
+        <div class="row" id="cloudSignInRow" style="display:none">
+          <button class="warn grow" id="cloudSignIn">🔑 Sign in so this can save</button>
+        </div>
         <div class="row">
           <button class="good grow" id="cloudSaveNow">☁ Save to my account now</button>
           <button class="ghost grow" id="cloudRestore">↺ Restore from my account</button>
         </div>
-        <p class="small muted" style="margin:10px 0 6px">Or keep a copy as a file on your phone:</p>
+        <p class="small muted" style="margin:6px 0 0">
+          Save puts today's runs on the server under your email. Restore pulls that copy back down
+          and replaces what's on this phone — use it on a new phone, or after a wipe.
+        </p>
+        <p class="small muted" style="margin:12px 0 6px">
+          Or keep a copy as a file on your phone, no sign-in needed. Save writes a
+          naki-pickup-backup file to your downloads; Restore reads one of those files back in.
+        </p>
         <div class="row">
           <button class="ghost grow" id="backupSave">⬇ Save a backup file</button>
           <button class="ghost grow" id="backupLoad">⬆ Restore from file</button>
+        </div>
+        <p class="small muted" style="margin:12px 0 6px">
+          Your customers, bookings, quotes and receipts are already kept on the server, not on this
+          phone, and a copy of the whole lot is filed away every night. This button hands you your
+          own copy of everything.
+        </p>
+        <div class="row">
+          <button class="ghost grow" id="exportEverything">⬇ Download all customers &amp; bookings</button>
         </div>
         <input type="file" id="backupFile" accept="application/json,.json" style="display:none" />
         <div id="backupStatus" class="small muted" style="margin-top:8px"></div>
@@ -536,14 +578,15 @@
       <summary>Map &amp; live GPS <span class="chev">›</span></summary>
       <div style="padding-top:10px">
     <div id="map"></div>
-    <button id="gpsToggle" class="ghost" style="width:100%;margin-top:8px">📍 Start live GPS</button>
+    <div class="row" style="margin-top:8px">
+      <button id="gpsToggle" class="ghost grow">📍 Start live GPS</button>
+      <button id="gpsRecentre" class="ghost" style="display:none;flex:0 0 auto" title="Jump back to your GPS dot">◎ Recentre</button>
+      <button id="mapFitRoute" class="ghost" style="display:none;flex:0 0 auto" title="Zoom out to show the whole run">⤢ Fit route</button>
+    </div>
     <div id="gpsStatus" class="small muted" style="padding:6px 4px 0">Shows your current position on the map.</div>
       </div>
     </details>
   </div>
-
-  <!-- AREA FILTER -->
-  <div class="areafilter view-panel view-today today-filter" id="areaFilter"></div>
 
   <!-- STOP LIST -->
   <div id="listWrap" class="view-panel view-today today-list"></div>
@@ -627,7 +670,15 @@ let state = loadActiveRun();
 let geocache = loadJSON(GEO, {});
 let map, markerLayer, routeLayer;
 let gpsWatchId = null, gpsMarker = null, gpsAccuracy = null;
-let areaFilterValue = "all";
+// The map NEVER chases your dot on its own. It centres once when you start live
+// GPS, then leaves the view alone so you can look ahead down the route. The two
+// buttons under the map put you back: Recentre = my dot, Fit route = whole run.
+let gpsLast = null, gpsFirstFix = false;
+// Once you've dragged or zoomed the map yourself, automatic re-fitting stops.
+// The Fit route button clears this again.
+let mapUserMoved = false, mapMoveIsOurs = false;
+// Wrap our own view changes so the user-moved detector doesn't count them.
+function mapMove(fn){ mapMoveIsOurs = true; try { fn(); } finally { mapMoveIsOurs = false; } }
 let oneAddrPicked = null;   // coords chosen from the Type-one autocomplete
 let routeStartOverride = null; // one-off GPS optimisation; never replaces the saved start
 let routeTiming = {};       // id -> {order, driveSec} cumulative drive time from start to that stop
@@ -638,6 +689,15 @@ let pendingInvoices = {};   // stop id -> built invoice PDF, waiting for the Sen
 let ownerToken = localStorage.getItem(OWNER_TOKEN_KEY) || "";
 let directBookingRows = [];
 let bookingSearchText = "";
+// Focusing one customer is its own filter rather than text typed into the search
+// box: an exact email match can't accidentally catch someone else's notes, and
+// the chip stays on screen even when the search box is hidden.
+let bookingFocusEmail = "";
+let bookingFocusName = "";
+// Which stage of the job the list is showing: all | new | scheduled | done.
+// Remembered like the other list preferences, and always visible as a lit-up
+// button with a count, so a narrowed list is never a mystery.
+let bookingStage = loadJSON("naki_booking_stage_v1", "all");
 let customerSearchText = "";
 let bookingGroupOpen = loadJSON("naki_booking_group_open_v1", {});
 let customerGroupOpen = loadJSON("naki_customer_group_open_v1", {});
@@ -650,7 +710,6 @@ let unpaidOpen = false;     // the Unpaid invoices dropdown stays as you left it
 const BANK_ACCOUNT = "06-0709-0967040-00";
 const BANK_NAME = "TRADING AS NWR";
 const WEBSITE_URL = "https://nakiwhitewareremoval.vip";
-const WEBSITE_LABEL = "nakiwhitewareremoval.vip";
 let weatherState = { key:"", towns:[], loading:false, fetchedAt:0, error:"" };
 let gmsState = { data:null, loading:false, fetchedAt:0, error:"" };
 
@@ -787,7 +846,6 @@ function showActiveRun(){
   routeStartOverride=null;
   routeTiming={};
   routeDrawVersion++;
-  areaFilterValue="all";
   pendingReceipts={};
   pendingInvoices={};
   oneAddrPicked=null;
@@ -929,9 +987,12 @@ async function ownerApi(path, options={}){
   let data = {}; try { data = await res.json(); } catch(e) {}
   if (!res.ok){
     if (res.status===401){
+      // The 30-day sign-in ran out. Say it in the backup box too, otherwise the
+      // cloud copy quietly stops and the buttons just look broken.
       ownerToken=""; localStorage.removeItem(OWNER_TOKEN_KEY);
       renderDirectBookings();
       renderCustomers();
+      refreshCloudBackupInfo();
     }
     throw new Error(data.error || "Bookings could not be loaded");
   }
@@ -985,6 +1046,44 @@ function rememberGroupOpen(root, groups, storageKey, attribute){
     };
   });
 }
+function clearBookingFocus(){ bookingFocusEmail=""; bookingFocusName=""; }
+// Where a booking sits in the job's life. "Scheduled" means it is genuinely on a
+// run right now - a booking marked ADDED_TO_RUN whose run was since deleted drops
+// back to New, because it needs putting on a run again.
+function stageOfBooking(b){
+  if (["COMPLETED","DECLINED","CANCELLED"].includes(b.status)) return "done";
+  return runContainingBooking(b.id) ? "scheduled" : "new";
+}
+const BOOKING_STAGES=[["all","All"],["new","New"],["scheduled","Scheduled"],["done","Done"]];
+function hideBookingStageTabs(){
+  const wrap=$("#bookingStageTabs"); if (wrap){ wrap.style.display="none"; wrap.innerHTML=""; }
+}
+// Counts come from everything the search and customer filters allow, not from
+// what's on screen, so each button says what you'd get by tapping it.
+function paintBookingStageTabs(rows){
+  const wrap=$("#bookingStageTabs"); if (!wrap) return;
+  const tally={all:rows.length,new:0,scheduled:0,done:0};
+  rows.forEach(b=>{ tally[stageOfBooking(b)]++; });
+  wrap.style.display="flex";
+  wrap.innerHTML=BOOKING_STAGES.map(([key,label])=>
+    `<button data-stage="${key}" class="${key===bookingStage?"on":""}">${label}<span class="n">${tally[key]}</span></button>`
+  ).join("");
+  wrap.querySelectorAll("[data-stage]").forEach(button=>button.onclick=()=>{
+    bookingStage=button.dataset.stage;
+    saveJSON("naki_booking_stage_v1",bookingStage);
+    renderDirectBookings();
+  });
+}
+// The banner that says which customer the list is narrowed to, plus the one tap
+// back to everything.
+function paintBookingFilterChip(){
+  const chip=$("#bookingFilterChip"); if (!chip) return;
+  if (!bookingFocusEmail){ chip.style.display="none"; chip.innerHTML=""; return; }
+  chip.style.display="flex";
+  chip.innerHTML=`<span class="who">Showing only <b>${esc(bookingFocusName||bookingFocusEmail)}</b></span>
+    <button class="ghost sm" id="bookingFilterClear">✕ Show all</button>`;
+  $("#bookingFilterClear").onclick=()=>{ clearBookingFocus(); renderDirectBookings(); };
+}
 // Words all have to appear somewhere in the row, in any order.
 function matchesSearch(row, text){
   if (!text) return true;
@@ -999,9 +1098,23 @@ function tidyTown(value){
   return String(value==null?"":value).replace(/[\u200B-\u200D\uFEFF]/g,"").replace(/\s+/g," ").trim();
 }
 function townKey(value){
-  return tidyTown(value).toLowerCase();
+  // Macrons (Hāwera vs Hawera) are the same town typed two ways - strip them for
+  // the grouping key only, so messages don't split into duplicate town groups.
+  const normal=tidyTown(value).toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"");
+  // These are New Plymouth suburbs, not separate pickup towns.  Keep the
+  // customer's typed address untouched, but group every spelling under the
+  // one useful run label.  "Westtown" is a common spelling of Westown.
+  const newPlymouthSuburbs=new Set([
+    "fitzroy", "westown", "westtown", "highlands park", "merrilands",
+    "vogeltown", "lower vogeltown", "brooklands", "strandon", "moturoa",
+    "spotswood", "lynmouth", "blagdon", "ferndale", "frankleigh park",
+    "hurdon", "marfell", "welbourn", "whalers gate", "kawaroa"
+  ]);
+  if (newPlymouthSuburbs.has(normal) || /\bnew plymouth\b/.test(normal)) return "new plymouth";
+  return normal;
 }
 function townLabel(value){
+  if (townKey(value)==="new plymouth") return "New Plymouth";
   const tidy=tidyTown(value);
   return tidy ? tidy.replace(/\S+/g,word=>word[0].toUpperCase()+word.slice(1).toLowerCase()) : "No town";
 }
@@ -1039,22 +1152,39 @@ function renderDirectBookings(){
   const count=$("#bookingCount");
   count.textContent=String(fresh); count.style.display=fresh ? "inline-grid" : "none";
   if (!ownerToken){
+    clearBookingFocus(); paintBookingFilterChip(); hideBookingStageTabs();
     list.innerHTML="";
     directStatus("Sign in to see customer bookings.");
     return;
   }
   const toolbar=$("#bookingToolbar"); if (toolbar) toolbar.style.display=directBookingRows.length ? "flex" : "none";
-  const search=$("#bookingSearch"); if (search) search.style.display=directBookingRows.length>5 ? "block" : "none";
+  // Keep the box on screen whenever something is typed in it, or a short list
+  // would hide the only way to clear the search that is still filtering it.
+  const search=$("#bookingSearch");
+  if (search) search.style.display=(directBookingRows.length>5 || bookingSearchText) ? "block" : "none";
   const viewToggle=$("#bookingViewToggle");
   if (viewToggle) viewToggle.textContent=bookingCompact ? "⊞ Full" : "☰ List";
   if (!directBookingRows.length){
+    clearBookingFocus(); paintBookingFilterChip(); hideBookingStageTabs();
     list.innerHTML='<div class="card"><b>No direct bookings yet.</b><p class="small muted">New customer requests will appear here automatically.</p></div>';
     directStatus("Up to date.");
     return;
   }
-  const visibleRows = directBookingRows.filter(b=>matchesSearch(b,bookingSearchText));
+  // Painted before any empty-state return below, so a filter matching nothing
+  // still leaves the "Show all" button on screen.
+  paintBookingFilterChip();
+  const searchable = directBookingRows.filter(b=>
+    matchesSearch(b,bookingSearchText) &&
+    (!bookingFocusEmail || String(b.email||"").toLowerCase()===bookingFocusEmail));
+  paintBookingStageTabs(searchable);
+  const visibleRows = searchable.filter(b=>bookingStage==="all" || stageOfBooking(b)===bookingStage);
   if (!visibleRows.length){
-    list.innerHTML='<div class="card"><b>Nothing matches that search.</b></div>';
+    const stageLabel=(BOOKING_STAGES.find(s=>s[0]===bookingStage)||[])[1]||"";
+    list.innerHTML=`<div class="card"><b>${
+      bookingStage!=="all" && searchable.length ? `Nothing in ${stageLabel} right now.`
+      : bookingFocusEmail ? "No bookings for this customer yet."
+      : "Nothing matches that search."}</b>
+      <p class="small muted">Tap another button above to see the rest.</p></div>`;
     directStatus(`0 of ${directBookingRows.length} bookings.`);
     return;
   }
@@ -1114,9 +1244,7 @@ function renderDirectBookings(){
               ? `<button class="ghost sm" data-add-direct="${esc(b.id)}">↺ Re-add to active run</button>`
               : `<button class="good sm" data-add-direct="${esc(b.id)}">Add to active run</button>`) +
             `<button class="ghost sm" data-complete-direct="${esc(b.id)}">✓ Done</button>`}
-        ${b.quoteRequired || b.quotedPrice!=null
-          ? `<button class="good sm" data-quote-direct="${esc(b.id)}">${b.quotedPrice!=null ? "✎ Change price" : "$ Send price"}</button>`
-          : ""}
+        <button class="good sm" data-quote-direct="${esc(b.id)}">${b.quotedPrice!=null ? "✎ Change price" : (b.quoteRequired ? "$ Send price" : "✎ Change price")}</button>
         ${b.photoCount ? `<button class="ghost sm" data-photos-direct="${esc(b.id)}">📷 ${b.photoCount} photo${b.photoCount===1?"":"s"}</button>` : ""}
         <button class="ghost sm" data-edit-direct="${esc(b.id)}">✎ Edit details</button>
         <button class="ghost sm" title="Delete this booking" data-delete-direct="${esc(b.id)}">✕ Delete</button>
@@ -1147,13 +1275,22 @@ function renderDirectBookings(){
   };
   const isNewBooking=b=>b.status==="NEW" || (b.status==="ADDED_TO_RUN" && !runContainingBooking(b.id));
   const previousRows = visibleRows.filter(b=>["COMPLETED","DECLINED","CANCELLED"].includes(b.status));
-  const activeRows = visibleRows.filter(b=>!["COMPLETED","DECLINED","CANCELLED"].includes(b.status));
-  const townGroups = groupByTown(activeRows);
+  // New and already-added jobs both live in their town group now - splitting new
+  // ones out into their own bucket made a town look like it had lost a booking
+  // whenever one of its jobs hadn't been added to a run yet. The 🆕 dot on each
+  // card still marks which ones are new.
+  const rest = visibleRows.filter(b=>!["COMPLETED","DECLINED","CANCELLED"].includes(b.status));
+  const townGroups = groupByTown(rest);
   let html = "";
   // A search should show what it found, not hide it inside collapsed towns.
-  const openWhenSearching = bookingSearchText ? " open" : "";
+  const narrowed = Boolean(bookingSearchText || bookingFocusEmail || bookingStage!=="all");
+  const openWhenSearching = narrowed ? " open" : "";
   townGroups.forEach(group=>{
+    // A town with a not-yet-added job stays open by default so it's obvious it's still waiting.
     const hasFresh = group.rows.some(isNewBooking);
+    // The button means the whole town, even if a search currently shows only one
+    // person from it. Count the same full set that addTownBookings will process so
+    // the number on the button is always honest.
     const addable = directBookingRows.filter(b=>
       !["COMPLETED","DECLINED","CANCELLED"].includes(b.status) &&
       (townKey(b.town)||"no town")===group.key &&
@@ -1162,7 +1299,7 @@ function renderDirectBookings(){
     const bulkAction = addable.length
       ? `<div class="town-bulk-actions"><button class="good sm" data-add-town="${esc(group.key)}">Add all ${addable.length} to active run</button><span class="small muted">Adds every waiting ${esc(group.label)} booking to ${esc(activeRunName())}.</span></div>`
       : "";
-    html += `<details class="town-group"${openAttr}><summary>${hasFresh?"?? ":"?? "}${esc(group.label)} (${group.rows.length})<span class="chev">?</span></summary>${bulkAction}${group.rows.map(bookingCard).join("")}</details>`;
+    html += `<details class="town-group"${openAttr}><summary>${hasFresh?"🆕 ":"📍 "}${esc(group.label)} (${group.rows.length})<span class="chev">›</span></summary>${bulkAction}${group.rows.map(bookingCard).join("")}</details>`;
   });
   if (previousRows.length){
     html += `<details class="town-group"${openWhenSearching}><summary>✅ Previous (${previousRows.length})<span class="chev">›</span></summary>${previousRows.map(bookingCard).join("")}</details>`;
@@ -1184,9 +1321,9 @@ function renderDirectBookings(){
   list.querySelectorAll("[data-delete-direct]").forEach(button=>button.onclick=()=>deleteDirectBooking(button.dataset.deleteDirect));
   list.querySelectorAll("[data-quote-direct]").forEach(button=>button.onclick=()=>sendBookingQuote(button.dataset.quoteDirect));
   list.querySelectorAll("[data-photos-direct]").forEach(button=>button.onclick=()=>showBookingPhotos(button.dataset.photosDirect));
-  restoreTownGroups(list,bookingGroupOpen,"naki_booking_group_open_v1",Boolean(bookingSearchText));
-  directStatus(bookingSearchText
-    ? `${visibleRows.length} of ${directBookingRows.length} bookings match.`
+  restoreTownGroups(list,bookingGroupOpen,"naki_booking_group_open_v1",narrowed);
+  directStatus(narrowed
+    ? `${visibleRows.length} of ${directBookingRows.length} bookings.`
     : `${fresh} new booking${fresh===1?"":"s"}.`);
 }
 // A customer can change their request after it is already on a run. Bring the
@@ -1291,9 +1428,21 @@ async function addDirectBooking(id,options={}){
     return {status:"already",run:existingRun};
   }
   const row={
-    submission_id:b.id, first_name:b.firstName, last_name:b.lastName, phone:b.phone, email:b.email,
-    street:b.streetAddress, town:b.town, area:b.area, appliances:b.items,
-    additional_info:b.additionalInfo, referral_source:b.referralSource, amount:b.total, status:"NEW"
+    submission_id:b.id,
+    first_name:b.firstName,
+    last_name:b.lastName,
+    phone:b.phone,
+    email:b.email,
+    street:b.streetAddress,
+    town:b.town,
+    area:b.area,
+    appliances:b.items,
+    additional_info:b.additionalInfo,
+    referral_source:b.referralSource,
+    rural_option:b.ruralOption||"",
+    // A quoted price beats the website total — that's the figure actually agreed.
+    amount:bookingPriceFor(b),
+    status:"NEW"
   };
   try{
     const location=await geocode(fullAddr(row));
@@ -1309,7 +1458,7 @@ async function addDirectBooking(id,options={}){
       b.status="ADDED_TO_RUN";
     }
     if (renderAfter) renderDirectBookings();
-    if (announce) flash(`? ${b.firstName || "Booking"} added to ${activeRunName()}`);
+    if (announce) flash(`✓ ${b.firstName || "Booking"} added to ${activeRunName()}`);
     return {status:"added"};
   }catch(e){
     if (updateStatus) directStatus(e.message,true);
@@ -1321,7 +1470,11 @@ async function addTownBookings(key,button){
     !["COMPLETED","DECLINED","CANCELLED"].includes(b.status) &&
     (townKey(b.town)||"no town")===key &&
     !runContainingBooking(b.id));
-  if (!waiting.length){ directStatus("Every booking in that town is already assigned to a pickup run."); renderDirectBookings(); return; }
+  if (!waiting.length){
+    directStatus("Every booking in that town is already assigned to a pickup run.");
+    renderDirectBookings();
+    return;
+  }
   const label=townLabel(waiting[0].town);
   button.disabled=true;
   let added=0,needsAddress=0,failed=0;
@@ -1418,13 +1571,14 @@ $("#ownerCodeVerify").onclick=async()=>{
     await loadDirectBookings(true);
     await syncPastBulkBookingDates();
     refreshCloudBackupInfo();
+    pushCloudBackup(true);            // signed in again — get a copy up straight away
     // A phone that signed in with nothing on it is most likely a restore — say so.
     offerCloudRestoreIfEmpty();
   }catch(e){ $("#ownerLoginStatus").textContent=e.message; }
   finally{ button.disabled=false; }
 };
 $("#ownerCode").addEventListener("keydown",event=>{ if(event.key==="Enter"){event.preventDefault();$("#ownerCodeVerify").click();} });
-$("#ownerLogout").onclick=()=>{ownerToken="";localStorage.removeItem(OWNER_TOKEN_KEY);directBookingRows=[];customerRows=[];renderDirectBookings();renderCustomers();};
+$("#ownerLogout").onclick=()=>{ownerToken="";localStorage.removeItem(OWNER_TOKEN_KEY);directBookingRows=[];customerRows=[];renderDirectBookings();renderCustomers();refreshCloudBackupInfo();};
 $("#directRefresh").onclick=()=>loadDirectBookings(true);
 $("#customersRefresh").onclick=()=>loadCustomers(true);
 $("#bookingSearch").addEventListener("input",event=>{ bookingSearchText=event.target.value.trim().toLowerCase(); renderDirectBookings(); });
@@ -1475,16 +1629,19 @@ async function editDirectBooking(id){
     directStatus("Details saved.");
   }catch(e){ directStatus(e.message,true); }
 }
-// Put a real price on a "quote needed" job and email it to the customer.
+// Set or change the price on any booking — a "quote needed" job or one that
+// already has a fixed total. Emailing the customer is asked, not assumed, so a
+// small correction doesn't fire off a surprise email.
 async function sendBookingQuote(id){
   const b=directBookingRows.find(row=>row.id===id); if(!b) return;
   const who=[b.firstName,b.lastName].filter(Boolean).join(" ")||"this pickup";
+  const seed=b.quotedPrice!=null ? b.quotedPrice : (b.quoteRequired ? null : Number(b.total||0));
   const entered=await openEditForm({
     title:`$ Price for ${who}`,
-    note:"They get an email with this price and it shows in their account.",
-    saveLabel:"Send price",
+    note:"This price shows in their account and loads into the receipt and invoice.",
+    saveLabel:"Save price",
     fields:[
-      { key:"amount", label:"Price ($)", value:b.quotedPrice!=null?String(b.quotedPrice):"", inputmode:"decimal",
+      { key:"amount", label:"Price ($)", value:seed!=null?String(seed):"", inputmode:"decimal",
         validate:v=>parseMoney(v)===null ? "Enter the price as a number." : "" },
       { key:"note", label:"Short note for the customer (optional)", type:"textarea", rows:2, value:b.quoteNote||"" }
     ]
@@ -1492,16 +1649,21 @@ async function sendBookingQuote(id){
   if (!entered) return;
   const amount=parseMoney(entered.amount);
   const note=entered.note;
-  directStatus("Sending the price…");
+  const notify=goodEmail(b.email) && confirm(`Email ${who} the price of $${amount.toFixed(2)}?\n\nTap Cancel to just save it quietly.`);
+  directStatus(notify ? "Sending the price…" : "Saving the price…");
   try{
     const data=await ownerApi(`/owner/bookings/${encodeURIComponent(id)}`,{
       method:"PATCH",
-      body:JSON.stringify({status:b.status,quoteAmount:amount,quoteNote:String(note).trim(),notifyCustomer:true})
+      body:JSON.stringify({status:b.status,quoteAmount:amount,quoteNote:String(note).trim(),notifyCustomer:notify})
     });
     const index=directBookingRows.findIndex(row=>row.id===id);
     if (index>=0) directBookingRows[index]={...directBookingRows[index],...data.booking};
+    // Carry the new price through to the pickup card if it's already on a run.
+    if (index>=0) syncBookingChangesIntoRuns([directBookingRows[index]]);
     renderDirectBookings();
-    directStatus(data.quoteEmailed===false
+    directStatus(!notify
+      ? `Price saved for ${who}.`
+      : data.quoteEmailed===false
       ? "Price saved, but the email did not send — tell them another way."
       : `Price sent to ${who}.`);
   }catch(e){ directStatus(e.message,true); }
@@ -1578,12 +1740,20 @@ function customerStatus(message, error=false){
 function renderCustomers(){
   const list=$("#customerList"); if(!list) return;
   if (!ownerToken){
-    list.innerHTML="";
-    customerStatus("Sign in on the Bookings tab to see your customers.");
+    // Telling someone to go and find another tab is a dead end - hand them the
+    // button instead. Sign-in lives on Bookings because that's where the card is.
+    customerStatus("");
+    list.innerHTML=`<div class="card"><b>Sign in to see your customers.</b>
+      <p class="small muted">The same owner sign-in covers bookings and customers.</p>
+      <button id="customerSignInJump" style="width:100%;margin-top:10px">Go to sign-in</button></div>`;
+    $("#customerSignInJump").onclick=()=>setAppView("bookings");
     return;
   }
   const toolbar=$("#customerToolbar"); if (toolbar) toolbar.style.display=customerRows.length ? "flex" : "none";
-  const search=$("#customerSearch"); if (search) search.style.display=customerRows.length>5 ? "block" : "none";
+  // Same rule as the bookings list: a box with something typed in it has to stay
+  // on screen, or a short list hides the only way to clear the search.
+  const search=$("#customerSearch");
+  if (search) search.style.display=(customerRows.length>5 || customerSearchText) ? "block" : "none";
   const viewToggle=$("#customerViewToggle");
   if (viewToggle) viewToggle.textContent=customerCompact ? "⊞ Full" : "☰ List";
   if (!customerRows.length){
@@ -1612,7 +1782,9 @@ function renderCustomers(){
         ${last?`<div class="direct-meta"><span>Last booking: ${esc(last)}</span></div>`:""}
         ${c.accessNotes?`<div class="small muted">📝 ${esc(c.accessNotes)}</div>`:""}
         <div class="direct-actions">
+          ${c.phone?`<a class="ghost sm" href="sms:${esc(String(c.phone).replace(/[^\d+]/g,""))}">💬 Text</a>`:""}
           ${c.bookings ? `<button class="ghost sm" data-customer-bookings="${esc(c.email)}">📋 Their bookings</button>` : ""}
+          <button class="ghost sm" title="Edit this customer's details" data-edit-customer="${esc(c.id)}">✎ Edit</button>
           <button class="ghost sm" title="Delete this customer" data-delete-customer="${esc(c.id)}">✕ Delete</button>
         </div>`;
       if (!customerCompact){
@@ -1637,11 +1809,16 @@ function renderCustomers(){
     return `<details class="town-group"${customerSearchText?" open":""}><summary>📍 ${esc(group.label)} (${group.rows.length})<span class="chev">›</span></summary>${cards}</details>`;
   }).join("");
   list.querySelectorAll("[data-delete-customer]").forEach(button=>button.onclick=()=>deleteCustomer(button.dataset.deleteCustomer));
+  list.querySelectorAll("[data-edit-customer]").forEach(button=>button.onclick=()=>editCustomer(button.dataset.editCustomer));
   // Jump to the Bookings tab already filtered to that person.
   list.querySelectorAll("[data-customer-bookings]").forEach(button=>button.onclick=()=>{
-    const address=String(button.dataset.customerBookings||"");
-    bookingSearchText=address.toLowerCase();
-    const input=$("#bookingSearch"); if (input){ input.value=address; input.style.display="block"; }
+    const email=String(button.dataset.customerBookings||"").toLowerCase();
+    const row=customerRows.find(c=>String(c.email||"").toLowerCase()===email);
+    bookingFocusEmail=email;
+    bookingFocusName=(row && [row.firstName,row.lastName].filter(Boolean).join(" ")) || email;
+    // Any leftover typed search would narrow this further for no obvious reason.
+    bookingSearchText="";
+    const input=$("#bookingSearch"); if (input) input.value="";
     setAppView("bookings");
     renderDirectBookings();
   });
@@ -1659,6 +1836,30 @@ async function deleteCustomer(id){
     customerRows=customerRows.filter(row=>row.id!==id);
     renderCustomers();
     flash(`✓ ${name} deleted`);
+  }catch(e){ customerStatus(e.message,true); }
+}
+async function editCustomer(id){
+  const c=customerRows.find(row=>row.id===id); if(!c) return;
+  const result = await openEditForm({
+    title:"✎ Edit customer",
+    note:"Email can't be changed here — it's how they sign in and how bookings are matched to them.",
+    saveLabel:"Save customer",
+    fields:[
+      { key:"firstName", label:"First name", value:c.firstName, half:true },
+      { key:"lastName",  label:"Last name",  value:c.lastName,  half:true },
+      { key:"phone", label:"Phone", value:c.phone, type:"tel", inputmode:"tel" },
+      { key:"streetAddress", label:"Street address", value:c.streetAddress },
+      { key:"town", label:"Town", value:c.town, half:true },
+      { key:"area", label:"Area", value:c.area, half:true },
+      { key:"accessNotes", label:"Access notes", type:"textarea", rows:2, value:c.accessNotes||"" }
+    ]
+  });
+  if (!result) return;                        // cancelled — leave the customer untouched
+  try{
+    const data=await ownerApi(`/owner/customers/${encodeURIComponent(id)}`,{method:"PUT",body:JSON.stringify(result)});
+    customerRows=customerRows.map(row=>row.id===id ? {...row,...data.customer} : row);
+    renderCustomers();
+    flash(`✓ ${[data.customer.firstName,data.customer.lastName].filter(Boolean).join(" ")||"Customer"} updated`);
   }catch(e){ customerStatus(e.message,true); }
 }
 async function loadCustomers(showLoading=false){
@@ -1841,13 +2042,22 @@ function knownPickupKeys(){
   (state.unpaid||[]).forEach(s=>pickupKeys(s).forEach(k=>known.add(k)));
   return known;
 }
+// Same keys, but pointing at the stop itself, so a re-import can top up a
+// pickup that's already on a run instead of only skipping it.
+function knownPickupStops(){
+  const map = new Map();
+  allRunStates().forEach(run=>{
+    (run.stops||[]).concat(run.bad||[]).forEach(s=>pickupKeys(s).forEach(k=>{ if(!map.has(k)) map.set(k,s); }));
+  });
+  return map;
+}
 
 // Sheet loads are additive. Existing stops stay put and genuine repeats are
 // skipped, so loading another tab/date range cannot wipe Today's run.
 
 // Add stops from a parsed file/paste (keeps coords already present).
 function addFileStops(rows, srcName, setStatus, extraNote){
-  let added = 0, parked = 0, skipped = 0, toGeocode = [];
+  let added = 0, parked = 0, skipped = 0, priced = 0, toGeocode = [];
   // A Google Sheet is being added to the active run. An older copy of the same
   // customer in another named run or in Unpaid must not make this row disappear
   // from Today. Still dedupe against this run so loading the sheet twice is safe.
@@ -1856,6 +2066,9 @@ function addFileStops(rows, srcName, setStatus, extraNote){
   const known = sheetImport
     ? new Set(activeStops.flatMap(stop=>pickupKeys(stop)))
     : knownPickupKeys();
+  const existing = sheetImport
+    ? new Map(activeStops.flatMap(stop=>pickupKeys(stop).map(key=>[key,stop])))
+    : knownPickupStops();
   const status = setStatus || setFileStatus;
   const note = extraNote || "";
   rows.forEach(r => {
@@ -1868,6 +2081,7 @@ function addFileStops(rows, srcName, setStatus, extraNote){
               : (r.appliances ? String(r.appliances).split(/[;|]/).map(x=>x.trim()).filter(Boolean) : []),
       additional_info: r.additional_info||"",
       referral_source: r.referral_source||"",
+      rural_option: r.rural_option||"",
       lat: r.lat!=null && r.lat!=="" ? +r.lat : null,
       lng: r.lng!=null && r.lng!=="" ? +r.lng : null,
       amount: r.amount!=null && r.amount!=="" && Number.isFinite(+r.amount) ? +r.amount : null,
@@ -1875,7 +2089,13 @@ function addFileStops(rows, srcName, setStatus, extraNote){
       src: srcName==="Direct booking" ? "direct" : "sheet" // direct bookings stay until Woody removes them
     };
     const keys = pickupKeys(s);
-    if (keys.some(k => known.has(k))){ skipped++; return; }
+    if (keys.some(k => known.has(k))){
+      // Already on a run. Still worth one thing: if the sheet has a price and the
+      // stop on the phone doesn't, fill it in rather than leaving "No price".
+      const hit = keys.map(k => existing.get(k)).find(Boolean);
+      if (hit && hit.amount==null && s.amount!=null){ hit.amount = s.amount; priced++; }
+      skipped++; return;
+    }
     keys.forEach(k => known.add(k)); // Prevent repeats inside one sheet too.
     if (s.lat!=null && s.lng!=null && !isNaN(s.lat) && !isNaN(s.lng)){ state.stops.push(s); added++; }
     else if (s.street && (s.town||"").toLowerCase()!=="unknown"){ toGeocode.push(s); }
@@ -1916,7 +2136,8 @@ function addFileStops(rows, srcName, setStatus, extraNote){
       ? `✓ Added ${total} new stop${total!==1?'s':''}${src}` +
         (skipped ? ` — skipped ${skipped} already on your list` : "") +
         (parkedNow ? `, ${parkedNow} need an address below` : ".")
-      : `✓ No new stops${src} — ${skipped} already on your list.`) + note;
+      : `✓ No new stops${src} — ${skipped} already on your list.`) +
+      (priced ? ` · filled in the price on ${priced} pickup${priced!==1?'s':''}` : "") + note;
     status(msg); flash(msg);
     drawRoute();
     refreshWeather(true);
@@ -2016,7 +2237,12 @@ const HEADER_ALIASES = {
   lat:["lat","latitude"],
   lng:["lng","lon","long","longitude"],
   status:["status","state"],
-  submission_id:["submission_id","sub id","submission id"]
+  submission_id:["submission_id","sub id","submission id"],
+  // The sheet calls the price "Total". Without this every imported stop showed
+  // "No price" and the receipt/invoice had to be typed in by hand.
+  amount:["total","amount","price","cost","quote","job total","total price"],
+  // Feeds the travel fee when a price has to be worked out from the items.
+  rural_option:["if rural","rural","rural option","travel","travel fee"]
 };
 function mapRow(raw){
   const low = {};
@@ -2082,16 +2308,104 @@ function mapRow(raw){
     additional_info: pick("additional_info"),
     referral_source: pick("referral_source"),
     lat: pick("lat"), lng: pick("lng"),
+    // "$40", "40.00" and "" all land safely — addFileStops drops anything unusable.
+    amount: String(pick("amount")||"").replace(/[^0-9.]/g,""),
+    rural_option: pick("rural_option"),
     status: pick("status")
   };
 }
 function normalizeRows(rows){ return (rows||[]).map(mapRow); }
 
+/* ---------- Working out a price when the sheet doesn't have one ---------- */
+// Same list and same sums the website quotes with (worker/src/customer.js):
+// [first one of its kind, each extra one]. The dearest first-item uplift is
+// added once, then every item counts at its "extra" rate, then the travel fee.
+const ITEM_PRICES = {
+  "fridge or upright freezer":[2000,1000], "fridge/freezer":[2000,1000],
+  "large or french-door fridge":[3000,2000], "bar fridge":[2000,1000],
+  "chest freezer (small or medium)":[2000,1000], "large chest freezer (over 1.5 m)":[3000,2000],
+  "oven or stove":[2000,1000], "cooktop":[1000,0], "small benchtop oven":[1000,0],
+  "microwave":[1000,0], "dishwasher":[2000,1000],
+  "front-loading washing machine":[2000,1000], "top-loading washing machine":[2000,1000],
+  "dryer":[2000,1000], "metal wash tub":[2000,1000],
+  "treadmill":[2000,1500], "exercise bike":[2000,1500], "elliptical or cross-trainer":[2000,1500],
+  "rowing machine":[2000,1500], "stair climber or stepper":[2000,1500],
+  "home gym or multi-gym":[3000,2500], "pilates reformer":[2000,1500],
+  "lawn mower":[2000,1000], "push bike":[1000,1000],
+  "bbq (2-4 burners)":[2000,1000], "bbq (5 or more burners)":[3000,2000],
+  "gas bottle":[1000,1000], "cast-iron bath":[3000,2000],
+  "flat-screen tv":[2000,1000], "old box tv (crt)":[4500,3500]
+};
+// The sheet and the older Jotform forms word things differently ("Refrigerator/
+// Upright Freezer", "Washing Machine (Top Loading)"), so match on what it IS
+// rather than on the exact wording. Anything unrecognised — Other, "stray
+// scrap", junk from a jumbled row — adds nothing, exactly as Woody asked.
+function itemPrice(name){
+  const t = String(name||"").toLowerCase().trim();
+  if (!t) return null;
+  if (ITEM_PRICES[t]) return ITEM_PRICES[t];
+  const has = (...words) => words.every(w => t.includes(w));
+  if (t.includes("chest freezer")) return has("large") || t.includes("1.5") ? [3000,2000] : [2000,1000];
+  if (t.includes("fridge") || t.includes("freezer") || t.includes("refrigerat")){
+    if (t.includes("large") || t.includes("french")) return [3000,2000];
+    return [2000,1000];                              // bar fridge included
+  }
+  if (t.includes("washing machine") || t.includes("wash tub")) return [2000,1000];
+  if (t.includes("dryer")) return [2000,1000];
+  if (t.includes("dishwasher")) return [2000,1000];
+  if (t.includes("benchtop")) return [1000,0];
+  if (t.includes("oven") || t.includes("stove") || t.includes("range")) return [2000,1000];
+  if (t.includes("cooktop") || t.includes("hob")) return [1000,0];
+  if (t.includes("microwave")) return [1000,0];
+  if (t.includes("home gym") || t.includes("multi-gym")) return [3000,2500];
+  if (t.includes("treadmill") || t.includes("elliptical") || t.includes("cross-trainer") ||
+      t.includes("rowing") || t.includes("stair climber") || t.includes("stepper") ||
+      t.includes("pilates") || t.includes("exercise bike")) return [2000,1500];
+  if (t.includes("mower")) return [2000,1000];
+  if (t.includes("bike") || t.includes("bicycle")) return [1000,1000];
+  if (t.includes("bbq") || t.includes("barbecue")) return /5|6|7|8|more/.test(t) ? [3000,2000] : [2000,1000];
+  if (t.includes("gas bottle")) return [1000,1000];
+  if (t.includes("bath")) return [3000,2000];
+  if (t.includes("crt") || t.includes("box tv")) return [4500,3500];
+  if (t.includes("tv") || t.includes("television")) return [2000,1000];
+  return null;
+}
+// Travel fee from whatever the form recorded. Over 10 km is a "contact us" job,
+// so nothing is added — same as the website.
+function ruralFee(text){
+  const t = String(text||"").toLowerCase();
+  if (!t) return 0;
+  if (t.includes("more than 10") || t.includes("over 10")) return 0;
+  if (/6\s*-\s*10|between\s*5\s*km\s*and\s*10|6 to 10|outlying|add \$10/.test(t)) return 1000;
+  if (/up to 5|add \$5|\brural\b/.test(t)) return 500;
+  return 0;
+}
+// Returns dollars, or null when nothing on the job can be priced.
+function estimateStopPrice(s){
+  let extras = 0, uplift = 0, counted = 0;
+  (s.appliances||[]).slice(0,10).forEach(name => {
+    const p = itemPrice(name);
+    if (!p) return;                                  // Other / unknown — adds nothing
+    extras += p[1];
+    uplift = Math.max(uplift, p[0] - p[1]);
+    counted++;
+  });
+  if (!counted) return null;
+  return (extras + uplift + ruralFee(s.rural_option || s.travel_option || "")) / 100;
+}
+// The price to show and to load into a receipt: what Woody set, else the estimate.
+function stopPrice(s){
+  if (!s) return null;
+  if (s.amount!=null) return Number(s.amount);
+  if (s.invoiceAmount!=null) return Number(s.invoiceAmount);
+  if (s.receiptAmount!=null) return Number(s.receiptAmount);
+  return estimateStopPrice(s);
+}
+
 /* ---------- Route optimisation (nearest-neighbour + 2-opt) ---------- */
 function routeStops(){
-  // Pending stops with coords, honouring the area filter, in current order.
-  return state.stops.filter(s => s.status!=="DONE" && isFinite(s.lat) && isFinite(s.lng) &&
-    (areaFilterValue==="all" || (s.area||"")===areaFilterValue));
+  // Pending stops with coords, in current order.
+  return state.stops.filter(s => s.status!=="DONE" && isFinite(s.lat) && isFinite(s.lng));
 }
 function startPoint(){ return routeStartOverride || state.start || NP; }
 function endPoint(){ return state.end || (state.roundTrip ? startPoint() : null); }
@@ -2159,6 +2473,13 @@ function initMap(){
     { maxZoom:19, attribution:"© OpenStreetMap" }).addTo(map);
   markerLayer = L.layerGroup().addTo(map);
   routeLayer  = L.layerGroup().addTo(map);
+  // Any drag or zoom you do yourself means "let me look where I want" - after that
+  // nothing repositions the map until you tap Recentre or Fit route.
+  map.on("movestart zoomstart",()=>{
+    if (mapMoveIsOurs) return;
+    mapUserMoved=true;
+    paintMapButtons();
+  });
 }
 function pinIcon(label, area, isStart){
   const bg = isStart ? "#fff" : (AREA_HEX[area]||AREA_HEX[""]);
@@ -2190,7 +2511,9 @@ async function drawRoute(){
     L.marker([end.lat,end.lng], { icon: pinIcon("E","",true) }).bindPopup("End").addTo(markerLayer);
     bounds.push([end.lat,end.lng]);
   }
-  if (bounds.length) map.fitBounds(bounds, { padding:[30,30], maxZoom:13 });
+  // Only auto-fit while you haven't taken hold of the map. This is what used to
+  // yank the view back mid-run every time the data refreshed.
+  if (bounds.length && !mapUserMoved) mapMove(()=>map.fitBounds(bounds, { padding:[30,30], maxZoom:13 }));
   if (!pts.length){ updateStats(0); routeTiming = {}; onTimingChanged(); return; }
 
   // Try OSRM for a real road line + distance; fall back to straight lines.
@@ -2281,7 +2604,7 @@ function computedTownWindows(){
   const svc = stopServiceMin();
   const out = {};
   scheduleStopsInOrder().forEach(s=>{
-    const key = ((s.town||s.area||"").trim() || "your area").toLowerCase();
+    const key = townKey(s.town||s.area) || "your area";
     const arrive = stopArriveMin(routeTiming[s.id]);
     if (!out[key]) out[key] = { first:arrive, last:arrive };
     else { out[key].first = Math.min(out[key].first, arrive); out[key].last = Math.max(out[key].last, arrive); }
@@ -2307,7 +2630,7 @@ function reminderTowns(){
   const push = s => {
     // Tidied, so a customer's reminder never reads "New plymouth".
     const town = townLabel(s.town||s.area).replace(/^No town$/,"Your area");
-    const key = town.toLowerCase();
+    const key = townKey(s.town||s.area) || "your area";
     if (!seen.has(key)){ seen.add(key); out.push({ town, key }); }
   };
   scheduleStopsInOrder().forEach(push);
@@ -2339,7 +2662,6 @@ function updateStats(km, mins){
 
 function render(){
   renderRunSwitcher();
-  renderAreaFilter();
   renderList();
   renderContacts();
   renderBad();
@@ -2362,9 +2684,8 @@ function renderList(){
     return;
   }
 
-  const inArea = s => areaFilterValue==="all" || (s.area||"")===areaFilterValue;
-  const pending = state.stops.filter(s => s.status!=="DONE" && inArea(s));
-  const done    = state.stops.filter(s => s.status==="DONE" && inArea(s));
+  const pending = state.stops.filter(s => s.status!=="DONE");
+  const done    = state.stops.filter(s => s.status==="DONE");
   // First not-done stop = the "next" highlight.
   const nextId = (pending.find(s => s.lat!=null) || pending[0] || {}).id;
 
@@ -2383,9 +2704,17 @@ function renderList(){
     const userNote = s.note ? `<div class="usernote">✏️ ${esc(s.note)}</div>` : "";
     const noteBtn  = `<button class="ghost sm" onclick="editNote('${s.id}')">✏️ ${s.note?'Edit note':'Note'}</button>`;
     const editBtn  = `<button class="ghost sm" onclick="editStop('${s.id}')">✎ Edit pickup</button>`;
+    // The agreed price, right on the card. Changing it lives in Edit pickup.
+    // No price set? Work one out from the items and the travel fee, marked "est"
+    // so it's obvious it was calculated rather than agreed.
+    const shownAmt = stopPrice(s);
+    const isEstimate = s.amount==null && s.invoiceAmount==null && s.receiptAmount==null && shownAmt!=null;
+    const priceTag = shownAmt!=null
+      ? `<span class="pricetag${isEstimate?' est':''}">$${Number(shownAmt).toFixed(2)}${isEstimate?' est':''}</span>`
+      : `<span class="pricetag none">No price</span>`;
     const phoneLine = s.phone
-      ? `<div class="stopphone">?? <a href="tel:${esc(String(s.phone).replace(/[^\d+]/g,""))}">${esc(s.phone)}</a></div>`
-      : `<div class="stopphone missing">?? No mobile number</div>`;
+      ? `<div class="stopphone">📱 <a href="tel:${esc(String(s.phone).replace(/[^\d+]/g,""))}">${esc(s.phone)}</a></div>`
+      : `<div class="stopphone missing">📱 No mobile number</div>`;
     const phone    = s.phone ? `<button class="ghost sm" onclick="callStop('${s.id}')">📞 Call</button>` : "";
     const textBtn  = s.phone ? `<button class="ghost sm" onclick="textStop('${s.id}')">💬 Text</button>` : "";
     const emailBtn = goodEmail(s.email) ? `<button class="ghost sm" onclick="gmailStop('${s.id}')">Email</button>` : "";
@@ -2410,7 +2739,7 @@ function renderList(){
       <div class="stopbody">
         <div class="name">${esc(fullName(s)) || esc(fullAddr(s))} ${tag}${asapTag}${invoicedTag}</div>
         ${phoneLine}
-        <div class="addr">${esc(fullAddr(s))}</div>
+        <div class="addr">${esc(fullAddr(s))} ${priceTag}</div>
         ${navDiffers(s)?`<div class="addr" style="color:#ffd08a">🧭 Navigates to ${esc(s.geoLabel)}</div>`:""}
         ${apps?`<div class="apps">${apps}</div>`:""}
         ${formNote}
@@ -2429,7 +2758,7 @@ function renderList(){
     (done.length ? `<div class="sectitle">Completed (${done.length})</div><div id="doneList">${doneRows}</div>` : "");
 
   // Drag only the pending list. Slot the reordered ids back into state.stops,
-  // leaving DONE stops and any area-filtered-out stops exactly where they are.
+  // leaving DONE stops exactly where they are.
   if (window.Sortable){
     const pl = $("#pendingList");
     Sortable.create(pl, {
@@ -2512,6 +2841,7 @@ function renderUnpaid(){
           : `<button class="ghost sm" onclick="openRunForUnpaid('${linkedRun.id}')">📍 Go to ${esc(linkedRun.name)}</button>`)
       : `<button class="good sm" onclick="addUnpaidToRun('${s.id}')">↩ Add to active run</button>`;
     const del = `<button class="ghost sm" title="Remove from this list" onclick="removeUnpaid('${s.id}')">✕</button>`;
+    const priceB = `<button class="ghost sm" onclick="editStop('${s.id}')">✎ Edit pickup</button>`;
     const meta = [
       s.invoiceAmount!=null ? `$${Number(s.invoiceAmount).toFixed(2)}` : "",
       s.invoicedAt ? `invoiced ${s.invoicedAt}` : "",
@@ -2523,7 +2853,7 @@ function renderUnpaid(){
         <div class="name">${esc(fullName(s)) || esc(fullAddr(s))} ${s.paid?'':'<span class="asaptag" style="background:#c0392b">UNPAID</span>'}</div>
         <div class="addr">${esc(fullAddr(s))}</div>
         ${meta?`<div class="small muted" style="margin:2px 0">${meta}</div>`:""}
-        <div class="stopbtns">${s.paid ? `${recB}${emailB}${del}` : `${runB}${paidB}${recB}${invB}${phone}${textB}${emailB}${del}`}</div>
+        <div class="stopbtns">${s.paid ? `${recB}${priceB}${emailB}${del}` : `${runB}${paidB}${recB}${invB}${priceB}${phone}${textB}${emailB}${del}`}</div>
       </div>
     </div>`;
   };
@@ -2642,6 +2972,8 @@ async function customerProfileLink(s){
   }
   const stillFresh = s.profileInviteUrl && s.profileInviteEmail===address &&
     Number(s.profileInviteCreatedAt||0) > Date.now() - 80*24*60*60*1000;
+  // Minting a private link needs the owner sign-in. Without it the invoice or
+  // receipt still carries the plain account link.
   if (!ownerToken){
     if (stillFresh && s.historySyncToken){
       s.profileHasAccount=false;
@@ -2873,18 +3205,9 @@ function fitMessagePreview(){
   ta.style.height = Math.min(ta.scrollHeight + 4, 420) + "px";
 }
 
-function renderAreaFilter(){
-  const areas = [...new Set(state.stops.map(s=>s.area||"").filter(Boolean))];
-  const el = $("#areaFilter");
-  if (areas.length < 2){ el.innerHTML=""; return; }
-  const btn = (v,label)=>`<button class="${areaFilterValue===v?'on':''}" onclick="setAreaFilter('${v}')">${label}</button>`;
-  el.innerHTML = btn("all","All areas") + areas.map(a=>btn(a,a)).join("");
-}
-
 function esc(s){ return String(s==null?"":s).replace(/[&<>"]/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
 
 /* ---------- Per-stop actions (exposed for inline onclick) ---------- */
-window.setAreaFilter = v => { areaFilterValue=v; render(); drawRoute(); };
 window.setConfirmationDate = value => {
   state.confirmationDate = value;
   delete state.confirmationDayText;
@@ -3030,8 +3353,8 @@ window.editStop = async id => {
       { key:"first_name", label:"First name", value:s.first_name, half:true },
       { key:"last_name",  label:"Last name",  value:s.last_name,  half:true },
       { key:"phone", label:"Phone", value:s.phone, type:"tel", inputmode:"tel", half:true },
-      { key:"amount", label:"Price ($)", value:s.amount!=null?String(s.amount):"", inputmode:"decimal", half:true,
-        placeholder:"Leave blank for none", validate:validMoney },
+      { key:"amount", label:"Price ($)", value:stopPrice(s) ?? "",
+        inputmode:"decimal", half:true, placeholder:"Leave blank for none", validate:validMoney },
       { key:"email", label:"Email", value:s.email, type:"email", inputmode:"email", validate:validEmail },
       { key:"street", label:"Street address", value:s.street },
       { key:"town", label:"Town", value:s.town },
@@ -3045,8 +3368,17 @@ window.editStop = async id => {
   s.phone=result.phone; s.email=result.email;
   s.street=result.street; s.town=result.town;
   s.appliances=splitItems(result.appliances);
-  s.amount=parseMoney(result.amount);
   s.note=result.note;
+  // Price changed? Tear up any built-but-unsent receipt/invoice — otherwise the
+  // PDF still shows the old figure — and re-seed the next one from the new price.
+  const newAmount=parseMoney(result.amount);
+  if (newAmount!==s.amount){
+    s.amount=newAmount;
+    s.invoiceAmount = s.invoiceSent ? newAmount : null;
+    s.receiptAmount = null;
+    delete pendingReceipts[id];
+    delete pendingInvoices[id];
+  }
   save(); render();
   syncExternalBooking(s);
 };
@@ -3117,30 +3449,6 @@ async function loadReceiptLogo(){
   return receiptLogo;
 }
 loadReceiptLogo();   // warm it up at boot so the first Receipt tap is instant
-function addProfileMessage(doc, y, W, M, profileUrl=`${WEBSITE_URL}/account.html`, hasProfile=null){
-  const copy=hasProfile===true
-    ? { title:"Your online account is ready", message:"Sign in to view your pickup history and every receipt or invoice we've sent you.", link:"View your account" }
-    : hasProfile===false
-      ? { title:"Set up your free online account", message:"Save your addresses, request your next pickup in seconds, and keep every receipt and invoice in one place.", link:"Set up your account" }
-      : { title:"Your account page", message:"Sign in if you already have an account, or set up a free account if you have not made one yet.", link:"Open the account page" };
-  doc.setFont("helvetica", "normal"); doc.setFontSize(9);
-  const message=doc.splitTextToSize(copy.message, W-M*2-10);
-  const lineH=4.6, boxH=13+message.length*lineH+10;
-  if (y+boxH>190){ doc.addPage(); y=18; }
-  doc.setFillColor(248, 250, 252);
-  doc.setDrawColor(244, 135, 34);
-  doc.roundedRect(M, y, W-M*2, boxH, 3, 3, "FD");
-  doc.setTextColor(244, 135, 34);
-  doc.setFont("helvetica", "bold"); doc.setFontSize(11);
-  doc.text(copy.title, M+5, y+7);
-  doc.setTextColor(45, 55, 65);
-  doc.setFont("helvetica", "normal"); doc.setFontSize(9);
-  doc.text(message, M+5, y+13);
-  doc.setTextColor(0, 98, 170);
-  doc.setFont("helvetica", "bold"); doc.setFontSize(10);
-  doc.textWithLink(copy.link, M+5, y+13+message.length*lineH+6, {url:profileUrl});
-  return y+boxH;
-}
 function addPdfFooters(doc, W, M){
   const pages=doc.getNumberOfPages();
   for(let page=1;page<=pages;page++){
@@ -3150,7 +3458,24 @@ function addPdfFooters(doc, W, M){
     if(pages>1) doc.text(`${page} / ${pages}`, W-M, 200, {align:"right"});
   }
 }
-async function buildReceiptPdf(s, amt, profileUrl){
+function addProfileMessage(doc, y, W, M, s){
+  const hasProfile=s.profileHasAccount;
+  const message=hasProfile===true
+    ? "Your online account is already set up. Sign in to view your pickup history and every receipt or invoice we've sent you."
+    : hasProfile===false
+      ? "Set up your free online account to save your addresses, request your next pickup in seconds, and keep every receipt and invoice in one place."
+      : "Open your account page to sign in, or set up a free account if you have not made one yet.";
+  doc.setFillColor(244, 247, 249);
+  doc.roundedRect(M, y, W-M*2, 28, 2, 2, "F");
+  doc.setTextColor(30, 30, 30);
+  doc.setFont("helvetica", "normal"); doc.setFontSize(9);
+  const lines=doc.splitTextToSize(message, W-M*2-10);
+  doc.text(lines, M+5, y+7);
+  doc.setTextColor(0, 98, 170);
+  doc.setFont("helvetica", "bold"); doc.setFontSize(10);
+  doc.textWithLink(hasProfile===true ? "View your account" : "Open the account page", M+5, y+23, {url:s.profileUrl||`${WEBSITE_URL}/account.html`});
+}
+async function buildReceiptPdf(s, amt){
   const { jsPDF } = window.jspdf;
   const doc = new jsPDF({ unit:"mm", format:"a5" });
   const W = 148, M = 14;
@@ -3196,12 +3521,12 @@ async function buildReceiptPdf(s, amt, profileUrl){
   doc.setFont("helvetica", "normal"); doc.setFontSize(10);
   doc.text("Payment received in full — thank you!", M, y);
   y += 10;
-  addProfileMessage(doc, y, W, M, profileUrl, s.profileHasAccount);
+  addProfileMessage(doc, y, W, M, s);
   addPdfFooters(doc, W, M);
   return doc.output("blob");
 }
 // Same look as the receipt, but "amount due" plus the bank details to pay it.
-async function buildInvoicePdf(s, amt, profileUrl){
+async function buildInvoicePdf(s, amt){
   const { jsPDF } = window.jspdf;
   const doc = new jsPDF({ unit:"mm", format:"a5" });
   const W = 148, M = 14;
@@ -3248,27 +3573,33 @@ async function buildInvoicePdf(s, amt, profileUrl){
   doc.setFont("helvetica", "normal"); doc.setFontSize(10);
   doc.text(`Bank account: ${BANK_ACCOUNT}  (${BANK_NAME})`, M, y); y += 6;
   doc.text(`Reference: ${fullName(s) || fullAddr(s)}`, M, y); y += 10;
-  addProfileMessage(doc, y, W, M, profileUrl, s.profileHasAccount);
+  addProfileMessage(doc, y, W, M, s);
   addPdfFooters(doc, W, M);
   return doc.output("blob");
 }
 // Two taps on purpose: iPhone only opens the share sheet from a FRESH tap, and
 // the amount prompt uses that tap up. Tap 1 (Receipt): ask amount, build the PDF
 // and show a preview. Tap 2 (Send, on the preview): straight into the share sheet.
-window.receiptStop = async id => {
+window.receiptStop = async (id, askAmount) => {
   const s = findStop(id); if(!s) return;
   if (pendingReceipts[id]) return openReceiptPreview(id);   // already built — just preview
   if (!window.jspdf){ alert("The PDF maker didn't load — check your connection and try again."); return; }
-  // Prefill: the last amount used here, else the price set on the pickup, else blank.
-  const seed = s.receiptAmount!=null ? s.receiptAmount : (s.amount!=null ? s.amount : null);
-  const v = prompt("Amount paid (dollars):", seed!=null ? String(seed) : "");
-  if (v===null) return;                                    // cancelled
-  const amt = parseFloat(String(v).replace(/[^0-9.]/g,""));
-  if (!isFinite(amt) || amt<0) return alert("Enter the dollar amount, e.g. 40");
+  // The price on the card loads straight in — no typing. Only ask when there
+  // isn't one and none can be worked out. Wrong figure? "Change amount" on the
+  // preview, or the Price box in Edit pickup.
+  const seed = s.receiptAmount!=null ? s.receiptAmount : stopPrice(s);
+  let amt = seed;
+  if (amt==null || askAmount){
+    const v = prompt("Amount paid (dollars):", amt!=null ? String(amt) : "");
+    if (v===null) return;                                  // cancelled
+    amt = parseFloat(String(v).replace(/[^0-9.]/g,""));
+    if (!isFinite(amt) || amt<0) return alert("Enter the dollar amount, e.g. 40");
+    s.amount = amt;                                        // keep the card in step
+  }
   s.receiptAmount = amt;
   busy("Preparing their private profile link...");
   s.profileUrl = await customerProfileLink(s);
-  const blob = await buildReceiptPdf(s, amt, s.profileUrl);
+  const blob = await buildReceiptPdf(s, amt);
   busy("");
   const fname = `Receipt - ${(fullName(s)||"pickup").replace(/[^\w \-]/g,"")}.pdf`;
   pendingReceipts[id] = new File([blob], fname, { type:"application/pdf" });
@@ -3292,7 +3623,7 @@ window.openReceiptPreview = id => {
     closeReceiptPreview();
     delete pendingReceipts[id];
     render();
-    receiptStop(id);
+    receiptStop(id, true);
   };
   wrapEl.style.display = "flex";
 };
@@ -3342,6 +3673,11 @@ window.sendReceipt = async id => {
           pdfBase64: await fileToBase64(file),
           // Recorded against their account so they keep a copy of what was paid.
           amount: s.receiptAmount!=null ? Number(s.receiptAmount) : (s.amount!=null ? Number(s.amount) : null),
+          // Same booking link + item list + address the PDF itself was built from,
+          // so what shows in the customer's account matches what they were emailed.
+          bookingId: s.submission_id || s.unpaidSourceId || "",
+          items: (s.appliances && s.appliances.length) ? s.appliances : ["Whiteware"],
+          address: fullAddr(s),
           profileUrl: s.profileUrl || "",
           profileStatus: s.profileHasAccount===true ? "existing" : s.profileHasAccount===false ? "invite" : "unknown",
           includeFindMyLocalReview: /find\s*my\s*local/i.test(String(s.referral_source||"")) ||
@@ -3376,20 +3712,24 @@ window.sendReceipt = async id => {
 /* ---------- Invoices (unpaid pickups) ---------- */
 // Same two-tap shape as receipts: tap Invoice → check the amount → preview,
 // then Send emails it (server) with an optional auto-reminder day.
-window.invoiceStop = async id => {
+window.invoiceStop = async (id, askAmount) => {
   const s = findStop(id); if(!s) return;
   if (pendingInvoices[id]) return openInvoicePreview(id);
   if (!window.jspdf){ alert("The PDF maker didn't load — check your connection and try again."); return; }
-  // Prefill with the pickup's price (or the last invoice/receipt amount).
-  const seed = s.invoiceAmount!=null ? s.invoiceAmount : (s.amount!=null ? s.amount : (s.receiptAmount!=null ? s.receiptAmount : null));
-  const v = prompt("Amount owed (dollars):", seed!=null ? String(seed) : "");
-  if (v===null) return;
-  const amt = parseFloat(String(v).replace(/[^0-9.]/g,""));
-  if (!isFinite(amt) || amt<0) return alert("Enter the dollar amount, e.g. 40");
+  // The price on the card loads straight in — worked out from the items if it
+  // was never set. Only ask when even that comes up blank.
+  const seed = s.invoiceAmount!=null ? s.invoiceAmount : stopPrice(s);
+  let amt = seed;
+  if (amt==null || askAmount){
+    const v = prompt("Amount owed (dollars):", amt!=null ? String(amt) : "");
+    if (v===null) return;
+    amt = parseFloat(String(v).replace(/[^0-9.]/g,""));
+    if (!isFinite(amt) || amt<0) return alert("Enter the dollar amount, e.g. 40");
+  }
   s.invoiceAmount = amt; s.amount = amt;
   busy("Preparing their private profile link...");
   s.profileUrl = await customerProfileLink(s);
-  const blob = await buildInvoicePdf(s, amt, s.profileUrl);
+  const blob = await buildInvoicePdf(s, amt);
   busy("");
   const fname = `Invoice - ${(fullName(s)||"pickup").replace(/[^\w \-]/g,"")}.pdf`;
   pendingInvoices[id] = new File([blob], fname, { type:"application/pdf" });
@@ -3410,7 +3750,7 @@ window.openInvoicePreview = id => {
     closeReceiptPreview();
     delete pendingInvoices[id];
     render();
-    invoiceStop(id);
+    invoiceStop(id, true);
   };
   wrapEl.style.display = "flex";
 };
@@ -3470,7 +3810,9 @@ window.sendInvoice = async id => {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ to, name: fullName(s), filename: file.name,
           pdfBase64: await fileToBase64(file), amount: amt, reminderDate,
-          profileUrl: s.profileUrl || "",
+          bookingId: s.submission_id || s.unpaidSourceId || "",
+          items: (s.appliances && s.appliances.length) ? s.appliances : ["Whiteware"],
+          address: fullAddr(s), profileUrl: s.profileUrl || "",
           profileStatus: s.profileHasAccount===true ? "existing" : s.profileHasAccount===false ? "invite" : "unknown" })
       });
       const out = await res.json().catch(()=>({}));
@@ -3669,6 +4011,9 @@ async function backfillNavLabels(){
 }
 window.callStop = id => { const s=findStop(id); if(s&&s.phone) location.href="tel:"+s.phone.replace(/\s+/g,""); };
 window.delStop = id => {
+  const s = findStop(id);
+  const who = s ? (fullName(s) || fullAddr(s) || "this stop") : "this stop";
+  if (!confirm(`Remove ${who} from ${activeRunName()}?\n\nThis takes it off today's run.`)) return;
   state.stops = state.stops.filter(x=>x.id!==id);
   if (Array.isArray(state.messageSelectedIds)) state.messageSelectedIds = state.messageSelectedIds.filter(x=>x!==id);
   save(); render(); drawRoute();
@@ -3707,7 +4052,12 @@ window.retryBad = async id => {
     state.bad.splice(j,1); state.stops.push(t); save(); render(); drawRoute();
   } else alert("Still couldn't find that address — add the town, or paste coordinates from Google Maps.");
 };
-window.dropBad = id => { const i = state.bad.findIndex(s=>s.id===id); if(i<0) return; state.bad.splice(i,1); save(); render(); };
+window.dropBad = id => {
+  const i = state.bad.findIndex(s=>s.id===id); if(i<0) return;
+  const who = fullAddr(state.bad[i]) || "this address";
+  if (!confirm(`Remove ${who} from the needs-address list?`)) return;
+  state.bad.splice(i,1); save(); render();
+};
 
 /* ---------- Wire up the UI ---------- */
 // Tabs
@@ -3849,11 +4199,21 @@ function stopLiveGps(){
   gpsWatchId=null;
   if (gpsMarker){ map.removeLayer(gpsMarker); gpsMarker=null; }
   if (gpsAccuracy){ map.removeLayer(gpsAccuracy); gpsAccuracy=null; }
+  gpsLast=null; gpsFirstFix=false; paintMapButtons();
   $("#gpsToggle").textContent="📍 Start live GPS";
   $("#gpsStatus").textContent="Shows your current position on the map.";
 }
+// Recentre shows whenever we know where you are. Fit route shows once you've
+// moved the map yourself, so you can get the whole-run overview back.
+function paintMapButtons(){
+  const recentre=$("#gpsRecentre");
+  if (recentre) recentre.style.display=(gpsWatchId!==null && gpsLast) ? "inline-block" : "none";
+  const fit=$("#mapFitRoute");
+  if (fit) fit.style.display=mapUserMoved ? "inline-block" : "none";
+}
 function startLiveGps(){
   if (!navigator.geolocation){ alert("Live GPS isn't available in this browser."); return; }
+  gpsLast=null; gpsFirstFix=false; paintMapButtons();
   $("#gpsToggle").textContent="■ Stop live GPS";
   $("#gpsStatus").textContent="Finding your live position…";
   gpsWatchId=navigator.geolocation.watchPosition(pos=>{
@@ -3862,14 +4222,26 @@ function startLiveGps(){
       gpsMarker=L.marker([lat,lng],{icon:L.divIcon({className:"",html:'<div class="gps-dot"></div>',iconSize:[20,20],iconAnchor:[10,10]})}).bindPopup("You are here").addTo(map);
       gpsAccuracy=L.circle([lat,lng],{radius:accuracy,color:"#2f80ff",weight:1,fillColor:"#2f80ff",fillOpacity:.08}).addTo(map);
     } else { gpsMarker.setLatLng([lat,lng]); gpsAccuracy.setLatLng([lat,lng]).setRadius(accuracy); }
-    map.panTo([lat,lng]);
-    $("#gpsStatus").textContent=`Live position · accurate to about ${accuracy} m`;
+    gpsLast=[lat,lng];
+    // Centre once, on the first fix after you tap Start. After that the map is
+    // yours - tap Recentre when you want to come back to your dot.
+    if (!gpsFirstFix){ gpsFirstFix=true; mapMove(()=>map.panTo([lat,lng])); }
+    paintMapButtons();
+    $("#gpsStatus").textContent=`Live position · accurate to about ${accuracy} m · tap Recentre to jump back to your dot`;
   },()=>{
     stopLiveGps();
     alert("Couldn't start live GPS. Allow location access for this site and try again.");
   },{enableHighAccuracy:true,maximumAge:3000,timeout:15000});
 }
 $("#gpsToggle").onclick=()=>gpsWatchId===null?startLiveGps():stopLiveGps();
+$("#gpsRecentre").onclick=()=>{
+  if (gpsLast) mapMove(()=>map.panTo(gpsLast));
+};
+$("#mapFitRoute").onclick=()=>{
+  mapUserMoved=false;
+  paintMapButtons();
+  drawRoute();
+};
 
 /* ---------- Backup and restore ----------
    Everything lives in this browser's storage, which a phone can wipe without
@@ -3878,8 +4250,11 @@ function backupStatus(message, bad=false){
   const el=$("#backupStatus"); if(!el) return;
   el.textContent=message||""; el.style.color=bad ? "var(--bad)" : "";
 }
+// Everything this browser holds EXCEPT the sign-in token. A backup that carried
+// the token would put a live key to the account inside a file and inside the
+// server copy; a restored phone should sign in with its own emailed code.
 function nakiStorageKeys(){
-  return Object.keys(localStorage).filter(key=>key.startsWith("naki_"));
+  return Object.keys(localStorage).filter(key=>key.startsWith("naki_") && key!==OWNER_TOKEN_KEY);
 }
 $("#backupSave").onclick=()=>{
   try{
@@ -3896,6 +4271,26 @@ $("#backupSave").onclick=()=>{
     backupStatus(`Saved a backup of ${runCount} run${runCount===1?"":"s"}. Keep it somewhere safe.`);
   }catch(e){ backupStatus("Couldn't make the backup file: "+e.message, true); }
 };
+// The server side of the business - customers, bookings, quotes, document records
+// - as one file he holds himself. Needs the owner sign-in, same as everything else.
+$("#exportEverything").onclick=async ()=>{
+  if (!ownerToken) return needOwnerSignIn();
+  backupStatus("Fetching everything…");
+  try{
+    const dump=await ownerApi("/owner/export");
+    const counts=Object.entries(dump.tables||{}).filter(([,rows])=>rows.length);
+    const payload=JSON.stringify(dump, null, 2);
+    const url=URL.createObjectURL(new Blob([payload],{type:"application/json"}));
+    const link=document.createElement("a");
+    link.href=url;
+    link.download=`naki-everything-${localIso(new Date())}.json`;
+    document.body.appendChild(link); link.click(); link.remove();
+    setTimeout(()=>URL.revokeObjectURL(url), 4000);
+    const customers=(dump.tables?.customers||[]).length;
+    backupStatus(`Downloaded ${dump.rowCount} records across ${counts.length} lists — ${customers} customer${customers===1?"":"s"}. Keep it somewhere safe.`);
+  }catch(e){ backupStatus("Couldn't download it: "+e.message, true); }
+};
+
 /* ---- Off-phone copy, kept against the owner login ----
    Deleting the home-screen app wipes this browser's storage, so a copy lives on
    the server too. It saves itself a few seconds after any change. */
@@ -3912,9 +4307,22 @@ function whenText(stamp){
   if (mins < 60) return `${mins} min ago`;
   return new Date(stamp).toLocaleString("en-NZ",{weekday:"short",hour:"numeric",minute:"2-digit"});
 }
-function paintCloudState(text){ const el=$("#cloudBackupState"); if (el) el.textContent=text; }
+// The signed-out case used to whisper in grey at the bottom of the box, so the
+// buttons looked broken instead of locked. Now it shouts, in the panel above them,
+// with the way to fix it right there.
+function paintCloudState(text, bad=false){
+  const el=$("#cloudBackupState");
+  if (el){ el.textContent=text; el.style.color=bad ? "var(--bad)" : ""; }
+  const row=$("#cloudSignInRow");
+  if (row) row.style.display=ownerToken ? "none" : "flex";
+}
+function needOwnerSignIn(){
+  paintCloudState("You're signed out, so nothing is being saved to your account. Sign in to start again.", true);
+  backupStatus("Signed out — tap the orange Sign in button above.", true);
+  $("#backupBox").open=true;
+}
 async function refreshCloudBackupInfo(){
-  if (!ownerToken){ paintCloudState("Sign in on the Bookings tab to save a copy to your account."); return; }
+  if (!ownerToken){ paintCloudState("Signed out — nothing is being saved to your account yet.", true); return; }
   try{
     const info=await ownerApi("/owner/backup/info");
     paintCloudState(info.latest
@@ -3958,13 +4366,21 @@ async function offerCloudRestoreIfEmpty(){
     backupStatus("This phone has no runs on it, but your account does.");
   }catch(e){ /* nothing saved, or offline — leave it alone */ }
 }
+// Takes him straight to the sign-in instead of telling him to go find it.
+$("#cloudSignIn").onclick=()=>{
+  setAppView("bookings");
+  setTimeout(()=>{
+    const card=$("#ownerLoginCard");
+    if (card) card.scrollIntoView({behavior:"smooth",block:"center"});
+  }, 60);
+};
 $("#cloudSaveNow").onclick=()=>{
-  if (!ownerToken) return backupStatus("Sign in on the Bookings tab first.", true);
+  if (!ownerToken) return needOwnerSignIn();
   backupStatus("Saving…");
   pushCloudBackup(false);
 };
 $("#cloudRestore").onclick=async ()=>{
-  if (!ownerToken) return backupStatus("Sign in on the Bookings tab first.", true);
+  if (!ownerToken) return needOwnerSignIn();
   backupStatus("Fetching your saved copy…");
   try{
     const saved=await ownerApi("/owner/backup");
@@ -4058,7 +4474,6 @@ $("#clearAll").onclick = () => {
   if (confirm(`${tally}Clear “${activeRunName()}”? This removes only this run's stops and progress.`)){
     state = { stops:[], bad:[], start:state.start, end:state.end, roundTrip:state.roundTrip, manual:false, sheetUrl: state.sheetUrl, unpaid: state.unpaid||[] };
     routeStartOverride = null;
-    areaFilterValue = "all";
     save(); render(); drawRoute();
   }
 };
@@ -4344,7 +4759,8 @@ window.addEventListener("focus",refreshOwnerData);
 setTimeout(syncSavedProfileBookings, 1500);
 setTimeout(backfillNavLabels, 2500);
 $("#mapPanel").ontoggle = () => {
-  if ($("#mapPanel").open) setTimeout(()=>{ map.invalidateSize(); drawRoute(); }, 80);
+  // Opening the map fresh is a good moment to show the whole run again.
+  if ($("#mapPanel").open) setTimeout(()=>{ mapUserMoved=false; paintMapButtons(); map.invalidateSize(); drawRoute(); }, 80);
 };
 attachAutocomplete($("#oneAddr"), $("#acOne"), r => { oneAddrPicked = { lat:r.lat, lng:r.lng, label:r.label }; });
 attachAutocomplete($("#startAddr"), $("#acStart"), r => {

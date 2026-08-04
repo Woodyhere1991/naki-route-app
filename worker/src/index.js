@@ -1,4 +1,4 @@
-import { handlePortalRequest, retryPendingSheetBackups, purgeExpiredAuth, recordBookingDocument } from "./customer.js";
+import { handlePortalRequest, retryPendingSheetBackups, purgeExpiredAuth, recordBookingDocument, snapshotDatabase } from "./customer.js";
 
 const GMS_PLACE_ID = "ChIJI-iQUfZQFG0RorGmjzvMPRE";
 const APP_ORIGINS = new Set([
@@ -478,7 +478,11 @@ async function handleSendReceipt(request, env) {
     attachment: [{ name: filename, content: pdf }]
   });
   if (!sent) return json(request, { error: "Email could not be sent" }, 502);
-  await recordBookingDocument(env, { email: to, kind: "RECEIPT", amount: body.amount, reference: name });
+  await recordBookingDocument(env, {
+    email: to, kind: "RECEIPT", amount: body.amount, reference: name,
+    bookingId: body.bookingId, items: body.items, address: body.address,
+    filename, pdfBase64: pdf
+  });
   return json(request, { ok: true });
 }
 
@@ -638,12 +642,19 @@ const REF_LINE = "Reference: please use your name or address, as it was on the c
 
 function firstName(name) { return String(name || "").trim().split(/\s+/)[0] || ""; }
 
+// The account link used to live in a promo box inside the PDF itself - but the
+// PDF is now kept as the customer's permanent record, so the link belongs in
+// the email instead, as the first thing they read.
 const PROFILE_URL_RE = /^https:\/\/nakiwhitewareremoval\.vip\/account\.html(\?[^\s]*)?$/;
 function profileLinkLine(url, status) {
   const value = String(url || "").trim();
   if (!PROFILE_URL_RE.test(value)) return "";
-  if (status === "existing") return `View your account, pickup history and every receipt/invoice we've sent you: ${value}\n\n`;
-  if (status === "invite") return `Set up your free online account to view your pickup history and keep every receipt/invoice in one place: ${value}\n\n`;
+  if (status === "existing") {
+    return `View your account, pickup history and every receipt/invoice we've sent you: ${value}\n\n`;
+  }
+  if (status === "invite") {
+    return `Set up your free online account to view your pickup history and keep every receipt/invoice in one place: ${value}\n\n`;
+  }
   return `Open your account page to sign in or set up an account: ${value}\n\n`;
 }
 
@@ -680,7 +691,11 @@ async function handleSendInvoice(request, env) {
   });
   if (!sent) return json(request, { error: "Email could not be sent" }, 502);
   // Keep a copy in the customer's account so they can check what they owe.
-  await recordBookingDocument(env, { email: to, kind: "INVOICE", amount, reference: name });
+  await recordBookingDocument(env, {
+    email: to, kind: "INVOICE", amount, reference: name,
+    bookingId: body.bookingId, items: body.items, address: body.address,
+    filename, pdfBase64: pdf
+  });
   // Reminder: only for a real future-or-today date, and only if KV is bound.
   let reminderId = "";
   if (env.REMINDERS && /^\d{4}-\d{2}-\d{2}$/.test(reminderDate) && reminderDate >= isoDate(aucklandToday())) {
@@ -744,6 +759,7 @@ export default {
       if (path === "/run-reminders" && request.method === "GET") return json(request, await runReminders(env));
       return json(request, { error: "Not found" }, 404);
     } catch (error) {
+      console.error("Naki route request failed", request.method, path, error?.stack || String(error));
       return json(request, { error: "Live service could not be loaded" }, 502);
     }
   },
@@ -752,5 +768,7 @@ export default {
     ctx.waitUntil(runReminders(env));
     ctx.waitUntil(retryPendingSheetBackups(env));
     ctx.waitUntil(purgeExpiredAuth(env));
+    // Only on the daily trigger - the 15-minute one has other work to do.
+    if (event.cron === "0 21 * * *") ctx.waitUntil(snapshotDatabase(env));
   }
 };
