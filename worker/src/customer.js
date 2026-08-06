@@ -2732,7 +2732,8 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
     }
 
     if (path === "/owner/customers" && request.method === "GET") {
-      const rows = await env.CUSTOMER_DB.prepare(
+      const [rows, documentRows] = await Promise.all([
+        env.CUSTOMER_DB.prepare(
         `SELECT c.*,
            ((SELECT COUNT(*) FROM bookings b WHERE b.customer_id = c.id) +
             (SELECT COUNT(*) FROM external_bookings e WHERE e.customer_id = c.id OR e.email = c.email COLLATE NOCASE) +
@@ -2743,11 +2744,29 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
              COALESCE((SELECT MAX(created_at) FROM jotform_bookings j WHERE j.customer_id = c.id OR j.email = c.email COLLATE NOCASE), 0)
            ) AS last_booking_at
          FROM customers c ORDER BY (last_booking_at IS NULL), last_booking_at DESC, c.created_at DESC LIMIT 500`
-      ).all();
+        ).all(),
+        /* Paperwork is filed against the customer's email, so the same invoice or
+           receipt shows on the Customers tab as well as on its booking - one place
+           to look up "what have I sent this person" without opening every job. */
+        env.CUSTOMER_DB.prepare(
+          `SELECT id, booking_id, email, kind, amount_cents, reference, created_at,
+             items_json, address, filename, r2_key
+           FROM booking_documents ORDER BY created_at DESC LIMIT 2000`
+        ).all()
+      ]);
+      const documentsByEmail = new Map();
+      for (const documentRow of (documentRows.results || [])) {
+        const key = String(documentRow.email || "").trim().toLowerCase();
+        if (!key) continue;
+        const list = documentsByEmail.get(key) || [];
+        list.push(bookingDocumentFrom(documentRow));
+        documentsByEmail.set(key, list);
+      }
       const customers = (rows.results || []).map(row => ({
         id: row.id,
         ...profileFrom(row),
         bookings: Number(row.booking_count || 0),
+        documents: documentsByEmail.get(String(row.email || "").trim().toLowerCase()) || [],
         lastBookingAt: row.last_booking_at ? new Date(row.last_booking_at).toISOString() : "",
         joinedAt: new Date(row.created_at).toISOString(),
         pwaInstalledAt: row.pwa_installed_at ? new Date(row.pwa_installed_at).toISOString() : "",

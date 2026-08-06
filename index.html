@@ -284,6 +284,14 @@
     font-size:13px;white-space:nowrap;background:#1d6b45;color:#eafff2}
   .pricetag.none{background:#3a3f4a;color:var(--muted);font-weight:600}
   .pricetag.est{background:#4a3f1d;color:#ffe9b0}   /* worked out, not agreed */
+  /* Quiet "this one has photos" marker. Deliberately muted - it should be findable
+     when scanning the list, not compete with the price or the status dot. */
+  .photo-chip{display:inline-flex;align-items:center;gap:2px;flex:0 0 auto;cursor:pointer;
+    padding:1px 6px;border-radius:999px;font-size:11.5px;line-height:1.5;
+    background:rgba(41,182,246,.14);border:1px solid var(--line);color:var(--muted)}
+  .photo-chip>span{font-weight:700}
+  .photo-chip:hover,.photo-chip:focus-visible{background:rgba(41,182,246,.28);color:#fff}
+  .direct-head .photo-chip{margin-left:auto}
   .mini-dot{width:9px;height:9px;border-radius:50%;background:var(--muted);flex:0 0 auto}
   .mini-dot.new{background:var(--accent)}
   .mini-dot.added{background:var(--good)}
@@ -302,7 +310,17 @@
   .booking-doc-row{display:flex;align-items:center;gap:8px;padding:6px 0;border-top:1px solid var(--line);font-size:13px}
   .booking-doc-row:first-child{border-top:0}
   .booking-doc-row .grow{min-width:0}
+  .booking-doc-row button{white-space:nowrap}
   .owing-note{margin-top:9px;padding:9px 11px;border-radius:11px;background:#4a1d24;border:1px solid #c0392b;color:#fff}
+  /* A customer's whole paperwork history, folded away until it's wanted. */
+  .customer-docs{padding:0}
+  .customer-docs>summary{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:9px 10px;cursor:pointer;list-style:none}
+  .customer-docs>summary::-webkit-details-marker{display:none}
+  .customer-doc-rows{padding:0 10px 6px}
+  .doc-year{margin-top:8px;padding-top:7px;border-top:1px solid var(--line);font-size:11.5px;
+    letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+  .doc-year+.booking-doc-row{border-top:0}
+  .doc-owing{padding:1px 8px;border-radius:999px;background:#c0392b;color:#fff;font-size:11.5px;font-weight:800}
   /* "Showing one customer" banner. Always on screen while a focus filter is on,
      so a filter that matches nothing still has a visible way back to the list. */
   .filter-chip{display:flex;align-items:center;gap:8px;margin-bottom:8px;padding:8px 12px;
@@ -729,6 +747,8 @@ let customerGroupOpen = loadJSON("naki_customer_group_open_v1", {});
 // opened so those refreshes never snap a customer or booking shut under him.
 const bookingCardsOpen = new Set();
 const customerCardsOpen = new Set();
+// Same idea one level down: an opened invoices-and-receipts drawer stays open.
+const customerDocsOpen = new Set();
 // Short list by default - full cards are a lot to scroll past on a phone.
 let bookingCompact = loadBool("naki_booking_compact_v1", true);
 let customerCompact = loadBool("naki_customer_compact_v1", true);
@@ -1376,9 +1396,17 @@ function renderDirectBookings(){
         <button class="ghost sm" title="Delete this booking" data-delete-direct="${esc(b.id)}">✕ Delete</button>`}
       </div>`;
     const classes=`direct-booking${actuallyAdded?' added':''}${b.status==='CANCELLED'?' cancelled':''}`;
+    // Which jobs came with photos was only findable by opening every card. A quiet
+    // camera chip on the closed line answers it at a glance, and tapping it goes
+    // straight to the photos without opening the card at all.
+    const photoChip=(!b._localOnly && b.photoCount)
+      ? `<span class="photo-chip" role="button" tabindex="0" data-photo-peek="${esc(b.id)}"
+           title="${b.photoCount} photo${b.photoCount===1?"":"s"} attached — tap to view"
+           aria-label="${b.photoCount} photo${b.photoCount===1?"":"s"} attached">📷${b.photoCount>1?`<span>${b.photoCount}</span>`:""}</span>`
+      : "";
     if (!bookingCompact){
       return `<article class="card ${classes}" data-booking-id="${esc(b.id)}">
-      <div class="direct-head"><h3>${name}</h3><b>${esc(price)}</b></div>
+      <div class="direct-head"><h3>${name}</h3>${photoChip}<b>${esc(price)}</b></div>
       ${body}
     </article>`;
     }
@@ -1393,6 +1421,7 @@ function renderDirectBookings(){
           <span class="mini-name">${name||"(No name)"}</span>
           <span class="mini-sub">${esc(sub)}</span>
         </span>
+        ${photoChip}
         <span class="mini-price">${esc(price)}</span>
         <span class="chev">›</span>
       </summary>
@@ -1448,6 +1477,13 @@ function renderDirectBookings(){
   list.querySelectorAll("[data-edit-direct]").forEach(button=>button.onclick=()=>editDirectBooking(button.dataset.editDirect));
   list.querySelectorAll("[data-delete-direct]").forEach(button=>button.onclick=()=>deleteDirectBooking(button.dataset.deleteDirect));
   list.querySelectorAll("[data-photos-direct]").forEach(button=>button.onclick=()=>showBookingPhotos(button.dataset.photosDirect));
+  // The chip sits inside the <summary>, so a plain click would open the card as
+  // well. Swallow the event and just show the photos.
+  list.querySelectorAll("[data-photo-peek]").forEach(chip=>{
+    const open=event=>{ event.preventDefault(); event.stopPropagation(); showBookingPhotos(chip.dataset.photoPeek); };
+    chip.onclick=open;
+    chip.onkeydown=event=>{ if(event.key==="Enter"||event.key===" ") open(event); };
+  });
   list.querySelectorAll("[data-owner-document]").forEach(button=>button.onclick=()=>openOwnerDocument(button.dataset.ownerDocument));
   list.querySelectorAll("[data-invoice-direct]").forEach(button=>button.onclick=()=>invoiceDirectBooking(button.dataset.invoiceDirect));
   list.querySelectorAll("[data-invoice-cancel]").forEach(button=>button.onclick=()=>{
@@ -1570,7 +1606,13 @@ async function openOwnerDocument(id){
     if(preview) preview.location=url;
     else { const link=document.createElement("a"); link.href=url; link.target="_blank"; link.click(); }
     setTimeout(()=>URL.revokeObjectURL(url),60000);
-  }catch(e){ if(preview) preview.close(); directStatus(e.message,true); }
+  }catch(e){
+    if(preview) preview.close();
+    // These rows now live on the Customers tab too, where the bookings status
+    // line is off screen — say it on whichever tab is actually being looked at.
+    directStatus(e.message,true);
+    customerStatus(e.message,true);
+  }
 }
 // A customer can change their request after it is already on a run. Bring the
 // stop in the run into line so the truck is loaded for what they actually want.
@@ -1982,6 +2024,49 @@ function customerStatus(message, error=false){
   const el=$("#customerStatus"); if(!el) return;
   el.textContent=message||""; el.style.color=error ? "var(--bad)" : "";
 }
+/* Every invoice and receipt ever sent to this person, filed under their email by
+   the server. The booking card shows the paperwork for one job; this is the whole
+   history in one place, newest first and split by year once there's more than one.
+   Folded away by default so a long-standing customer's card still fits on screen. */
+function customerDocumentBox(c){
+  const documents=(c.documents||[]).slice()
+    .sort((a,b)=>String(b.createdAt||"").localeCompare(String(a.createdAt||"")));
+  if (!documents.length) return "";
+  const money=n=>`$${Number(n||0).toFixed(2)}`;
+  const totalFor=kind=>documents.filter(d=>d.kind===kind).reduce((sum,d)=>sum+Number(d.amount||0),0);
+  const latestInvoice=documents.find(d=>d.kind==="INVOICE");
+  const latestReceipt=documents.find(d=>d.kind==="RECEIPT");
+  // Same test the bookings list uses: an invoice with no receipt after it is still owed.
+  const owing=Boolean(latestInvoice) && (!latestReceipt || latestInvoice.createdAt>latestReceipt.createdAt);
+  const years=[...new Set(documents.map(d=>String(d.createdAt||"").slice(0,4)||"—"))];
+  const rowFor=d=>{
+    const kind=d.kind==="RECEIPT" ? "Receipt" : "Invoice";
+    const sent=new Date(d.createdAt).toLocaleDateString("en-NZ",{day:"numeric",month:"short",year:"numeric"});
+    return `<div class="booking-doc-row">
+      <span>${d.kind==="RECEIPT"?"🧾":"📄"}</span>
+      <span class="grow"><b>${kind} · ${money(d.amount)}</b><br><span class="muted">Sent ${esc(sent)}${d.reference?` · ${esc(d.reference)}`:""}</span></span>
+      ${/* Copies of the PDF were only kept from 28 July 2026 on — older ones were
+            emailed at the time but never saved, so say so instead of a dead button. */""}
+      ${d.hasPdf
+        ? `<button class="ghost sm" data-owner-document="${esc(d.id)}">Open PDF</button>`
+        : `<span class="small muted" title="Copies of the PDF were only kept from 28 July 2026 onward. This one was emailed at the time, but no copy was saved here.">No copy saved</span>`}
+    </div>`;
+  };
+  const rows=years.map(year=>{
+    const forYear=documents.filter(d=>(String(d.createdAt||"").slice(0,4)||"—")===year);
+    const heading=years.length>1 ? `<div class="doc-year">${esc(year)}</div>` : "";
+    return heading+forYear.map(rowFor).join("");
+  }).join("");
+  const totals=`${money(totalFor("RECEIPT"))} paid · ${money(totalFor("INVOICE"))} invoiced`;
+  return `<details class="booking-docs customer-docs"${customerDocsOpen.has(c.id)?" open":""} data-customer-docs="${esc(c.id)}">
+    <summary><b>🧾 Invoices &amp; receipts (${documents.length})</b>
+      <span class="small muted">${totals}</span>
+      ${owing?'<span class="doc-owing">Owing</span>':""}
+      <span class="chev">›</span>
+    </summary>
+    <div class="customer-doc-rows">${rows}</div>
+  </details>`;
+}
 function renderCustomers(){
   const list=$("#customerList"); if(!list) return;
   if (!ownerToken){
@@ -2036,6 +2121,7 @@ function renderCustomers(){
         ${last?`<div class="direct-meta"><span>Last booking: ${esc(last)}</span></div>`:""}
         ${appBadge}
         ${c.accessNotes?`<div class="small muted">📝 ${esc(c.accessNotes)}</div>`:""}
+        ${customerDocumentBox(c)}
         <div class="direct-actions">
           ${c.phone?`<a class="ghost sm" href="sms:${esc(String(c.phone).replace(/[^\d+]/g,""))}">💬 Text</a>`:""}
           ${c.phone?`<a class="ghost sm" href="tel:${esc(String(c.phone).replace(/[^\d+]/g,""))}">📞 Call</a>`:""}
@@ -2069,6 +2155,8 @@ function renderCustomers(){
   list.querySelectorAll("[data-delete-customer]").forEach(button=>button.onclick=()=>deleteCustomer(button.dataset.deleteCustomer));
   list.querySelectorAll("[data-edit-customer]").forEach(button=>button.onclick=()=>editCustomer(button.dataset.editCustomer));
   rememberOpenCards(list,"details[data-customer-id]",customerCardsOpen,"data-customer-id");
+  rememberOpenCards(list,"details[data-customer-docs]",customerDocsOpen,"data-customer-docs");
+  list.querySelectorAll("[data-owner-document]").forEach(button=>button.onclick=()=>openOwnerDocument(button.dataset.ownerDocument));
   // Jump to the Bookings tab already filtered to that person.
   list.querySelectorAll("[data-customer-bookings]").forEach(button=>button.onclick=()=>{
     const email=String(button.dataset.customerBookings||"").toLowerCase();
