@@ -1642,6 +1642,19 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
       });
     }
 
+    // The account site can only tell us "this page is currently running in
+    // standalone/home-screen mode" - it can't ask the phone "is this installed".
+    // So we just record every time a signed-in customer is seen running that
+    // way. First time sets pwa_installed_at; every time refreshes last_seen so
+    // Woody can also tell who's stopped actually using it.
+    if (path === "/customer/installed" && request.method === "POST") {
+      const stamp = now();
+      await env.CUSTOMER_DB.prepare(
+        `UPDATE customers SET pwa_installed_at = COALESCE(pwa_installed_at, ?1), pwa_last_seen_at = ?1 WHERE id = ?2`
+      ).bind(stamp, session.customer_id).run();
+      return json(request, { ok: true });
+    }
+
     // ---------- Naki Arcade ----------
     // Scores live server-side so the leaderboard is shared. Only a first name
     // (or the nickname they chose) ever leaves here - never a surname, email,
@@ -2736,7 +2749,9 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
         ...profileFrom(row),
         bookings: Number(row.booking_count || 0),
         lastBookingAt: row.last_booking_at ? new Date(row.last_booking_at).toISOString() : "",
-        joinedAt: new Date(row.created_at).toISOString()
+        joinedAt: new Date(row.created_at).toISOString(),
+        pwaInstalledAt: row.pwa_installed_at ? new Date(row.pwa_installed_at).toISOString() : "",
+        pwaLastSeenAt: row.pwa_last_seen_at ? new Date(row.pwa_last_seen_at).toISOString() : ""
       }));
       return json(request, { customers });
     }
@@ -2781,7 +2796,9 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
         ...profileFrom(row),
         bookings: Number(row.booking_count || 0),
         lastBookingAt: row.last_booking_at ? new Date(row.last_booking_at).toISOString() : "",
-        joinedAt: new Date(row.created_at).toISOString()
+        joinedAt: new Date(row.created_at).toISOString(),
+        pwaInstalledAt: row.pwa_installed_at ? new Date(row.pwa_installed_at).toISOString() : "",
+        pwaLastSeenAt: row.pwa_last_seen_at ? new Date(row.pwa_last_seen_at).toISOString() : ""
       };
       return json(request, { ok: true, customer });
     }

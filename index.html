@@ -1894,9 +1894,15 @@ function renderCustomers(){
         ${c.email?`<span>✉️ <a href="mailto:${encodeURIComponent(c.email)}">${esc(c.email)}</a></span>`:""}
       </div>` : "";
       const bookingCount=`${c.bookings} booking${c.bookings===1?"":"s"}`;
+      // The account site tells us the moment it catches itself running from the
+      // home screen, not the moment someone taps "Add". Good enough to answer
+      // "who's actually saved this" without needing anything from the phone itself.
+      const installedOn=c.pwaInstalledAt ? new Date(c.pwaInstalledAt).toLocaleDateString("en-NZ",{day:"numeric",month:"short",year:"numeric"}) : "";
+      const appBadge=installedOn?`<div class="direct-meta"><span title="First seen running as an installed app">📲 App saved to phone · ${esc(installedOn)}</span></div>`:"";
       const body=`<div>${address}</div>
         ${contact}
         ${last?`<div class="direct-meta"><span>Last booking: ${esc(last)}</span></div>`:""}
+        ${appBadge}
         ${c.accessNotes?`<div class="small muted">📝 ${esc(c.accessNotes)}</div>`:""}
         <div class="direct-actions">
           ${c.phone?`<a class="ghost sm" href="sms:${esc(String(c.phone).replace(/[^\d+]/g,""))}">💬 Text</a>`:""}
@@ -1909,7 +1915,7 @@ function renderCustomers(){
         </div>`;
       if (!customerCompact){
         return `<article class="card direct-booking">
-        <div class="direct-head"><h3>${name}</h3><b>${bookingCount}</b></div>
+        <div class="direct-head"><h3>${installedOn?"📲 ":""}${name}</h3><b>${bookingCount}</b></div>
         ${body}
       </article>`;
       }
@@ -1917,7 +1923,7 @@ function renderCustomers(){
         <summary>
           <span class="mini-dot ${c.bookings?"added":""}"></span>
           <span class="mini-main">
-            <span class="mini-name">${name}</span>
+            <span class="mini-name">${installedOn?"📲 ":""}${name}</span>
             <span class="mini-sub">${esc([c.streetAddress,last?`last ${last}`:""].filter(Boolean).join(" · "))}</span>
           </span>
           <span class="mini-price">${c.bookings} job${c.bookings===1?"":"s"}</span>
@@ -1944,9 +1950,11 @@ function renderCustomers(){
     renderDirectBookings();
   });
   restoreTownGroups(list,customerGroupOpen,"naki_customer_group_open_v1",Boolean(customerSearchText));
+  const installedCount=customerRows.filter(c=>c.pwaInstalledAt).length;
+  const installedNote=installedCount?` · 📲 ${installedCount} have the app`:"";
   customerStatus(customerSearchText
     ? `${visibleCustomers.length} of ${customerRows.length} customers match.`
-    : `${customerRows.length} customer${customerRows.length===1?"":"s"}.`);
+    : `${customerRows.length} customer${customerRows.length===1?"":"s"}.${installedNote}`);
 }
 async function deleteCustomer(id){
   const c=customerRows.find(row=>row.id===id); if(!c) return;
