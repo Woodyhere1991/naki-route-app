@@ -1261,6 +1261,9 @@ function renderDirectBookings(){
   const bookingCard = b=>{
     const name=esc([b.firstName,b.lastName].filter(Boolean).join(" "));
     const address=esc([b.streetAddress,b.town,b.area].filter(Boolean).join(", "));
+    // Unescaped copy for the maps link - esc() is for putting text in the page,
+    // and double-encoding it here would break the search.
+    const navAddress=[b.streetAddress,b.town,b.area].filter(Boolean).join(", ");
     const items=esc((b.items||[]).join(", "));
     const date=new Date(b.createdAt).toLocaleString("en-NZ",{day:"numeric",month:"short",hour:"numeric",minute:"2-digit"});
     const terminal=["COMPLETED","DECLINED","CANCELLED"].includes(b.status) && !b.invoiceOwing;
@@ -1297,7 +1300,12 @@ function renderDirectBookings(){
       return `<div class="booking-doc-row">
         <span>${document.kind==="RECEIPT"?"🧾":"📄"}</span>
         <span class="grow"><b>${kind} · $${Number(document.amount||0).toFixed(2)}</b><br><span class="muted">Sent ${esc(sent)}</span></span>
-        ${document.hasPdf?`<button class="ghost sm" data-owner-document="${esc(document.id)}">Open PDF</button>`:""}
+        ${/* Keeping a copy of the PDF only started on 28 July 2026. Older ones
+              were emailed to the customer at the time but never saved here, so
+              say that rather than leaving a silent gap where the button goes. */""}
+        ${document.hasPdf
+          ? `<button class="ghost sm" data-owner-document="${esc(document.id)}">Open PDF</button>`
+          : `<span class="small muted" title="Copies of the PDF were only kept from 28 July 2026 onward. This one was emailed at the time, but no copy was saved here.">No copy saved</span>`}
       </div>`;
     }).join("");
     const documentBox=documents ? `<div class="booking-docs"><b>Invoices &amp; receipts for this booking</b>${documents}</div>` : "";
@@ -1340,7 +1348,11 @@ function renderDirectBookings(){
       <div class="direct-actions">
         ${b.phone?`<a class="ghost sm" href="tel:${esc(String(b.phone).replace(/[^\d+]/g,""))}">📞 Call</a>`:""}
         ${b.email?`<a class="ghost sm" href="mailto:${encodeURIComponent(b.email)}">✉️ Email</a>`:""}
-        ${b.phone&&pickupDay?`<a class="ghost sm" href="sms:${esc(String(b.phone).replace(/[^\d+]/g,""))}?body=${smsText}">💬 Text details</a>`:""}
+        ${/* Text is always here now. With a confirmed day it pre-fills the
+              confirmation; without one it just opens an empty message, which
+              still beats copying the number out by hand. */""}
+        ${b.phone?`<a class="ghost sm" href="sms:${esc(String(b.phone).replace(/[^\d+]/g,""))}${pickupDay?`?body=${smsText}`:""}">💬 ${pickupDay?"Text details":"Text"}</a>`:""}
+        ${navAddress?`<a class="ghost sm" target="_blank" rel="noopener" href="https://www.google.com/maps/search/?api=1&amp;query=${encodeURIComponent(navAddress)}">🧭 Navigate</a>`:""}
         ${bookingWorkflowActions}
         ${b._localOnly?"":`${b.photoCount ? `<button class="ghost sm" data-photos-direct="${esc(b.id)}">📷 ${b.photoCount} photo${b.photoCount===1?"":"s"}</button>` : ""}
         ${goodEmail(b.email) && !unpaid ? `<button class="ghost sm" title="Email this customer an invoice" data-invoice-direct="${esc(b.id)}">📄 ${b.invoiceOwing?"Invoice again":"Send invoice"}</button>` : ""}
@@ -1764,11 +1776,18 @@ $("#directRefresh").onclick=()=>loadDirectBookings(true);
 $("#customersRefresh").onclick=()=>loadCustomers(true);
 $("#bookingSearch").addEventListener("input",event=>{ bookingSearchText=event.target.value.trim().toLowerCase(); renderDirectBookings(); });
 $("#customerSearch").addEventListener("input",event=>{ customerSearchText=event.target.value.trim().toLowerCase(); renderCustomers(); });
+// Tapping List also shuts every card that was opened one at a time. Without
+// this, coming back from Full left a screen of open cards to close by hand -
+// so List doubles as "collapse the lot".
 document.querySelectorAll("[data-booking-view]").forEach(button=>button.onclick=()=>{
-  bookingCompact=button.dataset.bookingView==="list"; saveJSON("naki_booking_compact_v1",bookingCompact); renderDirectBookings();
+  bookingCompact=button.dataset.bookingView==="list";
+  if (bookingCompact) bookingCardsOpen.clear();
+  saveJSON("naki_booking_compact_v1",bookingCompact); renderDirectBookings();
 });
 document.querySelectorAll("[data-customer-view]").forEach(button=>button.onclick=()=>{
-  customerCompact=button.dataset.customerView==="list"; saveJSON("naki_customer_compact_v1",customerCompact); renderCustomers();
+  customerCompact=button.dataset.customerView==="list";
+  if (customerCompact) customerCardsOpen.clear();
+  saveJSON("naki_customer_compact_v1",customerCompact); renderCustomers();
 });
 
 // Fix a customer's details on their booking - typos, a better address, extra items.
