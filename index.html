@@ -703,6 +703,10 @@ let importBusy = false;     // a sheet load is still geocoding — block overlap
 let runChangeBusy = false;  // a GPS/address action must finish before changing runs
 let pendingReceipts = {};   // stop id -> built PDF File, waiting for the Send tap
 let pendingInvoices = {};   // stop id -> built invoice PDF, waiting for the Send tap
+// Same idea for an invoice raised from a booking card rather than a run stop.
+// Lives up here with the other state because the Bookings renderer reads it to
+// show "Invoice preview" instead of "Send invoice" while one is waiting.
+const pendingBookingInvoices = {};
 let ownerToken = localStorage.getItem(OWNER_TOKEN_KEY) || "";
 let directBookingRows = [];
 let bookingSearchText = "";
@@ -1355,7 +1359,11 @@ function renderDirectBookings(){
         ${navAddress?`<a class="ghost sm" target="_blank" rel="noopener" href="https://www.google.com/maps/search/?api=1&amp;query=${encodeURIComponent(navAddress)}">🧭 Navigate</a>`:""}
         ${bookingWorkflowActions}
         ${b._localOnly?"":`${b.photoCount ? `<button class="ghost sm" data-photos-direct="${esc(b.id)}">📷 ${b.photoCount} photo${b.photoCount===1?"":"s"}</button>` : ""}
-        ${goodEmail(b.email) && !unpaid ? `<button class="ghost sm" title="Email this customer an invoice" data-invoice-direct="${esc(b.id)}">📄 ${b.invoiceOwing?"Invoice again":"Send invoice"}</button>` : ""}
+        ${/* A built-but-unsent invoice has to stay visible, or closing the preview
+              would quietly lose it and the button would still say "Send invoice". */""}
+        ${goodEmail(b.email) && !unpaid ? (pendingBookingInvoices[b.id]
+          ? `<button class="good sm" data-invoice-direct="${esc(b.id)}">👁 Invoice preview</button><button class="ghost sm" title="Throw this invoice away and start again" data-invoice-cancel="${esc(b.id)}">↺ Redo</button>`
+          : `<button class="ghost sm" title="Email this customer an invoice" data-invoice-direct="${esc(b.id)}">📄 ${b.invoiceOwing?"Invoice again":"Send invoice"}</button>`) : ""}
         <button class="good sm" data-edit-direct="${esc(b.id)}">✎ Edit details &amp; price</button>
         <button class="ghost sm" title="Delete this booking" data-delete-direct="${esc(b.id)}">✕ Delete</button>`}
       </div>`;
@@ -1434,6 +1442,11 @@ function renderDirectBookings(){
   list.querySelectorAll("[data-photos-direct]").forEach(button=>button.onclick=()=>showBookingPhotos(button.dataset.photosDirect));
   list.querySelectorAll("[data-owner-document]").forEach(button=>button.onclick=()=>openOwnerDocument(button.dataset.ownerDocument));
   list.querySelectorAll("[data-invoice-direct]").forEach(button=>button.onclick=()=>invoiceDirectBooking(button.dataset.invoiceDirect));
+  list.querySelectorAll("[data-invoice-cancel]").forEach(button=>button.onclick=()=>{
+    delete pendingBookingInvoices[button.dataset.invoiceCancel];
+    renderDirectBookings();
+    directStatus("Invoice discarded — nothing was sent.");
+  });
   rememberOpenCards(list,"details[data-booking-id]",bookingCardsOpen,"data-booking-id");
   restoreTownGroups(list,bookingGroupOpen,"naki_booking_group_open_v1",narrowed);
   directStatus(narrowed
@@ -1442,23 +1455,28 @@ function renderDirectBookings(){
 }
 // Invoice straight off a booking card. An invoice used to only be possible from
 // a stop on a run, so billing someone who wasn't on today's run meant adding them
-// to one first. The PDF and the email are the same ones the run uses - only the
-// starting point is different. Passing the booking's own id is what files the
-// invoice against this booking instead of leaving it floating.
-async function invoiceDirectBooking(id){
+// to one first. This walks the same path as the Today button - ask the amount,
+// build the PDF, show it in the same preview with Change amount / Send - so the
+// invoice is never emailed without being looked at first. Passing the booking's
+// own id is what files it against this booking instead of leaving it floating.
+async function invoiceDirectBooking(id, askAmount){
   const b=directBookingRows.find(row=>row.id===id); if(!b) return;
   const who=[b.firstName,b.lastName].filter(Boolean).join(" ")||"this customer";
   if (!goodEmail(b.email)) return directStatus("That booking has no valid email to send an invoice to.",true);
   if (!window.jspdf) return directStatus("The PDF maker didn't load — check your connection and try again.",true);
-  const seed=b.quotedPrice!=null ? Number(b.quotedPrice) : Number(b.total||0);
+  // Already built and not yet sent? Go straight back to the preview.
+  if (pendingBookingInvoices[id] && !askAmount) return openBookingInvoicePreview(id);
+  const previous=pendingBookingInvoices[id];
+  const seed=previous ? previous.amount : (b.quotedPrice!=null ? Number(b.quotedPrice) : Number(b.total||0));
   const entered=await openEditForm({
     title:`📄 Invoice ${who}`,
-    note:`This emails ${b.email} the invoice PDF and files it against this booking.`,
+    note:`You'll see the invoice before anything is emailed to ${b.email}.`,
     saveLabel:"Build the invoice",
     fields:[
       { key:"amount", label:"Amount owed ($)", value:seed?String(seed):"", inputmode:"decimal",
         validate:v=>parseMoney(v)===null ? "Enter the amount as a number." : "" },
-      { key:"remind", label:"Remind them on (optional, YYYY-MM-DD)", value:"",
+      { key:"remind", label:"Remind them on (optional, YYYY-MM-DD)",
+        value:previous?previous.reminderDate:"",
         placeholder:localIso(new Date(Date.now()+7*86400000)),
         validate:v=>{ const t=String(v||"").trim(); return !t||/^\d{4}-\d{2}-\d{2}$/.test(t) ? "" : "Use the date format YYYY-MM-DD, or leave it blank."; } }
     ]
@@ -1475,15 +1493,38 @@ async function invoiceDirectBooking(id){
     amount, invoiceAmount:amount
   };
   directStatus("Building the invoice…");
-  let file;
   try{
     asStop.profileUrl=await customerProfileLink(asStop);
     const blob=await buildInvoicePdf(asStop, amount);
-    file=new File([blob],`Invoice - ${(who||"pickup").replace(/[^\w \-]/g,"")}.pdf`,{type:"application/pdf"});
+    pendingBookingInvoices[id]={
+      file:new File([blob],`Invoice - ${(who||"pickup").replace(/[^\w \-]/g,"")}.pdf`,{type:"application/pdf"}),
+      amount, reminderDate, who, asStop
+    };
   }catch(e){ return directStatus("Couldn't build that invoice: "+e.message,true); }
-  if (!confirm(`Email ${who} an invoice for $${amount.toFixed(2)}?\n\nTo: ${b.email}${reminderDate?`\nReminder: ${reminderDate}`:""}`)) {
-    return directStatus("Invoice not sent.");
-  }
+  directStatus("");
+  renderDirectBookings();          // card now offers Preview / Redo
+  openBookingInvoicePreview(id);
+}
+// Same preview window the run uses, pointed at a booking instead of a stop.
+function openBookingInvoicePreview(id){
+  const pending=pendingBookingInvoices[id]; if(!pending) return;
+  const wrapEl=document.getElementById("receiptPreview");
+  if (receiptPreviewUrl) URL.revokeObjectURL(receiptPreviewUrl);
+  receiptPreviewUrl=URL.createObjectURL(pending.file);
+  document.getElementById("receiptFrame").src=receiptPreviewUrl;
+  const send=document.getElementById("receiptSendBtn");
+  send.textContent=`📧 Email invoice · $${pending.amount.toFixed(2)}`;
+  send.onclick=()=>{ closeReceiptPreview(); sendBookingInvoice(id); };
+  document.getElementById("receiptRedoBtn").onclick=()=>{
+    closeReceiptPreview();
+    invoiceDirectBooking(id, true);          // re-ask the amount, rebuild
+  };
+  wrapEl.style.display="flex";
+}
+async function sendBookingInvoice(id){
+  const pending=pendingBookingInvoices[id]; if(!pending) return;
+  const b=directBookingRows.find(row=>row.id===id); if(!b) return;
+  const { file, amount, reminderDate, who, asStop }=pending;
   directStatus("Emailing the invoice…");
   try{
     const res=await fetch(`${API}/send-invoice`,{
@@ -1501,12 +1542,16 @@ async function invoiceDirectBooking(id){
     });
     const out=await res.json().catch(()=>({}));
     if (!res.ok || !out.ok) throw new Error(out.error||"The email could not be sent.");
+    delete pendingBookingInvoices[id];
     // Pull the booking back so the invoice appears in its paperwork and the card
     // drops into Invoice owing without needing a manual refresh.
     await loadDirectBookings(false);
     directStatus(`✓ Invoice for $${amount.toFixed(2)} emailed to ${who}${out.reminderId?` — reminder set for ${reminderDate}`:""}.`);
     flash(`✓ Invoice sent to ${who} · now in Bookings → Invoice owing`);
-  }catch(e){ directStatus("Couldn't email that invoice: "+e.message,true); }
+  }catch(e){
+    // Keep the built PDF so Send can be tried again without rebuilding it.
+    directStatus("Couldn't email that invoice: "+e.message,true);
+  }
 }
 async function openOwnerDocument(id){
   const preview=window.open("about:blank","_blank");
