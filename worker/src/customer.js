@@ -2863,6 +2863,11 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
       const pickupWindow = clean(body.pickupWindow, 80);
       const customerNote = clean(body.customerNote, 500);
       const recipients = Array.isArray(body.recipients) ? body.recipients.slice(0, 200) : [];
+      // Opt-in, never assumed. This endpoint is also used by the "email everyone"
+      // button (which already sends its own message) and by the backfill that
+      // repairs dates on old confirmations - emailing from either would double up
+      // or re-announce a pickup that was arranged weeks ago.
+      const notifyCustomer = body.notifyCustomer === true;
       if (!/^\d{4}-\d{2}-\d{2}$/.test(pickupDate)) {
         return json(request, { error: "Choose the confirmed pickup day" }, 400);
       }
@@ -2897,7 +2902,7 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
         // The bulk text Woody sends is the primary notice; this email rides
         // alongside it as a backup record with the account link on it. A failed
         // send here must never undo the date that's already saved and texted.
-        if (EMAIL_RE.test(target.row.email || "")) {
+        if (notifyCustomer && EMAIL_RE.test(target.row.email || "")) {
           try {
             const sent = await sendMail(env, {
               to: target.row.email,

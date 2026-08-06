@@ -3436,12 +3436,15 @@ function bulkBookingRecipient(s){
 }
 // Deliberately NOT messageDay() - that falls back to today for the sent-marks bucket,
 // and a date only ever reaches a customer's account if Woody actually chose one.
-async function publishBulkPickupDate(recipients,pickupDate=state.confirmationDate||""){
+// notify is opt-in: the server only emails the "pickup confirmed" message when
+// this says so. Saving a date is not the same as announcing it — the backfill
+// below and the email-everyone button both save dates without wanting a send.
+async function publishBulkPickupDate(recipients,pickupDate=state.confirmationDate||"",notify=false){
   if (!pickupDate || !recipients.length) return {ok:true,updated:0,unmatched:[]};
   if (!ownerToken) throw new Error("Sign in on the Bookings tab once, then tap this button again so the dates can be saved to customer accounts.");
   const data=await ownerApi("/owner/bookings/bulk-confirm",{
     method:"POST",
-    body:JSON.stringify({pickupDate,recipients:recipients.map(bulkBookingRecipient)})
+    body:JSON.stringify({pickupDate,notifyCustomer:notify,recipients:recipients.map(bulkBookingRecipient)})
   });
   const unmatched=new Set(data.unmatched||[]);
   recipients.forEach(s=>{
@@ -3604,7 +3607,9 @@ window.markSelectedSent = async () => {
   if (messageMode()==="confirm"){
     busy("Saving confirmed pickup dates…");
     try{
-      await publishBulkPickupDate(recipients);
+      // The one place a confirmation is actually going out: Woody has just sent
+      // the texts. The matching email rides along with it.
+      await publishBulkPickupDate(recipients,state.confirmationDate||"",true);
       datesSaved=true;
     }catch(e){
       busy("");
