@@ -632,7 +632,7 @@ function pickupConfirmationText(booking, pickupDate, pickupWindow, customerNote)
 
 Pickup day: ${day}
 ${pickupWindow ? `Time: ${pickupWindow}\n` : ""}${customerNote ? `Note: ${customerNote}\n` : ""}
-Please make sure the appliance(s) are accessible and any pets are safely secured. No one needs to be home if the items and payment are left safely inside your property line.
+Can you please make sure the appliance(s) are accessible and any furry friends are safely secured, if need be? You don't need to be home for the pickup — can you please just leave the items and $ safely inside your property line? 😊
 
 You can view or cancel your active booking here:
 ${CUSTOMER_ACCOUNT_URL}
@@ -2052,8 +2052,11 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
       const raw = Number(body.score);
       if (!Number.isFinite(raw) || raw < 0) return json(request, { error: "Invalid score" }, 400);
       // Cap what a single run can claim, so a fiddled request can't park an
-      // unbeatable number at the top of the board forever.
-      const score = Math.min(Math.floor(raw), 1000000);
+      // unbeatable number at the top of the board forever. 1,000,000 turned out
+      // to be too low for real play (Invade legitimately clears it) - raised
+      // well above anything a genuine run reaches, still a backstop against a
+      // garbage/overflowed number.
+      const score = Math.min(Math.floor(raw), 100000000);
       const stamp = now();
       const day = aucklandDay();
       const week = aucklandWeek();
@@ -2867,6 +2870,7 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
       const seen = new Set();
       const matched = [];
       const unmatched = [];
+      let emailed = 0;
       for (const recipient of recipients) {
         const target = await bulkBookingTarget(env, recipient || {});
         if (!target) {
@@ -2876,6 +2880,7 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
         if (seen.has(target.row.id)) continue;
         seen.add(target.row.id);
         const updatedAt = now();
+        const finalNote = customerNote || target.row.customer_note || "";
         await env.CUSTOMER_DB.prepare(
           `UPDATE ${target.table} SET status='CONFIRMED', pickup_date=?1, pickup_window=?2,
             customer_note=CASE WHEN ?3='' THEN customer_note ELSE ?3 END, updated_at=?4
@@ -2889,9 +2894,23 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
         if (target.table !== "external_bookings") {
           try { await updateSheetBookingStatus(env, target.row.id, "CONFIRMED"); } catch { /* app remains authoritative */ }
         }
+        // The bulk text Woody sends is the primary notice; this email rides
+        // alongside it as a backup record with the account link on it. A failed
+        // send here must never undo the date that's already saved and texted.
+        if (EMAIL_RE.test(target.row.email || "")) {
+          try {
+            const sent = await sendMail(env, {
+              to: target.row.email,
+              name: `${target.row.first_name || ""} ${target.row.last_name || ""}`.trim(),
+              subject: `Whiteware pickup confirmed - ${pickupDateText(pickupDate)}`,
+              text: pickupConfirmationText(target.row, pickupDate, pickupWindow, finalNote)
+            });
+            if (sent) emailed++;
+          } catch { /* the text already reached them; an email hiccup isn't fatal */ }
+        }
         matched.push(target.row.id);
       }
-      return json(request, { ok: true, updated: matched.length, matched, unmatched });
+      return json(request, { ok: true, updated: matched.length, emailed, matched, unmatched });
     }
 
     const ownerPdfMatch = path.match(/^\/owner\/documents\/([^/]+)\/pdf$/);
