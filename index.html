@@ -292,6 +292,17 @@
   .mini[open]{box-shadow:0 8px 20px #0004}
   .list-toolbar{display:flex;align-items:center;gap:8px;margin-bottom:8px}
   .list-toolbar .grow{margin-bottom:0}
+  /* Two explicit choices make the current layout obvious. A single button that
+     said the *other* layout made List and Full feel backwards. */
+  .view-switch{display:inline-grid;grid-template-columns:repeat(2,auto);gap:3px;padding:3px;
+    border:1px solid var(--line);border-radius:11px;background:#08283d;flex:0 0 auto}
+  .view-switch button{min-height:36px;padding:5px 9px;background:transparent;border-color:transparent;font-size:12px}
+  .view-switch button.on{background:var(--accent);border-color:var(--accent);color:#fff}
+  .booking-docs{margin-top:10px;padding:9px 10px;border:1px solid var(--line);border-radius:11px;background:#0b2c42}
+  .booking-doc-row{display:flex;align-items:center;gap:8px;padding:6px 0;border-top:1px solid var(--line);font-size:13px}
+  .booking-doc-row:first-child{border-top:0}
+  .booking-doc-row .grow{min-width:0}
+  .owing-note{margin-top:9px;padding:9px 11px;border-radius:11px;background:#4a1d24;border:1px solid #c0392b;color:#fff}
   /* "Showing one customer" banner. Always on screen while a focus filter is on,
      so a filter that matches nothing still has a visible way back to the list. */
   .filter-chip{display:flex;align-items:center;gap:8px;margin-bottom:8px;padding:8px 12px;
@@ -467,7 +478,10 @@
     </div>
     <div class="list-toolbar" id="bookingToolbar" style="display:none">
       <input id="bookingSearch" class="grow" placeholder="Search name, town, address, email or phone" />
-      <button class="ghost sm" id="bookingViewToggle" title="Switch between a short list and full cards"></button>
+      <span class="view-switch" id="bookingViewSwitch" aria-label="Booking view">
+        <button class="ghost sm" data-booking-view="list">List</button>
+        <button class="ghost sm" data-booking-view="full">Full</button>
+      </span>
     </div>
     <div class="stage-tabs" id="bookingStageTabs" style="display:none"></div>
     <div class="filter-chip" id="bookingFilterChip" style="display:none"></div>
@@ -487,7 +501,10 @@
     </div>
     <div class="list-toolbar" id="customerToolbar" style="display:none">
       <input id="customerSearch" class="grow" placeholder="Search name, town, address, email or phone" />
-      <button class="ghost sm" id="customerViewToggle" title="Switch between a short list and full cards"></button>
+      <span class="view-switch" id="customerViewSwitch" aria-label="Customer view">
+        <button class="ghost sm" data-customer-view="list">List</button>
+        <button class="ghost sm" data-customer-view="full">Full</button>
+      </span>
     </div>
     <div id="customerStatus" class="small muted"></div>
     <div id="customerList"></div>
@@ -701,6 +718,10 @@ let bookingStage = loadJSON("naki_booking_stage_v1", "all");
 let customerSearchText = "";
 let bookingGroupOpen = loadJSON("naki_booking_group_open_v1", {});
 let customerGroupOpen = loadJSON("naki_customer_group_open_v1", {});
+// Background owner refreshes repaint both lists. Remember the exact cards Woody
+// opened so those refreshes never snap a customer or booking shut under him.
+const bookingCardsOpen = new Set();
+const customerCardsOpen = new Set();
 // Short list by default - full cards are a lot to scroll past on a phone.
 let bookingCompact = loadBool("naki_booking_compact_v1", true);
 let customerCompact = loadBool("naki_customer_compact_v1", true);
@@ -1051,10 +1072,11 @@ function clearBookingFocus(){ bookingFocusEmail=""; bookingFocusName=""; }
 // run right now - a booking marked ADDED_TO_RUN whose run was since deleted drops
 // back to New, because it needs putting on a run again.
 function stageOfBooking(b){
+  if (b.invoiceOwing) return "owing";
   if (["COMPLETED","DECLINED","CANCELLED"].includes(b.status)) return "done";
   return runContainingBooking(b.id) ? "scheduled" : "new";
 }
-const BOOKING_STAGES=[["all","All"],["new","New"],["scheduled","Scheduled"],["done","Done"]];
+const BOOKING_STAGES=[["all","All"],["new","New"],["scheduled","Scheduled"],["owing","Invoice owing"],["done","Done"]];
 function hideBookingStageTabs(){
   const wrap=$("#bookingStageTabs"); if (wrap){ wrap.style.display="none"; wrap.innerHTML=""; }
 }
@@ -1143,12 +1165,58 @@ function runContainingBooking(bookingId){
     return (data.stops||[]).concat(data.bad||[]).some(stop=>stop.submission_id===bookingId);
   }) || null;
 }
+function unpaidStopForBooking(booking){
+  return (state.unpaid||[]).find(stop=>
+    stop.submission_id===booking.id ||
+    stop.unpaidSourceId===booking.id ||
+    (booking.externalKey && historyBookingKey(stop)===booking.externalKey)
+  ) || null;
+}
+// Server documents make invoices visible on every signed-in device; the phone's
+// unpaid ledger supplies the live buttons and is authoritative when it says paid.
+function bookingsWithInvoiceState(rows){
+  const enriched=(rows||[]).map(booking=>{
+    const unpaid=unpaidStopForBooking(booking);
+    return {
+      ...booking,
+      invoiceOwing:unpaid ? !unpaid.paid : Boolean(booking.invoiceOwing),
+      _unpaidStopId:unpaid ? unpaid.id : ""
+    };
+  });
+  const matched=new Set(enriched.map(booking=>booking._unpaidStopId).filter(Boolean));
+  (state.unpaid||[]).filter(stop=>!stop.paid && !matched.has(stop.id)).forEach(stop=>{
+    const created=stop.invoicedAt && /^\d{4}-\d{2}-\d{2}$/.test(stop.invoicedAt)
+      ? `${stop.invoicedAt}T12:00:00`
+      : new Date(Number(stop.historyCreatedAt||Date.now())).toISOString();
+    enriched.push({
+      id:`LOCAL-INVOICE-${stop.id}`,
+      status:"ADDED_TO_RUN",
+      firstName:stop.first_name||"", lastName:stop.last_name||"", phone:stop.phone||"", email:stop.email||"",
+      streetAddress:stop.street||"", town:stop.town||"", area:stop.area||"", items:stop.appliances||[],
+      additionalInfo:stop.additional_info||stop.note||"", total:Number(stop.invoiceAmount||stop.amount||0),
+      quotedPrice:stop.invoiceAmount!=null?Number(stop.invoiceAmount):null, quoteRequired:false,
+      pickupDate:stop.confirmedPickupDate||"", pickupWindow:"", source:"LOCAL_INVOICE", sheetSyncStatus:"PICKUP_RUN",
+      createdAt:created, documents:[], invoiceOwing:true, _unpaidStopId:stop.id, _localOnly:true
+    });
+  });
+  return enriched;
+}
+function rememberOpenCards(root, selector, openSet, attribute){
+  root.querySelectorAll(selector).forEach(detail=>{
+    const id=detail.getAttribute(attribute); if(!id) return;
+    detail.open=openSet.has(id);
+    detail.addEventListener("toggle",()=>{
+      if(detail.open) openSet.add(id); else openSet.delete(id);
+    });
+  });
+}
 function renderDirectBookings(){
   const login=$("#ownerLoginCard"), list=$("#directBookingList"), logout=$("#ownerLogout");
   if (!login || !list) return;
+  const bookingRows=bookingsWithInvoiceState(directBookingRows);
   login.style.display = ownerToken ? "none" : "block";
   logout.style.display = ownerToken ? "inline-block" : "none";
-  const fresh = directBookingRows.filter(b=>b.status==="NEW").length;
+  const fresh = bookingRows.filter(b=>b.status==="NEW" && !b.invoiceOwing).length;
   const count=$("#bookingCount");
   count.textContent=String(fresh); count.style.display=fresh ? "inline-grid" : "none";
   if (!ownerToken){
@@ -1157,14 +1225,16 @@ function renderDirectBookings(){
     directStatus("Sign in to see customer bookings.");
     return;
   }
-  const toolbar=$("#bookingToolbar"); if (toolbar) toolbar.style.display=directBookingRows.length ? "flex" : "none";
+  const toolbar=$("#bookingToolbar"); if (toolbar) toolbar.style.display=bookingRows.length ? "flex" : "none";
   // Keep the box on screen whenever something is typed in it, or a short list
   // would hide the only way to clear the search that is still filtering it.
   const search=$("#bookingSearch");
-  if (search) search.style.display=(directBookingRows.length>5 || bookingSearchText) ? "block" : "none";
-  const viewToggle=$("#bookingViewToggle");
-  if (viewToggle) viewToggle.textContent=bookingCompact ? "⊞ Full" : "☰ List";
-  if (!directBookingRows.length){
+  if (search) search.style.display=(bookingRows.length>5 || bookingSearchText) ? "block" : "none";
+  document.querySelectorAll("[data-booking-view]").forEach(button=>{
+    const selected=(button.dataset.bookingView==="list")===bookingCompact;
+    button.classList.toggle("on",selected); button.setAttribute("aria-pressed",String(selected));
+  });
+  if (!bookingRows.length){
     clearBookingFocus(); paintBookingFilterChip(); hideBookingStageTabs();
     list.innerHTML='<div class="card"><b>No direct bookings yet.</b><p class="small muted">New customer requests will appear here automatically.</p></div>';
     directStatus("Up to date.");
@@ -1173,7 +1243,7 @@ function renderDirectBookings(){
   // Painted before any empty-state return below, so a filter matching nothing
   // still leaves the "Show all" button on screen.
   paintBookingFilterChip();
-  const searchable = directBookingRows.filter(b=>
+  const searchable = bookingRows.filter(b=>
     matchesSearch(b,bookingSearchText) &&
     (!bookingFocusEmail || String(b.email||"").toLowerCase()===bookingFocusEmail));
   paintBookingStageTabs(searchable);
@@ -1185,7 +1255,7 @@ function renderDirectBookings(){
       : bookingFocusEmail ? "No bookings for this customer yet."
       : "Nothing matches that search."}</b>
       <p class="small muted">Tap another button above to see the rest.</p></div>`;
-    directStatus(`0 of ${directBookingRows.length} bookings.`);
+    directStatus(`0 of ${bookingRows.length} bookings.`);
     return;
   }
   const bookingCard = b=>{
@@ -1193,13 +1263,15 @@ function renderDirectBookings(){
     const address=esc([b.streetAddress,b.town,b.area].filter(Boolean).join(", "));
     const items=esc((b.items||[]).join(", "));
     const date=new Date(b.createdAt).toLocaleString("en-NZ",{day:"numeric",month:"short",hour:"numeric",minute:"2-digit"});
-    const terminal=["COMPLETED","DECLINED","CANCELLED"].includes(b.status);
+    const terminal=["COMPLETED","DECLINED","CANCELLED"].includes(b.status) && !b.invoiceOwing;
     const linkedRun=runContainingBooking(b.id);
     const actuallyAdded=Boolean(linkedRun);
     const added=actuallyAdded;
-    const statusText=b.status==="ADDED_TO_RUN" && !actuallyAdded ? "New request" : (b.status==="NEW" ? "New request" : b.status.replaceAll("_"," "));
+    const statusText=b.invoiceOwing ? "INVOICE OWING" : b.status==="ADDED_TO_RUN" && !actuallyAdded ? "New request" : (b.status==="NEW" ? "New request" : b.status.replaceAll("_"," "));
     const statusClass=b.status==="CANCELLED" ? " cancelled" : "";
-    const sync=b.source==="JOTFORM"
+    const sync=(b.source==="PICKUP_RUN" || b.source==="LOCAL_INVOICE")
+      ? '<span class="sync-ok">Pickup run</span>'
+      : b.source==="JOTFORM"
       ? (b.sheetSyncStatus==="SYNCED"
           ? '<span class="sync-ok">Jotform · Sheet saved</span>'
           : '<span class="sync-wait">Jotform · Sheet retrying</span>')
@@ -1219,11 +1291,42 @@ function renderDirectBookings(){
       ${b.phone?`<span>📞 <a href="tel:${esc(String(b.phone).replace(/[^\d+]/g,""))}">${phone}</a></span>`:""}
       ${b.email?`<span>✉️ <a href="mailto:${encodeURIComponent(b.email)}">${emailAddr}</a></span>`:""}
     </div>` : "";
-    const addAction=actuallyAdded
-      ? linkedRun.id===runStore.activeRunId
-        ? `<button class="good sm" disabled>✓ Added to this run</button>`
-        : `<button class="ghost sm" data-open-booking-run="${esc(linkedRun.id)}">Added to ${esc(linkedRun.name)}</button>`
-      : `<button class="good sm" data-add-direct="${esc(b.id)}">Add to active run</button>`;
+    const documents=(b.documents||[]).map(document=>{
+      const kind=document.kind==="RECEIPT" ? "Receipt" : "Invoice";
+      const sent=new Date(document.createdAt).toLocaleDateString("en-NZ",{day:"numeric",month:"short",year:"numeric"});
+      return `<div class="booking-doc-row">
+        <span>${document.kind==="RECEIPT"?"🧾":"📄"}</span>
+        <span class="grow"><b>${kind} · $${Number(document.amount||0).toFixed(2)}</b><br><span class="muted">Sent ${esc(sent)}</span></span>
+        ${document.hasPdf?`<button class="ghost sm" data-owner-document="${esc(document.id)}">Open PDF</button>`:""}
+      </div>`;
+    }).join("");
+    const documentBox=documents ? `<div class="booking-docs"><b>Invoices &amp; receipts for this booking</b>${documents}</div>` : "";
+    const unpaid=b._unpaidStopId ? findStop(b._unpaidStopId) : null;
+    const linkedUnpaidRun=unpaid ? runHoldingUnpaidPickup(unpaid.id) : null;
+    const owingAmount=unpaid && unpaid.invoiceAmount!=null ? Number(unpaid.invoiceAmount) :
+      Number((((b.documents||[]).find(document=>document.kind==="INVOICE")||{}).amount)||b.quotedPrice||b.total||0);
+    const owingActions=unpaid ? `${linkedUnpaidRun
+      ? (linkedUnpaidRun.id===runStore.activeRunId
+          ? `<button class="ghost sm" disabled>✓ In active run</button>`
+          : `<button class="ghost sm" onclick="openRunForUnpaid('${linkedUnpaidRun.id}')">📍 Go to run</button>`)
+      : `<button class="good sm" onclick="addUnpaidToRun('${unpaid.id}')">↩ Add to active run</button>`}
+      <button class="good sm" onclick="markPaid('${unpaid.id}')">💰 Mark paid</button>
+      <button class="ghost sm" onclick="receiptStop('${unpaid.id}')">🧾 Send receipt</button>
+      <button class="ghost sm" onclick="invoiceStop('${unpaid.id}')">📄 Invoice again</button>` : "";
+    const owingBox=b.invoiceOwing ? `<div class="owing-note"><b>💰 Invoice owing · $${owingAmount.toFixed(2)}</b>
+      ${unpaid?`<div class="direct-actions">${owingActions}</div>`:`<div class="small" style="margin-top:4px">This invoice is attached below. Refresh this phone's saved runs to use payment actions here.</div>`}</div>` : "";
+    const bookingWorkflowActions=b._localOnly ?
+      `<button class="ghost sm" onclick="editStop('${b._unpaidStopId}')">✎ Edit pickup</button>` :
+      (["CANCELLED","DECLINED"].includes(b.status)
+        ? `<button class="good sm" data-restore-direct="${esc(b.id)}">↺ Restore booking</button>`
+        : b.status==="COMPLETED"
+        ? `<button class="good sm" data-uncomplete-direct="${esc(b.id)}">↺ Undo completed</button>`
+        : b.invoiceOwing && unpaid
+        ? ""
+        : (added
+            ? `<button class="ghost sm" data-add-direct="${esc(b.id)}">↺ Re-add to active run</button>`
+            : `<button class="good sm" data-add-direct="${esc(b.id)}">Add to active run</button>`) +
+          `<button class="ghost sm" data-complete-direct="${esc(b.id)}">✓ Done</button>`);
     const body = `<div class="direct-meta"><span>${esc(date)}</span><span class="booking-status${statusClass}">${esc(statusText)}</span>${sync}</div>
       <div>${address}</div>
       ${contact}
@@ -1232,22 +1335,17 @@ function renderDirectBookings(){
       ${b.quotedPrice!=null && b.quoteNote ? `<div class="small muted">Quote note: ${esc(b.quoteNote)}</div>` : ""}
       ${b.emailFailed ? `<div class="small" style="color:var(--bad)">⚠ An email for this booking failed to send — check they know.</div>` : ""}
       ${confirmed}
+      ${owingBox}
+      ${documentBox}
       <div class="direct-actions">
-        <a class="ghost sm" href="tel:${esc(String(b.phone||"").replace(/[^\d+]/g,""))}">📞 Call</a>
-        <a class="ghost sm" href="mailto:${encodeURIComponent(b.email||"")}">✉️ Email</a>
+        ${b.phone?`<a class="ghost sm" href="tel:${esc(String(b.phone).replace(/[^\d+]/g,""))}">📞 Call</a>`:""}
+        ${b.email?`<a class="ghost sm" href="mailto:${encodeURIComponent(b.email)}">✉️ Email</a>`:""}
         ${b.phone&&pickupDay?`<a class="ghost sm" href="sms:${esc(String(b.phone).replace(/[^\d+]/g,""))}?body=${smsText}">💬 Text details</a>`:""}
-        ${["CANCELLED","DECLINED"].includes(b.status)
-          ? `<button class="good sm" data-restore-direct="${esc(b.id)}">↺ Restore booking</button>`
-          : b.status==="COMPLETED"
-          ? `<button class="good sm" data-uncomplete-direct="${esc(b.id)}">↺ Undo completed</button>`
-          : (added
-              ? `<button class="ghost sm" data-add-direct="${esc(b.id)}">↺ Re-add to active run</button>`
-              : `<button class="good sm" data-add-direct="${esc(b.id)}">Add to active run</button>`) +
-            `<button class="ghost sm" data-complete-direct="${esc(b.id)}">✓ Done</button>`}
-        <button class="good sm" data-quote-direct="${esc(b.id)}">${b.quotedPrice!=null ? "✎ Change price" : (b.quoteRequired ? "$ Send price" : "✎ Change price")}</button>
+        ${bookingWorkflowActions}
+        ${b._localOnly?"":`<button class="good sm" data-quote-direct="${esc(b.id)}">${b.quotedPrice!=null ? "✎ Change price" : (b.quoteRequired ? "$ Send price" : "✎ Change price")}</button>
         ${b.photoCount ? `<button class="ghost sm" data-photos-direct="${esc(b.id)}">📷 ${b.photoCount} photo${b.photoCount===1?"":"s"}</button>` : ""}
         <button class="ghost sm" data-edit-direct="${esc(b.id)}">✎ Edit details</button>
-        <button class="ghost sm" title="Delete this booking" data-delete-direct="${esc(b.id)}">✕ Delete</button>
+        <button class="ghost sm" title="Delete this booking" data-delete-direct="${esc(b.id)}">✕ Delete</button>`}
       </div>`;
     const classes=`direct-booking${actuallyAdded?' added':''}${b.status==='CANCELLED'?' cancelled':''}`;
     if (!bookingCompact){
@@ -1257,10 +1355,10 @@ function renderDirectBookings(){
     </article>`;
     }
     // Compact: name, where and what it costs on one line - open it for the rest.
-    const dot=b.status==="CANCELLED"||b.status==="DECLINED" ? "off" : actuallyAdded ? "added" : isNewBooking(b) ? "new" : "";
+    const dot=b.invoiceOwing || b.status==="CANCELLED"||b.status==="DECLINED" ? "off" : actuallyAdded ? "added" : isNewBooking(b) ? "new" : "";
     const where=townLabel(b.town);
     const sub=[where==="No town"?"":where, statusText].filter(Boolean).join(" · ");
-    return `<details class="card ${classes} mini" data-booking-id="${esc(b.id)}">
+    return `<details class="card ${classes} mini" data-booking-id="${esc(b.id)}"${bookingCardsOpen.has(b.id)?" open":""}>
       <summary>
         <span class="mini-dot ${dot}"></span>
         <span class="mini-main">
@@ -1274,18 +1372,20 @@ function renderDirectBookings(){
     </details>`;
   };
   const isNewBooking=b=>b.status==="NEW" || (b.status==="ADDED_TO_RUN" && !runContainingBooking(b.id));
-  const previousRows = visibleRows.filter(b=>["COMPLETED","DECLINED","CANCELLED"].includes(b.status));
+  const previousRows = visibleRows.filter(b=>["COMPLETED","DECLINED","CANCELLED"].includes(b.status) && !b.invoiceOwing);
   // New and already-added jobs both live in their town group now - splitting new
   // ones out into their own bucket made a town look like it had lost a booking
   // whenever one of its jobs hadn't been added to a run yet. The 🆕 dot on each
   // card still marks which ones are new.
-  const rest = visibleRows.filter(b=>!["COMPLETED","DECLINED","CANCELLED"].includes(b.status));
+  const rest = visibleRows.filter(b=>b.invoiceOwing || !["COMPLETED","DECLINED","CANCELLED"].includes(b.status));
   const townGroups = groupByTown(rest);
   let html = "";
   // A search should show what it found, not hide it inside collapsed towns.
   const narrowed = Boolean(bookingSearchText || bookingFocusEmail || bookingStage!=="all");
   const openWhenSearching = narrowed ? " open" : "";
-  townGroups.forEach(group=>{
+  if (bookingStage==="owing") {
+    html += `<details class="town-group" open><summary>💰 Invoice owing (${rest.length})<span class="chev">›</span></summary>${rest.map(bookingCard).join("")}</details>`;
+  } else townGroups.forEach(group=>{
     // A town with a not-yet-added job stays open by default so it's obvious it's still waiting.
     const hasFresh = group.rows.some(isNewBooking);
     // The button means the whole town, even if a search currently shows only one
@@ -1321,10 +1421,23 @@ function renderDirectBookings(){
   list.querySelectorAll("[data-delete-direct]").forEach(button=>button.onclick=()=>deleteDirectBooking(button.dataset.deleteDirect));
   list.querySelectorAll("[data-quote-direct]").forEach(button=>button.onclick=()=>sendBookingQuote(button.dataset.quoteDirect));
   list.querySelectorAll("[data-photos-direct]").forEach(button=>button.onclick=()=>showBookingPhotos(button.dataset.photosDirect));
+  list.querySelectorAll("[data-owner-document]").forEach(button=>button.onclick=()=>openOwnerDocument(button.dataset.ownerDocument));
+  rememberOpenCards(list,"details[data-booking-id]",bookingCardsOpen,"data-booking-id");
   restoreTownGroups(list,bookingGroupOpen,"naki_booking_group_open_v1",narrowed);
   directStatus(narrowed
-    ? `${visibleRows.length} of ${directBookingRows.length} bookings.`
+    ? `${visibleRows.length} of ${bookingRows.length} bookings.`
     : `${fresh} new booking${fresh===1?"":"s"}.`);
+}
+async function openOwnerDocument(id){
+  const preview=window.open("about:blank","_blank");
+  try{
+    const data=await ownerApi(`/owner/documents/${encodeURIComponent(id)}/pdf`);
+    const bytes=Uint8Array.from(atob(data.pdfBase64),char=>char.charCodeAt(0));
+    const url=URL.createObjectURL(new Blob([bytes],{type:"application/pdf"}));
+    if(preview) preview.location=url;
+    else { const link=document.createElement("a"); link.href=url; link.target="_blank"; link.click(); }
+    setTimeout(()=>URL.revokeObjectURL(url),60000);
+  }catch(e){ if(preview) preview.close(); directStatus(e.message,true); }
 }
 // A customer can change their request after it is already on a run. Bring the
 // stop in the run into line so the truck is loaded for what they actually want.
@@ -1583,12 +1696,12 @@ $("#directRefresh").onclick=()=>loadDirectBookings(true);
 $("#customersRefresh").onclick=()=>loadCustomers(true);
 $("#bookingSearch").addEventListener("input",event=>{ bookingSearchText=event.target.value.trim().toLowerCase(); renderDirectBookings(); });
 $("#customerSearch").addEventListener("input",event=>{ customerSearchText=event.target.value.trim().toLowerCase(); renderCustomers(); });
-$("#bookingViewToggle").onclick=()=>{
-  bookingCompact=!bookingCompact; saveJSON("naki_booking_compact_v1",bookingCompact); renderDirectBookings();
-};
-$("#customerViewToggle").onclick=()=>{
-  customerCompact=!customerCompact; saveJSON("naki_customer_compact_v1",customerCompact); renderCustomers();
-};
+document.querySelectorAll("[data-booking-view]").forEach(button=>button.onclick=()=>{
+  bookingCompact=button.dataset.bookingView==="list"; saveJSON("naki_booking_compact_v1",bookingCompact); renderDirectBookings();
+});
+document.querySelectorAll("[data-customer-view]").forEach(button=>button.onclick=()=>{
+  customerCompact=button.dataset.customerView==="list"; saveJSON("naki_customer_compact_v1",customerCompact); renderCustomers();
+});
 
 // Fix a customer's details on their booking - typos, a better address, extra items.
 async function editDirectBooking(id){
@@ -1754,8 +1867,10 @@ function renderCustomers(){
   // on screen, or a short list hides the only way to clear the search.
   const search=$("#customerSearch");
   if (search) search.style.display=(customerRows.length>5 || customerSearchText) ? "block" : "none";
-  const viewToggle=$("#customerViewToggle");
-  if (viewToggle) viewToggle.textContent=customerCompact ? "⊞ Full" : "☰ List";
+  document.querySelectorAll("[data-customer-view]").forEach(button=>{
+    const selected=(button.dataset.customerView==="list")===customerCompact;
+    button.classList.toggle("on",selected); button.setAttribute("aria-pressed",String(selected));
+  });
   if (!customerRows.length){
     list.innerHTML='<div class="card"><b>No customers yet.</b><p class="small muted">People who book through your website will appear here.</p></div>';
     customerStatus("");
@@ -1770,7 +1885,9 @@ function renderCustomers(){
   list.innerHTML = groupByTown(visibleCustomers).map(group=>{
     const cards = group.rows.map(c=>{
       const name=esc([c.firstName,c.lastName].filter(Boolean).join(" "))||"(No name yet)";
-      const address=esc([c.streetAddress,c.area].filter(Boolean).join(", "));
+      // Town belongs on the card as well as in the 📍 group header — otherwise adding
+      // a town looks like it saved nothing at all.
+      const address=esc([c.streetAddress,c.area,tidyTown(c.town)].filter(Boolean).join(", "));
       const last=c.lastBookingAt ? new Date(c.lastBookingAt).toLocaleDateString("en-NZ",{day:"numeric",month:"short",year:"numeric"}) : "";
       const contact=(c.phone||c.email) ? `<div class="direct-contact">
         ${c.phone?`<span>📞 <a href="tel:${esc(String(c.phone).replace(/[^\d+]/g,""))}">${esc(c.phone)}</a></span>`:""}
@@ -1783,6 +1900,9 @@ function renderCustomers(){
         ${c.accessNotes?`<div class="small muted">📝 ${esc(c.accessNotes)}</div>`:""}
         <div class="direct-actions">
           ${c.phone?`<a class="ghost sm" href="sms:${esc(String(c.phone).replace(/[^\d+]/g,""))}">💬 Text</a>`:""}
+          ${c.phone?`<a class="ghost sm" href="tel:${esc(String(c.phone).replace(/[^\d+]/g,""))}">📞 Call</a>`:""}
+          ${c.email?`<a class="ghost sm" href="mailto:${encodeURIComponent(c.email)}">✉️ Email</a>`:""}
+          ${address?`<a class="ghost sm" target="_blank" rel="noopener" href="https://www.google.com/maps/search/?api=1&amp;query=${encodeURIComponent([c.streetAddress,c.town,c.area].filter(Boolean).join(", "))}">🧭 Navigate</a>`:""}
           ${c.bookings ? `<button class="ghost sm" data-customer-bookings="${esc(c.email)}">📋 Their bookings</button>` : ""}
           <button class="ghost sm" title="Edit this customer's details" data-edit-customer="${esc(c.id)}">✎ Edit</button>
           <button class="ghost sm" title="Delete this customer" data-delete-customer="${esc(c.id)}">✕ Delete</button>
@@ -1793,7 +1913,7 @@ function renderCustomers(){
         ${body}
       </article>`;
       }
-      return `<details class="card direct-booking mini">
+      return `<details class="card direct-booking mini" data-customer-id="${esc(c.id)}"${customerCardsOpen.has(c.id)?" open":""}>
         <summary>
           <span class="mini-dot ${c.bookings?"added":""}"></span>
           <span class="mini-main">
@@ -1810,6 +1930,7 @@ function renderCustomers(){
   }).join("");
   list.querySelectorAll("[data-delete-customer]").forEach(button=>button.onclick=()=>deleteCustomer(button.dataset.deleteCustomer));
   list.querySelectorAll("[data-edit-customer]").forEach(button=>button.onclick=()=>editCustomer(button.dataset.editCustomer));
+  rememberOpenCards(list,"details[data-customer-id]",customerCardsOpen,"data-customer-id");
   // Jump to the Bookings tab already filtered to that person.
   list.querySelectorAll("[data-customer-bookings]").forEach(button=>button.onclick=()=>{
     const email=String(button.dataset.customerBookings||"").toLowerCase();
@@ -1860,7 +1981,12 @@ async function editCustomer(id){
     customerRows=customerRows.map(row=>row.id===id ? {...row,...data.customer} : row);
     renderCustomers();
     flash(`✓ ${[data.customer.firstName,data.customer.lastName].filter(Boolean).join(" ")||"Customer"} updated`);
-  }catch(e){ customerStatus(e.message,true); }
+  }catch(e){
+    // A line of small text at the bottom of a long list gets missed, and the edit
+    // silently vanishes. Say it out loud when a save is refused.
+    customerStatus(e.message,true);
+    alert(`That didn't save.\n\n${e.message}`);
+  }
 }
 async function loadCustomers(showLoading=false){
   if (!ownerToken){ renderCustomers(); return; }
@@ -2665,7 +2791,9 @@ function render(){
   renderList();
   renderContacts();
   renderBad();
-  renderUnpaid();
+  // Invoice owing jobs live with their booking now, not at the bottom of Today.
+  const oldUnpaidHost=$("#unpaidWrap"); if(oldUnpaidHost) oldUnpaidHost.innerHTML="";
+  if(ownerToken) renderDirectBookings();
   renderStart();
   renderWeather();
   renderGms();
@@ -2861,7 +2989,7 @@ function renderUnpaid(){
     <details id="unpaidBox"${unpaidOpen?" open":""}>
       <summary>💰 Unpaid invoices${owe.length?` (${owe.length})`:""} <span class="chev">›</span></summary>
       <div style="padding-top:10px">
-        <p class="small muted" style="margin:0 0 8px">Invoice sent before collection? Tap <b>Add to active run</b>. The unpaid invoice stays safely here. When the money lands tap 💰 Paid, send the receipt, then ✕.</p>
+        <p class="small muted" style="margin:0 0 8px">Invoice sent before collection? Tap <b>Add to active run</b>. The unpaid invoice stays safely here. When the money lands just send the receipt — that marks it paid and completed for you. Then ✕ to clear it off.</p>
         ${owe.map(entry).join("") || `<div class="empty small" style="padding:8px 4px">No one owes you right now 🎉</div>`}
         ${settled.length ? `<div class="sectitle">Paid — send receipt, then ✕ (${settled.length})</div>${settled.map(entry).join("")}` : ""}
       </div>
@@ -3458,6 +3586,29 @@ function addPdfFooters(doc, W, M){
     if(pages>1) doc.text(`${page} / ${pages}`, W-M, 200, {align:"right"});
   }
 }
+// Google review ask on the receipt: a scannable code plus the same link as a tap
+// target, so it works whether they're holding paper or reading the PDF on a phone.
+// The QR is baked in as a data URI (383 bytes) rather than fetched, so it still
+// renders when Woody has no signal. Regenerate it only if REVIEW_LINK_URL changes.
+const REVIEW_LINK_URL = "https://g.page/r/CQPARM-ojFNrEBM/review";
+const REVIEW_QR_PNG = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAMYAAADGAQAAAACh4MLwAAABRklEQVR42u1YwY3DMAwTzgNkpKyukTyAAJ4oOvfrAf0UfNQICqf+EBRJyQm8WBXfk39PdvRa+64re98bvsddP/Fqfeqksd2NcRHhvZCNbfX7dsE2qBBXxoU1OJcVtv5tbFNcO2zICm5gxhvx0BbByoaV3uIp5XmMfKq1h8Cp5kkXE72NQ2nS5pBWpfZMsFH5DeaSC1hQF72hSUvJTCYFsw4m2ETa5BvrCyefqk+RqxMpueDCG8V/ynqyLoy8MNGxVd+wwlakizGCvyHExwvT5WuMMNjCBhukf7pVz0SxS69nKVMzkspq41PICDP0RsWJFBO9nRiZ8UN/+vAmySl7xaFNhjzzG3RZYNyVjxc0hyM1gcAJm+4LeK6oGsut7lnFvtCzZarjO2E7TX+6KszuWTmMyQhpozf5dLL3+eZg1E+/X7LePvkFIFLakSmetN8AAAAASUVORK5CYII=";
+function addReviewAsk(doc, y, W, M){
+  const boxH = 32, qr = 24;
+  doc.setFillColor(255, 249, 240);
+  doc.setDrawColor(244, 135, 34);
+  doc.roundedRect(M, y, W-M*2, boxH, 2, 2, "FD");
+  doc.addImage(REVIEW_QR_PNG, "PNG", W-M-qr-4, y+(boxH-qr)/2, qr, qr);
+  const textW = W-M*2-qr-16;
+  doc.setTextColor(30, 30, 30);
+  doc.setFont("helvetica", "bold"); doc.setFontSize(10);
+  doc.text("Happy with how it went?", M+5, y+8);
+  doc.setFont("helvetica", "normal"); doc.setFontSize(8.5);
+  doc.text(doc.splitTextToSize("Scan the code, or tap below, to leave us a Google review. It only takes a minute and it really helps us out.", textW), M+5, y+14);
+  doc.setTextColor(0, 98, 170);
+  doc.setFont("helvetica", "bold"); doc.setFontSize(9);
+  doc.textWithLink("Leave a Google review", M+5, y+28, {url: REVIEW_LINK_URL});
+  return y + boxH;
+}
 function addProfileMessage(doc, y, W, M, s){
   const hasProfile=s.profileHasAccount;
   const message=hasProfile===true
@@ -3522,6 +3673,7 @@ async function buildReceiptPdf(s, amt){
   doc.text("Payment received in full — thank you!", M, y);
   y += 10;
   addProfileMessage(doc, y, W, M, s);
+  addReviewAsk(doc, y + 34, W, M);
   addPdfFooters(doc, W, M);
   return doc.output("blob");
 }
@@ -3649,6 +3801,12 @@ window.sendReceipt = async id => {
     s.status = "DONE";
     s.historyStatus = "COMPLETED";
     s.collectedAt = s.collectedAt || Date.now();
+    // A receipt only goes out once the money is in, so an invoiced pickup settles
+    // itself here — no second tap on 💰 Paid, and no reminder chasing a paid job.
+    if (s.invoiceSent && !s.paid){
+      s.paid = true;
+      await cancelReminderFor(s);
+    }
     save(); render(); drawRoute();
     if (s.src==="direct" && s.submission_id){
       queueDirectCompletion(s.submission_id);
@@ -3657,6 +3815,7 @@ window.sendReceipt = async id => {
     }else{
       await syncExternalBooking(s);
     }
+    if(ownerToken) await loadDirectBookings(false);
   };
   // Customer has an email: the server emails the PDF for us — no Gmail screen at all.
   if (goodEmail(s.email)){
@@ -3675,18 +3834,22 @@ window.sendReceipt = async id => {
           amount: s.receiptAmount!=null ? Number(s.receiptAmount) : (s.amount!=null ? Number(s.amount) : null),
           // Same booking link + item list + address the PDF itself was built from,
           // so what shows in the customer's account matches what they were emailed.
-          bookingId: s.submission_id || s.unpaidSourceId || "",
+          bookingId: s.src==="direct" ? (s.submission_id||"") : historyBookingKey(s),
           items: (s.appliances && s.appliances.length) ? s.appliances : ["Whiteware"],
           address: fullAddr(s),
           profileUrl: s.profileUrl || "",
-          profileStatus: s.profileHasAccount===true ? "existing" : s.profileHasAccount===false ? "invite" : "unknown",
-          includeFindMyLocalReview: /find\s*my\s*local/i.test(String(s.referral_source||"")) ||
-            /found\s+us:\s*find\s*my\s*local/i.test(String(s.additional_info||""))
+          profileStatus: s.profileHasAccount===true ? "existing" : s.profileHasAccount===false ? "invite" : "unknown"
+          // The receipt email always asks for a review now — the worker adds the line.
         })
       });
       const out = await res.json().catch(()=>({}));
       busy("");
-      if (res.ok && out.ok){ await done(); flash("✓ Receipt emailed to " + to + " · booking marked completed"); return; }
+      if (res.ok && out.ok){
+        const wasInvoiced = s.invoiceSent;
+        await done();
+        flash("✓ Receipt emailed to " + to + (wasInvoiced ? " · marked paid and completed" : " · booking marked completed"));
+        return;
+      }
     }catch(e){ busy(""); }
     flash("Couldn't email it right now — sharing instead.");
   }
@@ -3810,7 +3973,7 @@ window.sendInvoice = async id => {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ to, name: fullName(s), filename: file.name,
           pdfBase64: await fileToBase64(file), amount: amt, reminderDate,
-          bookingId: s.submission_id || s.unpaidSourceId || "",
+          bookingId: s.src==="direct" ? (s.submission_id||"") : historyBookingKey(s),
           items: (s.appliances && s.appliances.length) ? s.appliances : ["Whiteware"],
           address: fullAddr(s), profileUrl: s.profileUrl || "",
           profileStatus: s.profileHasAccount===true ? "existing" : s.profileHasAccount===false ? "invite" : "unknown" })
@@ -3819,7 +3982,8 @@ window.sendInvoice = async id => {
       busy("");
       if (res.ok && out.ok){
         markSent(out.reminderId||"", reminderDate);
-        flash("✓ Invoice emailed to " + to + (out.reminderId ? ` — reminder set for ${reminderDate}` : "") + " · saved in Unpaid invoices");
+        if(ownerToken) await loadDirectBookings(false);
+        flash("✓ Invoice emailed to " + to + (out.reminderId ? ` — reminder set for ${reminderDate}` : "") + " · shown in Bookings → Invoice owing");
         return;
       }
     }catch(e){ busy(""); }
@@ -3842,23 +4006,40 @@ window.sendInvoice = async id => {
   markSent("");
   flash("✓ PDF opened — attach it to the email.");
 };
+// Stop a waiting "you still owe us" email once the money has landed.
+async function cancelReminderFor(s){
+  if (!s || !s.reminderId) return;
+  try{
+    await fetch(`${API}/cancel-reminder`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: s.reminderId })
+    });
+  }catch(e){ /* reminder email says "ignore if you've paid" — safe if this misses */ }
+  s.reminderId = "";
+}
 // Paid up: cancel any waiting auto-reminder and move the card to Completed.
 window.markPaid = async id => {
   const s = findStop(id); if(!s) return;
   if (!confirm(`Mark ${fullName(s)||"this pickup"} as paid?`)) return;
-  if (s.reminderId){
-    try{
-      await fetch(`${API}/cancel-reminder`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id: s.reminderId })
-      });
-    }catch(e){ /* reminder email says "ignore if you've paid" — safe if this misses */ }
-    s.reminderId = "";
-  }
-  s.paid = true; save(); render();
+  await cancelReminderFor(s);
+  await settleAsPaid(s);
   flash("✓ Paid — send the receipt, then ✕ to clear them off the list.");
 };
+// Paid means the job is finished, so push it up as COMPLETED — that's what puts it
+// under Previous in Bookings, and it has to happen before ✕ clears the card away.
+async function settleAsPaid(s){
+  s.paid = true;
+  s.status = "DONE";
+  s.historyStatus = "COMPLETED";
+  s.collectedAt = s.collectedAt || Date.now();
+  save(); render();
+  if (s.src==="direct" && s.submission_id){
+    queueDirectCompletion(s.submission_id);
+    await flushDirectCompletions();
+  }else await syncExternalBooking(s);
+  renderDirectBookings();
+}
 // Take an entry off the unpaid ledger (cancels its auto-reminder too).
 window.removeUnpaid = id => {
   const list = state.unpaid || [];

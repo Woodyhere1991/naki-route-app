@@ -1,6 +1,14 @@
 import { handlePortalRequest, retryPendingSheetBackups, purgeExpiredAuth, recordBookingDocument, snapshotDatabase } from "./customer.js";
 
 const GMS_PLACE_ID = "ChIJI-iQUfZQFG0RorGmjzvMPRE";
+
+// Where every receipt email points people to leave feedback. Google wins when it's
+// set — it's the listing that actually drives local search. The Find My Local link
+// stays as the fallback if the Google one is ever cleared out.
+const GOOGLE_REVIEW_URL = "https://g.page/r/CQPARM-ojFNrEBM/review";
+const FIND_MY_LOCAL_REVIEW_URL = "https://findmylocal.nz/listing/naki-whiteware-removal/#reply-title";
+const REVIEW_URL = GOOGLE_REVIEW_URL || FIND_MY_LOCAL_REVIEW_URL;
+const REVIEW_PLACE = GOOGLE_REVIEW_URL ? "Google" : "Find My Local";
 const APP_ORIGINS = new Set([
   "https://naki-pickup-run.pages.dev",
   "https://naki-route-app.pages.dev",
@@ -465,9 +473,11 @@ async function handleSendReceipt(request, env) {
   const name = String(body.name || "").trim().slice(0, 80);
   const pdf = String(body.pdfBase64 || "");
   const filename = (String(body.filename || "").replace(/[^\w .\-]/g, "").slice(0, 80)) || "Receipt.pdf";
-  const reviewRequest = body.includeFindMyLocalReview === true
-    ? "\n\nIf you're happy with the collection, we'd really appreciate your honest feedback on Find My Local:\nhttps://findmylocal.nz/listing/naki-whiteware-removal/#reply-title"
-    : "";
+  // Every receipt now asks for feedback, not just the Find My Local customers.
+  // Opt a single send out by passing includeReviewRequest: false from the app.
+  const reviewRequest = body.includeReviewRequest === false
+    ? ""
+    : `\n\nOne small favour — if you're happy with how the collection went, would you mind leaving us a quick review on ${REVIEW_PLACE}? It takes a minute and it genuinely helps a small local business like ours get found.\n${REVIEW_URL}`;
   if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(to)) return json(request, { error: "Invalid email address" }, 400);
   if (!/^[A-Za-z0-9+/=]+$/.test(pdf) || pdf.length < 100 || pdf.length > 2000000) return json(request, { error: "Invalid PDF" }, 400);
   const first = name.split(/\s+/)[0] || "";

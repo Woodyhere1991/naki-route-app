@@ -1319,6 +1319,26 @@ async function latestBookingIdForEmail(env, address) {
   return row?.id || "";
 }
 
+// The pickup-run app knows its own stable key, while the portal stores a separate
+// PICKUP-* id. Resolve either form before saving a document so every PDF lands on
+// the exact booking card it came from rather than merely the latest customer job.
+async function bookingIdForDocument(env, rawId, address) {
+  const candidate = clean(rawId, 180);
+  if (candidate) {
+    const row = await env.CUSTOMER_DB.prepare(
+      `SELECT id FROM (
+         SELECT id, email, '' AS external_key, '' AS submission_id FROM bookings
+         UNION ALL SELECT id, email, '' AS external_key, submission_id FROM jotform_bookings
+         UNION ALL SELECT id, email, external_key, '' AS submission_id FROM external_bookings
+       ) WHERE email = ?1 COLLATE NOCASE
+         AND (id = ?2 OR external_key = ?2 OR submission_id = ?2)
+       LIMIT 1`
+    ).bind(address, candidate).first();
+    if (row?.id) return row.id;
+  }
+  return latestBookingIdForEmail(env, address);
+}
+
 function base64ToBytes(b64) {
   const bin = atob(b64);
   const bytes = new Uint8Array(bin.length);
@@ -1338,7 +1358,7 @@ export async function recordBookingDocument(env, { email: rawEmail, kind, amount
   const cents = Number.isFinite(Number(amount)) && Number(amount) >= 0 && Number(amount) <= 100000
     ? Math.round(Number(amount) * 100)
     : 0;
-  const resolvedBookingId = String(bookingId || "").trim().slice(0, 64) || await latestBookingIdForEmail(env, emailAddress);
+  const resolvedBookingId = await bookingIdForDocument(env, bookingId, emailAddress);
   const itemList = JSON.stringify(
     (Array.isArray(items) ? items : []).map(item => clean(item, 80)).filter(Boolean).slice(0, 20)
   );
@@ -1364,26 +1384,29 @@ export async function recordBookingDocument(env, { email: rawEmail, kind, amount
   }
 }
 
+function bookingDocumentFrom(row) {
+  let items = [];
+  try { items = JSON.parse(row.items_json || "[]"); } catch { items = []; }
+  return {
+    id: row.id,
+    bookingId: row.booking_id || "",
+    kind: row.kind,
+    amount: Number(row.amount_cents || 0) / 100,
+    reference: row.reference || "",
+    items,
+    address: row.address || "",
+    filename: row.filename || "",
+    hasPdf: Boolean(row.r2_key),
+    createdAt: new Date(row.created_at).toISOString()
+  };
+}
+
 async function customerDocuments(env, address) {
   if (!EMAIL_RE.test(address || "")) return [];
   const rows = await env.CUSTOMER_DB.prepare(
     "SELECT * FROM booking_documents WHERE email = ?1 COLLATE NOCASE ORDER BY created_at DESC LIMIT 50"
   ).bind(address).all();
-  return (rows.results || []).map(row => {
-    let items = [];
-    try { items = JSON.parse(row.items_json || "[]"); } catch { items = []; }
-    return {
-      id: row.id,
-      bookingId: row.booking_id || "",
-      kind: row.kind,
-      amount: Number(row.amount_cents || 0) / 100,
-      reference: row.reference || "",
-      items,
-      address: row.address || "",
-      hasPdf: Boolean(row.r2_key),
-      createdAt: new Date(row.created_at).toISOString()
-    };
-  });
+  return (rows.results || []).map(bookingDocumentFrom);
 }
 
 export async function handlePortalRequest({ request, env, path, json, sendMail }) {
@@ -2734,7 +2757,9 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
       const town = clean(body.town, 100);
       const area = clean(body.area, 100);
       const accessNotes = clean(body.accessNotes, 1000);
-      if (!firstName || !lastName) return json(request, { error: "Enter a first and last name" }, 400);
+      // Plenty of customers only ever give a first name, so one name is enough —
+      // rejecting the whole save over a missing surname just lost the edit.
+      if (!firstName && !lastName) return json(request, { error: "Enter at least a first name" }, 400);
       await env.CUSTOMER_DB.prepare(
         `UPDATE customers SET first_name=?1, last_name=?2, phone=?3, street_address=?4, town=?5,
           area=?6, access_notes=?7, updated_at=?8 WHERE id=?9`
@@ -2829,8 +2854,23 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
       return json(request, { ok: true, updated: matched.length, matched, unmatched });
     }
 
+    const ownerPdfMatch = path.match(/^\/owner\/documents\/([^/]+)\/pdf$/);
+    if (ownerPdfMatch && request.method === "GET") {
+      const docId = decodeURIComponent(ownerPdfMatch[1]);
+      const doc = await env.CUSTOMER_DB.prepare(
+        "SELECT r2_key, filename FROM booking_documents WHERE id = ?1"
+      ).bind(docId).first();
+      const object = doc?.r2_key && env.DOCUMENTS ? await env.DOCUMENTS.get(doc.r2_key) : null;
+      if (!object) return json(request, { error: "That document isn't available" }, 404);
+      const bytes = new Uint8Array(await object.arrayBuffer());
+      let bin = "";
+      for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+      return json(request, { pdfBase64: btoa(bin), filename: doc.filename || "Document.pdf" });
+    }
+
     if (path === "/owner/bookings" && request.method === "GET") {
-      const rows = await env.CUSTOMER_DB.prepare(
+      const [rows, documentRows] = await Promise.all([
+        env.CUSTOMER_DB.prepare(
         `SELECT * FROM (
           SELECT id, status, first_name, last_name, phone, email, street_address, town, area,
             rural_option, items_json, additional_info, referral_source, referral_details,
@@ -2855,11 +2895,39 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
             'PICKUP_RUN' AS sheet_sync_status, 'PICKUP_RUN' AS booking_source, external_key,
             pickup_date, pickup_window, customer_note, cancellation_reason, cancelled_at, created_at,
             0 AS email_failed
-          FROM external_bookings WHERE status='CANCELLED'
+          FROM external_bookings
+          WHERE status='CANCELLED' OR EXISTS (
+            SELECT 1 FROM booking_documents d
+            WHERE d.booking_id = external_bookings.id OR d.booking_id = external_bookings.external_key
+          )
         ) ORDER BY CASE status WHEN 'NEW' THEN 0 ELSE 1 END, created_at DESC LIMIT 300`
-      ).all();
+        ).all(),
+        env.CUSTOMER_DB.prepare(
+          `SELECT id, booking_id, email, kind, amount_cents, reference, created_at,
+             items_json, address, filename, r2_key
+           FROM booking_documents ORDER BY created_at DESC LIMIT 1000`
+        ).all()
+      ]);
+      const documentsByBooking = new Map();
+      for (const document of (documentRows.results || []).map(bookingDocumentFrom)) {
+        const list = documentsByBooking.get(document.bookingId) || [];
+        list.push(document);
+        documentsByBooking.set(document.bookingId, list);
+      }
+      const bookings = (rows.results || []).map(row => {
+        const documents = documentsByBooking.get(row.id) || documentsByBooking.get(row.external_key || "") || [];
+        const latestInvoice = documents.find(document => document.kind === "INVOICE");
+        const latestReceipt = documents.find(document => document.kind === "RECEIPT");
+        const invoiceOwing = Boolean(latestInvoice) && (!latestReceipt || latestInvoice.createdAt > latestReceipt.createdAt);
+        return {
+          ...bookingFrom(row),
+          emailFailed: Number(row.email_failed || 0) > 0,
+          documents,
+          invoiceOwing
+        };
+      });
       return json(request, {
-        bookings: (rows.results || []).map(row => ({ ...bookingFrom(row), emailFailed: Number(row.email_failed || 0) > 0 }))
+        bookings
       });
     }
 
