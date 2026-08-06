@@ -1969,7 +1969,10 @@ async function showBookingPhotos(id){
   if (!photos.length) return directStatus("No photos saved for that booking.",true);
   directStatus("");
   const wrap=document.createElement("div");
-  wrap.style.cssText="position:fixed;inset:0;z-index:1200;background:rgba(0,0,0,.92);padding:14px;overflow:auto;display:flex;flex-direction:column;gap:10px";
+  // z-index has to clear the bottom nav bar (2000) or its buttons paint right over
+  // the Close button below - that's what was hiding it. 10000 matches the app's
+  // other full-screen overlays (receipt preview, reminder picker).
+  wrap.style.cssText="position:fixed;inset:0;z-index:10000;background:rgba(0,0,0,.92);padding:14px;padding-bottom:max(14px, env(safe-area-inset-bottom));overflow:auto;display:flex;flex-direction:column;gap:10px";
   photos.forEach((photo,index)=>{
     const figure=document.createElement("figure");
     figure.style.cssText="margin:0";
