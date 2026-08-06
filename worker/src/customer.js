@@ -637,6 +637,10 @@ Please make sure the appliance(s) are accessible and any pets are safely secured
 You can view or cancel your active booking here:
 ${CUSTOMER_ACCOUNT_URL}
 
+Tip: save that page to your home screen for one-tap access to your bookings and receipts next time.
+- iPhone: open the link in Safari, tap the Share icon, then "Add to Home Screen".
+- Android: open the link in Chrome, tap the three-dot menu, then "Add to Home screen" (or "Install app").
+
 Booking ID: ${booking.id}
 
 Naki Whiteware Removal`;
