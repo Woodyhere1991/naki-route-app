@@ -1343,6 +1343,7 @@ function renderDirectBookings(){
         ${b.phone&&pickupDay?`<a class="ghost sm" href="sms:${esc(String(b.phone).replace(/[^\d+]/g,""))}?body=${smsText}">💬 Text details</a>`:""}
         ${bookingWorkflowActions}
         ${b._localOnly?"":`${b.photoCount ? `<button class="ghost sm" data-photos-direct="${esc(b.id)}">📷 ${b.photoCount} photo${b.photoCount===1?"":"s"}</button>` : ""}
+        ${goodEmail(b.email) && !unpaid ? `<button class="ghost sm" title="Email this customer an invoice" data-invoice-direct="${esc(b.id)}">📄 ${b.invoiceOwing?"Invoice again":"Send invoice"}</button>` : ""}
         <button class="good sm" data-edit-direct="${esc(b.id)}">✎ Edit details &amp; price</button>
         <button class="ghost sm" title="Delete this booking" data-delete-direct="${esc(b.id)}">✕ Delete</button>`}
       </div>`;
@@ -1420,11 +1421,80 @@ function renderDirectBookings(){
   list.querySelectorAll("[data-delete-direct]").forEach(button=>button.onclick=()=>deleteDirectBooking(button.dataset.deleteDirect));
   list.querySelectorAll("[data-photos-direct]").forEach(button=>button.onclick=()=>showBookingPhotos(button.dataset.photosDirect));
   list.querySelectorAll("[data-owner-document]").forEach(button=>button.onclick=()=>openOwnerDocument(button.dataset.ownerDocument));
+  list.querySelectorAll("[data-invoice-direct]").forEach(button=>button.onclick=()=>invoiceDirectBooking(button.dataset.invoiceDirect));
   rememberOpenCards(list,"details[data-booking-id]",bookingCardsOpen,"data-booking-id");
   restoreTownGroups(list,bookingGroupOpen,"naki_booking_group_open_v1",narrowed);
   directStatus(narrowed
     ? `${visibleRows.length} of ${bookingRows.length} bookings.`
     : `${fresh} new booking${fresh===1?"":"s"}.`);
+}
+// Invoice straight off a booking card. An invoice used to only be possible from
+// a stop on a run, so billing someone who wasn't on today's run meant adding them
+// to one first. The PDF and the email are the same ones the run uses - only the
+// starting point is different. Passing the booking's own id is what files the
+// invoice against this booking instead of leaving it floating.
+async function invoiceDirectBooking(id){
+  const b=directBookingRows.find(row=>row.id===id); if(!b) return;
+  const who=[b.firstName,b.lastName].filter(Boolean).join(" ")||"this customer";
+  if (!goodEmail(b.email)) return directStatus("That booking has no valid email to send an invoice to.",true);
+  if (!window.jspdf) return directStatus("The PDF maker didn't load — check your connection and try again.",true);
+  const seed=b.quotedPrice!=null ? Number(b.quotedPrice) : Number(b.total||0);
+  const entered=await openEditForm({
+    title:`📄 Invoice ${who}`,
+    note:`This emails ${b.email} the invoice PDF and files it against this booking.`,
+    saveLabel:"Build the invoice",
+    fields:[
+      { key:"amount", label:"Amount owed ($)", value:seed?String(seed):"", inputmode:"decimal",
+        validate:v=>parseMoney(v)===null ? "Enter the amount as a number." : "" },
+      { key:"remind", label:"Remind them on (optional, YYYY-MM-DD)", value:"",
+        placeholder:localIso(new Date(Date.now()+7*86400000)),
+        validate:v=>{ const t=String(v||"").trim(); return !t||/^\d{4}-\d{2}-\d{2}$/.test(t) ? "" : "Use the date format YYYY-MM-DD, or leave it blank."; } }
+    ]
+  });
+  if (!entered) return;
+  const amount=parseMoney(entered.amount);
+  const reminderDate=String(entered.remind||"").trim();
+  // The PDF builder speaks "stop", so hand it a stop-shaped view of the booking.
+  const asStop={
+    id:`booking:${b.id}`, src:"direct", submission_id:b.id,
+    first_name:b.firstName||"", last_name:b.lastName||"",
+    street:b.streetAddress||"", town:b.town||"", email:b.email||"",
+    appliances:(b.items&&b.items.length)?b.items.slice():["Whiteware"],
+    amount, invoiceAmount:amount
+  };
+  directStatus("Building the invoice…");
+  let file;
+  try{
+    asStop.profileUrl=await customerProfileLink(asStop);
+    const blob=await buildInvoicePdf(asStop, amount);
+    file=new File([blob],`Invoice - ${(who||"pickup").replace(/[^\w \-]/g,"")}.pdf`,{type:"application/pdf"});
+  }catch(e){ return directStatus("Couldn't build that invoice: "+e.message,true); }
+  if (!confirm(`Email ${who} an invoice for $${amount.toFixed(2)}?\n\nTo: ${b.email}${reminderDate?`\nReminder: ${reminderDate}`:""}`)) {
+    return directStatus("Invoice not sent.");
+  }
+  directStatus("Emailing the invoice…");
+  try{
+    const res=await fetch(`${API}/send-invoice`,{
+      method:"POST",
+      headers:{ "Content-Type":"application/json" },
+      body:JSON.stringify({
+        to:b.email.trim(), name:who, filename:file.name,
+        pdfBase64:await fileToBase64(file), amount, reminderDate,
+        bookingId:b.id,
+        items:(b.items&&b.items.length)?b.items:["Whiteware"],
+        address:[b.streetAddress,b.town].filter(Boolean).join(", "),
+        profileUrl:asStop.profileUrl||"",
+        profileStatus:asStop.profileHasAccount===true ? "existing" : asStop.profileHasAccount===false ? "invite" : "unknown"
+      })
+    });
+    const out=await res.json().catch(()=>({}));
+    if (!res.ok || !out.ok) throw new Error(out.error||"The email could not be sent.");
+    // Pull the booking back so the invoice appears in its paperwork and the card
+    // drops into Invoice owing without needing a manual refresh.
+    await loadDirectBookings(false);
+    directStatus(`✓ Invoice for $${amount.toFixed(2)} emailed to ${who}${out.reminderId?` — reminder set for ${reminderDate}`:""}.`);
+    flash(`✓ Invoice sent to ${who} · now in Bookings → Invoice owing`);
+  }catch(e){ directStatus("Couldn't email that invoice: "+e.message,true); }
 }
 async function openOwnerDocument(id){
   const preview=window.open("about:blank","_blank");

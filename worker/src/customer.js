@@ -2927,12 +2927,20 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
       ]);
       const documentsByBooking = new Map();
       for (const document of (documentRows.results || []).map(bookingDocumentFrom)) {
+        // A receipt that never got matched to a booking has no id to file it
+        // under. Bucketing those under "" meant every booking without its own
+        // paperwork inherited the whole orphan pile through the external_key
+        // fallback below - the same two receipts showing on every customer.
+        if (!document.bookingId) continue;
         const list = documentsByBooking.get(document.bookingId) || [];
         list.push(document);
         documentsByBooking.set(document.bookingId, list);
       }
       const bookings = (rows.results || []).map(row => {
-        const documents = documentsByBooking.get(row.id) || documentsByBooking.get(row.external_key || "") || [];
+        const externalKey = row.external_key || "";
+        const documents = documentsByBooking.get(row.id)
+          || (externalKey ? documentsByBooking.get(externalKey) : null)
+          || [];
         const latestInvoice = documents.find(document => document.kind === "INVOICE");
         const latestReceipt = documents.find(document => document.kind === "RECEIPT");
         const invoiceOwing = Boolean(latestInvoice) && (!latestReceipt || latestInvoice.createdAt > latestReceipt.createdAt);
