@@ -1,2 +1,6 @@
 .wrangler/
 worker/.wrangler/
+.playwright-cli/
+.deploy-stage-*/
+output/
+tmp/

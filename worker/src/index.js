@@ -1,12 +1,28 @@
+import { handlePortalRequest, retryPendingSheetBackups, purgeExpiredAuth, recordBookingDocument, snapshotDatabase } from "./customer.js";
+
 const GMS_PLACE_ID = "ChIJI-iQUfZQFG0RorGmjzvMPRE";
+
+// Where every receipt email points people to leave feedback. Google wins when it's
+// set — it's the listing that actually drives local search. The Find My Local link
+// stays as the fallback if the Google one is ever cleared out.
+const GOOGLE_REVIEW_URL = "https://g.page/r/CQPARM-ojFNrEBM/review";
+const FIND_MY_LOCAL_REVIEW_URL = "https://findmylocal.nz/listing/naki-whiteware-removal/#reply-title";
+const REVIEW_URL = GOOGLE_REVIEW_URL || FIND_MY_LOCAL_REVIEW_URL;
+const REVIEW_PLACE = GOOGLE_REVIEW_URL ? "Google" : "Find My Local";
 const APP_ORIGINS = new Set([
   "https://naki-pickup-run.pages.dev",
-  "https://naki-route-app.pages.dev"
+  "https://naki-route-app.pages.dev",
+  "https://naki-collection.pages.dev",
+  "https://nakiwhitewareremoval.vip",
+  "https://www.nakiwhitewareremoval.vip"
 ]);
 
 function allowedOrigin(request) {
   const origin = request.headers.get("Origin") || "";
-  return APP_ORIGINS.has(origin) || /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin) || /^https:\/\/[a-z0-9]+\.naki-pickup-run\.pages\.dev$/.test(origin);
+  return APP_ORIGINS.has(origin) ||
+    /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin) ||
+    /^https:\/\/[a-z0-9]+\.naki-pickup-run\.pages\.dev$/.test(origin) ||
+    /^https:\/\/[a-z0-9]+\.naki-collection\.pages\.dev$/.test(origin);
 }
 
 function cors(request) {
@@ -14,8 +30,8 @@ function cors(request) {
   const allowed = allowedOrigin(request);
   return {
     "Access-Control-Allow-Origin": allowed ? origin : "https://naki-pickup-run.pages.dev",
-    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type",
+    "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization",
     "Vary": "Origin"
   };
 }
@@ -358,26 +374,72 @@ async function handleGms(request, env) {
   });
 }
 
+// "New Plymouth" is both a city and the district that contains Inglewood, Waitara,
+// Ōakura and friends, so Google will happily answer "81 Rata Street, New Plymouth"
+// with the Inglewood house. Pull the town out of the query so we can check the answer
+// actually landed in that town, and re-ask with a hard locality filter when it didn't.
+function townFromQuery(q) {
+  const parts = String(q).split(",").map(part => part.trim()).filter(Boolean);
+  for (const part of parts.slice(1)) {
+    const town = part.replace(/\b\d{4}\b/g, "").trim();
+    if (!town) continue;
+    if (/^(taranaki|new zealand|nz|aotearoa)$/i.test(town)) continue;
+    return town;
+  }
+  return "";
+}
+
+function looseKey(text) {
+  return String(text).toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function labelInTown(label, town) {
+  if (!town) return true;
+  return looseKey(label).includes(looseKey(town));
+}
+
+async function googleGeocode(env, address, components, limit) {
+  const params = new URLSearchParams({ address, key: env.GOOGLE_API_KEY, region: "nz", components });
+  const response = await fetch(`https://maps.googleapis.com/maps/api/geocode/json?${params}`);
+  if (!response.ok) return [];
+  const payload = await response.json();
+  return (payload.results || []).slice(0, limit).map(result => ({
+    label: String(result.formatted_address || "").replace(/, New Zealand$/, ""),
+    lat: number((((result.geometry || {}).location || {}).lat), NaN),
+    lng: number((((result.geometry || {}).location || {}).lng), NaN),
+    // ROOFTOP without partial_match = a real letterbox. Anything else is Google
+    // guessing along the street, which is how a made-up house number gets a pin.
+    exact: ((result.geometry || {}).location_type === "ROOFTOP") && !result.partial_match
+  })).filter(result => result.label && Number.isFinite(result.lat) && Number.isFinite(result.lng));
+}
+
 async function handleAddress(request, env) {
   const url = new URL(request.url);
   const q = (url.searchParams.get("q") || "").trim().slice(0, 180);
   const limit = Math.max(1, Math.min(6, number(url.searchParams.get("limit"), 6)));
   if (q.length < 3) return json(request, { results: [] });
-  const key = cacheRequest(request, "address-v2", [q.toLowerCase(), String(limit)]);
+  const key = cacheRequest(request, "address-v3", [q.toLowerCase(), String(limit)]);
   return cached(request, key, 2592000, async () => {
     const address = /new zealand|\bnz\b/i.test(q) ? q : `${q}, Taranaki, New Zealand`;
+    const town = townFromQuery(q);
+    const street = String(q).split(",")[0].trim();
     if (env.GOOGLE_API_KEY) {
       try {
-        const params = new URLSearchParams({ address, key: env.GOOGLE_API_KEY, region: "nz", components: "country:NZ" });
-        const response = await fetch(`https://maps.googleapis.com/maps/api/geocode/json?${params}`);
-        if (response.ok) {
-          const payload = await response.json();
-          const results = (payload.results || []).slice(0, limit).map(result => ({
-            label: String(result.formatted_address || "").replace(/, New Zealand$/, ""),
-            lat: number((((result.geometry || {}).location || {}).lat), NaN),
-            lng: number((((result.geometry || {}).location || {}).lng), NaN)
-          })).filter(result => result.label && Number.isFinite(result.lat) && Number.isFinite(result.lng));
-          if (results.length) return json(request, { results, source: "Google" }, 200, "public, max-age=2592000");
+        let results = await googleGeocode(env, address, "country:NZ", limit);
+        const townChecked = Boolean(town);
+        if (town && results.length && !results.some(result => labelInTown(result.label, town))) {
+          // Wrong town: ask again, this time forcing Google to stay inside it.
+          // Only a real letterbox counts — an interpolated guess in the right town
+          // is worse than an exact match in the neighbouring one.
+          const strict = await googleGeocode(env, `${street}, New Zealand`, `country:NZ|locality:${town}`, limit);
+          const inTown = strict.filter(result => labelInTown(result.label, town) && result.exact);
+          if (inTown.length) results = inTown;
+        }
+        if (results.length) {
+          // Town matches first, so a single-result caller never gets the wrong town silently.
+          results.sort((a, b) => Number(labelInTown(b.label, town)) - Number(labelInTown(a.label, town)));
+          const townMismatch = townChecked && !labelInTown(results[0].label, town);
+          return json(request, { results, source: "Google", town, townMismatch }, 200, "public, max-age=2592000");
         }
       } catch { /* use the no-cost fallback below */ }
     }
@@ -411,16 +473,26 @@ async function handleSendReceipt(request, env) {
   const name = String(body.name || "").trim().slice(0, 80);
   const pdf = String(body.pdfBase64 || "");
   const filename = (String(body.filename || "").replace(/[^\w .\-]/g, "").slice(0, 80)) || "Receipt.pdf";
+  // Every receipt now asks for feedback, not just the Find My Local customers.
+  // Opt a single send out by passing includeReviewRequest: false from the app.
+  const reviewRequest = body.includeReviewRequest === false
+    ? ""
+    : `\n\nOne small favour — if you're happy with how the collection went, would you mind leaving us a quick review on ${REVIEW_PLACE}? It takes a minute and it genuinely helps a small local business like ours get found.\n${REVIEW_URL}`;
   if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(to)) return json(request, { error: "Invalid email address" }, 400);
   if (!/^[A-Za-z0-9+/=]+$/.test(pdf) || pdf.length < 100 || pdf.length > 2000000) return json(request, { error: "Invalid PDF" }, 400);
   const first = name.split(/\s+/)[0] || "";
   const sent = await sendMail(env, {
     to, name,
     subject: "Your whiteware collection receipt",
-    text: `Hey${first ? " " + first : ""},\n\nThanks heaps! Your receipt for the whiteware collection is attached.\n\nCheers,\nWoody\nNaki Whiteware Removal\nnakiwhitewareremoval@gmail.com`,
+    text: `${profileLinkLine(body.profileUrl, body.profileStatus)}Hey${first ? " " + first : ""},\n\nThanks heaps! Your receipt for the whiteware collection is attached.${reviewRequest}\n\nCheers,\nWoody\nNaki Whiteware Removal\nnakiwhitewareremoval@gmail.com`,
     attachment: [{ name: filename, content: pdf }]
   });
   if (!sent) return json(request, { error: "Email could not be sent" }, 502);
+  await recordBookingDocument(env, {
+    email: to, kind: "RECEIPT", amount: body.amount, reference: name,
+    bookingId: body.bookingId, items: body.items, address: body.address,
+    filename, pdfBase64: pdf
+  });
   return json(request, { ok: true });
 }
 
@@ -482,12 +554,20 @@ function textToB64(str) {
   return btoa(bin);
 }
 
-function buildMime({ to, name, subject, text, attachment }) {
+function replyToHeader(replyTo) {
+  const address = String(replyTo && replyTo.email || "").trim();
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(address)) return "Naki Whiteware Removal <nakiwhitewareremoval@gmail.com>";
+  const label = String(replyTo.name || "").replace(/["\r\n]/g, "").trim();
+  return label ? `"${label}" <${address}>` : address;
+}
+
+function buildMime({ to, name, subject, text, attachment, replyTo }) {
   const toHeader = name ? `"${name.replace(/["\r\n]/g, "")}" <${to}>` : to;
   const head = [
     "From: Naki Whiteware Removal <nakiwreckremoval@gmail.com>",
     `To: ${toHeader}`,
-    "Reply-To: Naki Whiteware Removal <nakiwhitewareremoval@gmail.com>",
+    // A forwarded customer message replies to the customer, not to ourselves.
+    `Reply-To: ${replyToHeader(replyTo)}`,
     `Subject: ${subject.replace(/[\r\n]/g, " ")}`,
     "MIME-Version: 1.0"
   ];
@@ -543,11 +623,15 @@ async function sendMail(env, msg) {
 function mailConfigured(env) { return Boolean(env.GMAIL_REFRESH_TOKEN || env.BREVO_API_KEY); }
 
 // Brevo sender — now the fallback path only.
-async function sendBrevo(env, { to, name, subject, text, attachment }) {
+async function sendBrevo(env, { to, name, subject, text, attachment, replyTo }) {
   if (!env.BREVO_API_KEY) return false;
+  const replyAddress = String(replyTo && replyTo.email || "").trim();
+  const useReply = /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(replyAddress)
+    ? { email: replyAddress, ...(replyTo.name ? { name: String(replyTo.name).slice(0, 80) } : {}) }
+    : { name: "Naki Whiteware Removal", email: "nakiwhitewareremoval@gmail.com" };
   const payload = {
     sender: { name: "Naki Whiteware Removal", email: "nakiwreckremoval@gmail.com" },
-    replyTo: { name: "Naki Whiteware Removal", email: "nakiwhitewareremoval@gmail.com" },
+    replyTo: useReply,
     to: [{ email: to, ...(name ? { name } : {}) }],
     subject,
     textContent: text,
@@ -568,10 +652,26 @@ const REF_LINE = "Reference: please use your name or address, as it was on the c
 
 function firstName(name) { return String(name || "").trim().split(/\s+/)[0] || ""; }
 
-function invoiceText(name, amount) {
+// The account link used to live in a promo box inside the PDF itself - but the
+// PDF is now kept as the customer's permanent record, so the link belongs in
+// the email instead, as the first thing they read.
+const PROFILE_URL_RE = /^https:\/\/nakiwhitewareremoval\.vip\/account\.html(\?[^\s]*)?$/;
+function profileLinkLine(url, status) {
+  const value = String(url || "").trim();
+  if (!PROFILE_URL_RE.test(value)) return "";
+  if (status === "existing") {
+    return `View your account, pickup history and every receipt/invoice we've sent you: ${value}\n\n`;
+  }
+  if (status === "invite") {
+    return `Set up your free online account to view your pickup history and keep every receipt/invoice in one place: ${value}\n\n`;
+  }
+  return `Open your account page to sign in or set up an account: ${value}\n\n`;
+}
+
+function invoiceText(name, amount, profileUrl, profileStatus) {
   const first = firstName(name);
   const amt = Number.isFinite(Number(amount)) ? ` for $${Number(amount).toFixed(2)}` : "";
-  return `Hi${first ? " " + first : ""},\n\nYour invoice${amt} for the whiteware collection is attached.\n\n${BANK_LINE}\n${REF_LINE}\n\nCheers,\nWoody\nNaki Whiteware Removal\nnakiwhitewareremoval@gmail.com`;
+  return `${profileLinkLine(profileUrl, profileStatus)}Hi${first ? " " + first : ""},\n\nYour invoice${amt} for the whiteware collection is attached.\n\n${BANK_LINE}\n${REF_LINE}\n\nCheers,\nWoody\nNaki Whiteware Removal\nnakiwhitewareremoval@gmail.com`;
 }
 
 function reminderText(name, amount) {
@@ -596,10 +696,16 @@ async function handleSendInvoice(request, env) {
   const sent = await sendMail(env, {
     to, name,
     subject: "Invoice - whiteware collection",
-    text: invoiceText(name, amount),
+    text: invoiceText(name, amount, body.profileUrl, body.profileStatus),
     attachment: [{ name: filename, content: pdf }]
   });
   if (!sent) return json(request, { error: "Email could not be sent" }, 502);
+  // Keep a copy in the customer's account so they can check what they owe.
+  await recordBookingDocument(env, {
+    email: to, kind: "INVOICE", amount, reference: name,
+    bookingId: body.bookingId, items: body.items, address: body.address,
+    filename, pdfBase64: pdf
+  });
   // Reminder: only for a real future-or-today date, and only if KV is bound.
   let reminderId = "";
   if (env.REMINDERS && /^\d{4}-\d{2}-\d{2}$/.test(reminderDate) && reminderDate >= isoDate(aucklandToday())) {
@@ -645,10 +751,14 @@ async function runReminders(env) {
 export default {
   async fetch(request, env) {
     if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: cors(request) });
-    if (!allowedOrigin(request)) return json(request, { error: "This service is only available to the Naki Pickup Run app" }, 403);
     const url = new URL(request.url);
     const path = url.pathname.replace(/^\/v2/, "");
+    if (path !== "/jotform/submission" && !allowedOrigin(request)) {
+      return json(request, { error: "This service is only available to the Naki Pickup Run app" }, 403);
+    }
     try {
+      const portalResponse = await handlePortalRequest({ request, env, path, json, sendMail });
+      if (portalResponse) return portalResponse;
       if (path === "/weather" && request.method === "POST") return await handleWeather(request, env);
       if (path === "/gms-hours" && request.method === "GET") return await handleGms(request, env);
       if (path === "/address-search" && request.method === "GET") return await handleAddress(request, env);
@@ -659,11 +769,16 @@ export default {
       if (path === "/run-reminders" && request.method === "GET") return json(request, await runReminders(env));
       return json(request, { error: "Not found" }, 404);
     } catch (error) {
+      console.error("Naki route request failed", request.method, path, error?.stack || String(error));
       return json(request, { error: "Live service could not be loaded" }, 502);
     }
   },
   // Daily at 21:00 UTC = 9am NZST (10am NZDT): send any due payment reminders.
   async scheduled(event, env, ctx) {
     ctx.waitUntil(runReminders(env));
+    ctx.waitUntil(retryPendingSheetBackups(env));
+    ctx.waitUntil(purgeExpiredAuth(env));
+    // Only on the daily trigger - the 15-minute one has other work to do.
+    if (event.cron === "0 21 * * *") ctx.waitUntil(snapshotDatabase(env));
   }
 };
