@@ -626,13 +626,24 @@ function pickupDateText(value) {
   }).format(new Date(`${value}T12:00:00+12:00`));
 }
 
-function pickupConfirmationText(booking, pickupDate, pickupWindow, customerNote) {
+/* customText is the exact wording Woody just texted, handed over by the app so
+   the email opens with the same message in the same voice - two versions of the
+   same announcement drifting apart is how a customer ends up with two different
+   sets of instructions. The rest is what a text cannot carry: the plain date (a
+   text saying "this coming Tuesday" is read straight away, an email might not
+   be), the account link, and how to keep it on their phone. */
+function pickupConfirmationText(booking, pickupDate, pickupWindow, customerNote, customText) {
   const day = pickupDateText(pickupDate);
-  return `Your whiteware pickup is confirmed.
+  const opening = customText
+    ? `${customText}
+
+Pickup day: ${day}${pickupWindow ? `\nTime: ${pickupWindow}` : ""}${customerNote ? `\nNote: ${customerNote}` : ""}`
+    : `Your whiteware pickup is confirmed.
 
 Pickup day: ${day}
 ${pickupWindow ? `Time: ${pickupWindow}\n` : ""}${customerNote ? `Note: ${customerNote}\n` : ""}
-Can you please make sure the appliance(s) are accessible and any furry friends are safely secured, if need be? You don't need to be home for the pickup — can you please just leave the items and $ safely inside your property line? 😊
+Can you please make sure the appliance(s) are accessible and any furry friends are safely secured, if need be? You don't need to be home for the pickup — can you please just leave the items and $ safely inside your property line? 😊`;
+  return `${opening}
 
 You can view or cancel your active booking here:
 ${CUSTOMER_ACCOUNT_URL}
@@ -2868,6 +2879,8 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
       // repairs dates on old confirmations - emailing from either would double up
       // or re-announce a pickup that was arranged weeks ago.
       const notifyCustomer = body.notifyCustomer === true;
+      // The exact text Woody is sending, so the email says the same thing.
+      const messageText = clean(body.message, 2000);
       if (!/^\d{4}-\d{2}-\d{2}$/.test(pickupDate)) {
         return json(request, { error: "Choose the confirmed pickup day" }, 400);
       }
@@ -2903,12 +2916,18 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
         // alongside it as a backup record with the account link on it. A failed
         // send here must never undo the date that's already saved and texted.
         if (notifyCustomer && EMAIL_RE.test(target.row.email || "")) {
+          // Same greeting swap the "Email everyone" button does, so a message
+          // that opens "Hey Woody here" lands as "Hi Jane, Woody here".
+          const firstName = clean(target.row.first_name, 60);
+          const greeted = messageText && firstName
+            ? messageText.replace(/^Hey /, `Hi ${firstName}, `)
+            : messageText;
           try {
             const sent = await sendMail(env, {
               to: target.row.email,
               name: `${target.row.first_name || ""} ${target.row.last_name || ""}`.trim(),
               subject: `Whiteware pickup confirmed - ${pickupDateText(pickupDate)}`,
-              text: pickupConfirmationText(target.row, pickupDate, pickupWindow, finalNote)
+              text: pickupConfirmationText(target.row, pickupDate, pickupWindow, finalNote, greeted)
             });
             if (sent) emailed++;
           } catch { /* the text already reached them; an email hiccup isn't fatal */ }
