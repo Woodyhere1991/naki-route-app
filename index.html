@@ -3493,7 +3493,6 @@ function renderContacts(){
   if (!pend.length){ wrap.innerHTML = `<div class="view-title">Messages</div><div class="card empty"><b>No customers yet</b><p>Add pickups first, then come back here to message them.</p><button onclick="setAppView('add')">Add pickups</button></div>`; return; }
   const selected = selectedRecipientIds();
   const selCount = selectedRecipients().length; // count only stops that still exist, not stale ids
-  const nums = selectedNumbers(), mails = selectedEmails();
   const missing = pend.map(s => {
     const fields=[];
     if (!goodPhone(s.phone)) fields.push("phone");
@@ -3546,13 +3545,8 @@ function renderContacts(){
     <div class="recipient-list">${recipientRows}</div>
     <button class="ghost sm" style="margin-top:6px" onclick="clearMessageMarks()">Clear sent marks for this day</button>`;
   const actions = `<div class="message-actions"><b id="selectedCount">${selCount} selected customer${selCount!==1?'s':''}</b>
-    <div class="row" style="margin-top:6px"><button class="good grow" onclick="bulkText()">Copy &amp; open text</button><button class="good grow" onclick="bulkEmailAuto()">📧 Email all now</button></div>
-    ${/* Copying numbers and opening Messages happens on the phone, so the app has no
-          way of knowing the texts actually went. This is how it's told - and the only
-          place the confirmation email is sent from. */""}
-    <div class="row" style="margin-top:6px"><button class="ghost grow" onclick="markSelectedSent()">✓ I sent the texts</button></div>
-    <p class="small muted" style="margin:6px 0 0">In Messages, tap <b>To</b> then <b>Paste</b> once. Back here, tap <b>I sent the texts</b> — that saves the day to their accounts and emails them the confirmation.</p>
-    <p class="small muted" style="margin:6px 0 0">Email all now sends its own email and marks them sent, so it needs no extra tap.</p></div>`;
+    <div class="row" style="margin-top:6px"><button class="good grow" onclick="bulkText()">📱 Text everyone</button><button class="good grow" onclick="bulkEmailAuto()">📧 Email everyone</button></div>
+    <p class="small muted" style="margin:6px 0 0">Either one asks you to confirm first, then does the lot — saves the day to their accounts and marks them messaged. In Messages, tap <b>To</b> then <b>Paste</b> once.</p></div>`;
   wrap.innerHTML = `<div class="card"><details open>
     <summary>Bulk message<span class="se-sum">${missing.length?` · ${missing.length} missing contact${missing.length!==1?'s':''}`:""}</span><span class="chev">›</span></summary>
     ${preview}
@@ -3601,30 +3595,6 @@ window.selectRecipients = mode => {
   const selected = new Set(state.messageSelectedIds);
   document.querySelectorAll("[data-recipient]").forEach(el=>{ el.checked=selected.has(el.dataset.recipient); });
   updateSelectedCustomerCount();
-};
-window.markSelectedSent = async () => {
-  // Only a confirmation needs a real chosen date - it gets saved to customer accounts.
-  if (messageMode()==="confirm" && !state.confirmationDate) return alert("Choose the collection day first.");
-  const recipients = selectedRecipients().filter(s => goodEmail(s.email) || goodPhone(s.phone));
-  if (!recipients.length) return alert("Select at least one pickup with a valid email or phone number.");
-  let datesSaved=false, emailed=0;
-  if (messageMode()==="confirm"){
-    busy("Saving the day and emailing everyone…");
-    try{
-      // The one place a confirmation is actually going out: Woody has just sent
-      // the texts. The matching email rides along with it.
-      const result=await publishBulkPickupDate(recipients,state.confirmationDate||"",true);
-      emailed=Number(result.emailed||0);
-      datesSaved=true;
-    }catch(e){
-      busy("");
-      return alert(e.message);
-    }
-  }
-  busy("");
-  markRecipientsSentLocally(recipients,state.confirmationDate||"",datesSaved);
-  save(); render();
-  flash(`✓ Marked ${recipients.length} sent${emailed?` · emailed ${emailed}`:""}`);
 };
 window.clearMessageMarks = () => {
   const history = state.messageHistory || {};
@@ -4310,30 +4280,59 @@ function copyPlainText(value){
   box.remove();
   return copied;
 }
-window.bulkText = () => {
+/* One tap does the whole confirmation: copy the numbers, save the day to their
+   online accounts, email them the confirmation, mark them sent, open Messages.
+   The clipboard write has to be started first and synchronously - a phone only
+   lets a page write to the clipboard while it is still handling the tap, so it
+   cannot wait behind a network call. */
+window.bulkText = async () => {
+  const recipients = selectedRecipients();
   const nums = selectedNumbers().map(n=>n.replace(/[^\d+]/g,""));
   if (!nums.length) return alert("Select at least one pickup with a valid phone number.");
   const message = bulkMessage();
   if (!message) return alert(messageMode()==="reminder"
     ? "Tap Optimise route on the Today tab first — the reminder times come from the planned route."
     : "Choose the collection day first, then check the message preview.");
-  const isApple = /iPad|iPhone|iPod/.test(navigator.userAgent);
-  const openMessages = () => { location.href = "sms:" + (isApple ? "&body=" : "?body=") + encodeURIComponent(message); };
-  // Copy the numbers like a Google Sheets column. iPhone will not let a website paste into another app.
+  const confirming = messageMode()==="confirm";
+  if (confirming && !state.confirmationDate) return alert("Choose the collection day first.");
+  // Spell out everything that is about to happen, because most of it is not
+  // undoable once it has gone.
+  const withEmail = recipients.filter(s => goodEmail(s.email)).length;
+  const day = collectionDayLabel(state.confirmationDate) || "the chosen day";
+  const lines = [`Copy ${nums.length} number${nums.length!==1?"s":""} and open Messages`];
+  if (confirming){
+    lines.push(`Save ${day} to their online accounts`);
+    if (withEmail) lines.push(`Email the confirmation to ${withEmail} of them`);
+  }
+  lines.push(`Mark ${recipients.length} customer${recipients.length!==1?"s":""} as messaged`);
+  if (!confirm(`${confirming?"Send the confirmation":"Send the reminder"} to ${recipients.length} customer${recipients.length!==1?"s":""}?\n\n`
+    + lines.map(line => `• ${line}`).join("\n"))) return;
+  // Start the copy inside the tap, then wait on it before anything slow happens.
   const phoneList = nums.join("\n");
-  if (copyPlainText(phoneList)) return openMessages();
-  if (navigator.clipboard?.writeText){
-    navigator.clipboard.writeText(phoneList).then(openMessages, () => alert("Couldn't copy the numbers. Please try again."));
-  } else alert("Couldn't copy the numbers. Please try again.");
-};
-window.bulkEmail = () => {
-  const mails = selectedEmails();
-  if (!mails.length) return alert("Select at least one pickup with a valid email.");
-  const message = bulkMessage();
-  if (!message) return alert(messageMode()==="reminder"
-    ? "Tap Optimise route on the Today tab first — the reminder times come from the planned route."
-    : "Choose the collection day first, then check the message preview.");
-  openGmail({bcc:mails.join(","), subject:messageMode()==="reminder"?"Whiteware reminder":"Whiteware collection", body:message});
+  const copying = copyPlainText(phoneList)
+    ? Promise.resolve(true)
+    : navigator.clipboard?.writeText
+      ? navigator.clipboard.writeText(phoneList).then(()=>true, ()=>false)
+      : Promise.resolve(false);
+  if (!await copying) return alert("Couldn't copy the numbers. Please try again.");
+  let datesSaved=false, emailed=0, problem="";
+  if (confirming){
+    busy("Saving the day and emailing everyone…");
+    try{
+      const result = await publishBulkPickupDate(recipients,state.confirmationDate||"",true);
+      datesSaved=true; emailed=Number(result.emailed||0);
+    }catch(e){ problem=e.message; }
+    busy("");
+  }
+  markRecipientsSentLocally(recipients,state.confirmationDate||"",datesSaved);
+  save(); render();
+  flash(problem
+    ? "⚠ Numbers copied — the day didn't save"
+    : `✓ ${recipients.length} messaged${emailed?` · emailed ${emailed}`:""}`);
+  // The texts are the part that matters most, so Messages still opens even if
+  // the account side failed - he just gets told about it.
+  if (problem) alert(`The numbers are copied and Messages is opening, but the day could not be saved to their accounts:\n\n${problem}`);
+  location.href = "sms:" + (/iPad|iPhone|iPod/.test(navigator.userAgent) ? "&body=" : "?body=") + encodeURIComponent(message);
 };
 // One tap: each selected customer gets their OWN personalised email via the
 // server + Brevo (individually addressed inboxes better than one BCC blob).
