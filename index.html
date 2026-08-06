@@ -1342,9 +1342,8 @@ function renderDirectBookings(){
         ${b.email?`<a class="ghost sm" href="mailto:${encodeURIComponent(b.email)}">✉️ Email</a>`:""}
         ${b.phone&&pickupDay?`<a class="ghost sm" href="sms:${esc(String(b.phone).replace(/[^\d+]/g,""))}?body=${smsText}">💬 Text details</a>`:""}
         ${bookingWorkflowActions}
-        ${b._localOnly?"":`<button class="good sm" data-quote-direct="${esc(b.id)}">${b.quotedPrice!=null ? "✎ Change price" : (b.quoteRequired ? "$ Send price" : "✎ Change price")}</button>
-        ${b.photoCount ? `<button class="ghost sm" data-photos-direct="${esc(b.id)}">📷 ${b.photoCount} photo${b.photoCount===1?"":"s"}</button>` : ""}
-        <button class="ghost sm" data-edit-direct="${esc(b.id)}">✎ Edit details</button>
+        ${b._localOnly?"":`${b.photoCount ? `<button class="ghost sm" data-photos-direct="${esc(b.id)}">📷 ${b.photoCount} photo${b.photoCount===1?"":"s"}</button>` : ""}
+        <button class="good sm" data-edit-direct="${esc(b.id)}">✎ Edit details &amp; price</button>
         <button class="ghost sm" title="Delete this booking" data-delete-direct="${esc(b.id)}">✕ Delete</button>`}
       </div>`;
     const classes=`direct-booking${actuallyAdded?' added':''}${b.status==='CANCELLED'?' cancelled':''}`;
@@ -1419,7 +1418,6 @@ function renderDirectBookings(){
   list.querySelectorAll("[data-restore-direct]").forEach(button=>button.onclick=()=>restoreDirectBooking(button.dataset.restoreDirect));
   list.querySelectorAll("[data-edit-direct]").forEach(button=>button.onclick=()=>editDirectBooking(button.dataset.editDirect));
   list.querySelectorAll("[data-delete-direct]").forEach(button=>button.onclick=()=>deleteDirectBooking(button.dataset.deleteDirect));
-  list.querySelectorAll("[data-quote-direct]").forEach(button=>button.onclick=()=>sendBookingQuote(button.dataset.quoteDirect));
   list.querySelectorAll("[data-photos-direct]").forEach(button=>button.onclick=()=>showBookingPhotos(button.dataset.photosDirect));
   list.querySelectorAll("[data-owner-document]").forEach(button=>button.onclick=()=>openOwnerDocument(button.dataset.ownerDocument));
   rememberOpenCards(list,"details[data-booking-id]",bookingCardsOpen,"data-booking-id");
@@ -1704,12 +1702,19 @@ document.querySelectorAll("[data-customer-view]").forEach(button=>button.onclick
 });
 
 // Fix a customer's details on their booking - typos, a better address, extra items.
+// One dialog for everything on a booking, price included. Two separate buttons
+// meant editing a name and fixing the price were two trips through two popups.
+// The price only counts as "changed" if Woody actually types a different number,
+// so a plain details edit never re-stamps the quote or emails anyone.
 async function editDirectBooking(id){
   const b=directBookingRows.find(row=>row.id===id); if(!b) return;
+  const who=[b.firstName,b.lastName].filter(Boolean).join(" ")||"this pickup";
+  const seed=b.quotedPrice!=null ? b.quotedPrice : (b.quoteRequired ? null : Number(b.total||0));
+  const seedText=seed!=null?String(seed):"";
   const result=await openEditForm({
     title:"✎ Edit booking details",
-    note:"This updates the booking in their online account too.",
-    saveLabel:"Save details",
+    note:"This updates the booking in their online account too. The price loads into the receipt and invoice.",
+    saveLabel:"Save booking",
     fields:[
       { key:"firstName", label:"First name", value:b.firstName, half:true },
       { key:"lastName",  label:"Last name",  value:b.lastName,  half:true },
@@ -1721,64 +1726,49 @@ async function editDirectBooking(id){
       { key:"area", label:"Area (optional)", value:b.area },
       { key:"items", label:"Items being collected", type:"textarea", value:(b.items||[]).join(", "),
         placeholder:"Fridge or upright freezer, Microwave" },
+      // Blank is allowed and means "leave the price alone" - handy for a job
+      // that's still waiting on a quote.
+      { key:"price", label:b.quoteRequired&&seed==null ? "Price ($) — quote still needed" : "Price ($)",
+        value:seedText, inputmode:"decimal",
+        validate:v=>String(v||"").trim()==="" || parseMoney(v)!==null ? "" : "Enter the price as a number, or leave it blank." },
+      { key:"quoteNote", label:"Short note about the price (optional)", type:"textarea", rows:2, value:b.quoteNote||"" },
       { key:"additionalInfo", label:"Notes from the customer", type:"textarea", rows:2, value:b.additionalInfo||"" }
     ]
   });
   if (!result) return;
-  directStatus("Saving their details…");
+  const priceText=String(result.price||"").trim();
+  const amount=priceText==="" ? null : parseMoney(priceText);
+  // Only a genuinely different number counts - retyping the same figure shouldn't
+  // fire off a "here's your price" email.
+  const priceChanged=amount!==null && amount!==seed;
+  const notify=priceChanged && goodEmail(result.email)
+    && confirm(`Email ${who} the price of $${amount.toFixed(2)}?\n\nTap Cancel to just save it quietly.`);
+  directStatus(notify ? "Saving and sending the price…" : "Saving the booking…");
   try{
+    const payload={
+      status:b.status,
+      firstName:result.firstName, lastName:result.lastName, phone:result.phone, email:result.email,
+      streetAddress:result.streetAddress, town:result.town, area:result.area,
+      additionalInfo:result.additionalInfo, items:splitItems(result.items),
+      quoteNote:String(result.quoteNote||"").trim()
+    };
+    if (priceChanged){ payload.quoteAmount=amount; payload.notifyCustomer=notify; }
     const data=await ownerApi(`/owner/bookings/${encodeURIComponent(id)}`,{
       method:"PATCH",
-      body:JSON.stringify({
-        status:b.status,
-        firstName:result.firstName, lastName:result.lastName, phone:result.phone, email:result.email,
-        streetAddress:result.streetAddress, town:result.town, area:result.area,
-        additionalInfo:result.additionalInfo, items:splitItems(result.items)
-      })
+      body:JSON.stringify(payload)
     });
     const index=directBookingRows.findIndex(row=>row.id===id);
     if (index>=0) directBookingRows[index]={...directBookingRows[index],...data.booking};
-    renderDirectBookings();
-    directStatus("Details saved.");
-  }catch(e){ directStatus(e.message,true); }
-}
-// Set or change the price on any booking — a "quote needed" job or one that
-// already has a fixed total. Emailing the customer is asked, not assumed, so a
-// small correction doesn't fire off a surprise email.
-async function sendBookingQuote(id){
-  const b=directBookingRows.find(row=>row.id===id); if(!b) return;
-  const who=[b.firstName,b.lastName].filter(Boolean).join(" ")||"this pickup";
-  const seed=b.quotedPrice!=null ? b.quotedPrice : (b.quoteRequired ? null : Number(b.total||0));
-  const entered=await openEditForm({
-    title:`$ Price for ${who}`,
-    note:"This price shows in their account and loads into the receipt and invoice.",
-    saveLabel:"Save price",
-    fields:[
-      { key:"amount", label:"Price ($)", value:seed!=null?String(seed):"", inputmode:"decimal",
-        validate:v=>parseMoney(v)===null ? "Enter the price as a number." : "" },
-      { key:"note", label:"Short note for the customer (optional)", type:"textarea", rows:2, value:b.quoteNote||"" }
-    ]
-  });
-  if (!entered) return;
-  const amount=parseMoney(entered.amount);
-  const note=entered.note;
-  const notify=goodEmail(b.email) && confirm(`Email ${who} the price of $${amount.toFixed(2)}?\n\nTap Cancel to just save it quietly.`);
-  directStatus(notify ? "Sending the price…" : "Saving the price…");
-  try{
-    const data=await ownerApi(`/owner/bookings/${encodeURIComponent(id)}`,{
-      method:"PATCH",
-      body:JSON.stringify({status:b.status,quoteAmount:amount,quoteNote:String(note).trim(),notifyCustomer:notify})
-    });
-    const index=directBookingRows.findIndex(row=>row.id===id);
-    if (index>=0) directBookingRows[index]={...directBookingRows[index],...data.booking};
-    // Carry the new price through to the pickup card if it's already on a run.
+    // Carry a new price through to the pickup card if it's already on a run.
     if (index>=0) syncBookingChangesIntoRuns([directBookingRows[index]]);
     renderDirectBookings();
-    directStatus(!notify
-      ? `Price saved for ${who}.`
+    directStatus(!priceChanged
+      ? "Booking saved."
+      : !notify
+      ? `Saved. Price for ${who} is now $${amount.toFixed(2)}.`
       : data.quoteEmailed===false
-      ? "Price saved, but the email did not send — tell them another way."
-      : `Price sent to ${who}.`);
+      ? "Saved, but the price email did not send — tell them another way."
+      : `Saved and the price was sent to ${who}.`);
   }catch(e){ directStatus(e.message,true); }
 }
 
