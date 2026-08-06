@@ -317,6 +317,9 @@
   .stage-tabs button.on{background:var(--accent);border-color:var(--accent);color:#fff}
   .stage-tabs .n{display:block;font-size:11px;font-weight:800;opacity:.75}
   .stage-tabs button.on .n{opacity:1}
+  /* Unpaid money is the one count worth spotting from across the cab. */
+  .stage-tabs .n.owing{opacity:1;font-size:13px;color:#ffb3ac}
+  .stage-tabs button.on .n.owing{color:#fff}
   /* Edit popup - a real form instead of a chain of one-line prompts. */
   .modal-back{position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:10000;
     display:flex;align-items:center;justify-content:center;padding:16px}
@@ -1088,11 +1091,16 @@ function hideBookingStageTabs(){
 // what's on screen, so each button says what you'd get by tapping it.
 function paintBookingStageTabs(rows){
   const wrap=$("#bookingStageTabs"); if (!wrap) return;
-  const tally={all:rows.length,new:0,scheduled:0,done:0};
-  rows.forEach(b=>{ tally[stageOfBooking(b)]++; });
+  // Built from BOOKING_STAGES rather than hand-listed, so adding a stage can
+  // never leave it without a counter again - "Invoice owing" was missing here
+  // and its tab was showing NaN instead of a number.
+  const tally=Object.fromEntries(BOOKING_STAGES.map(([key])=>[key,0]));
+  tally.all=rows.length;
+  rows.forEach(b=>{ const stage=stageOfBooking(b); if (stage in tally) tally[stage]++; });
   wrap.style.display="flex";
   wrap.innerHTML=BOOKING_STAGES.map(([key,label])=>
-    `<button data-stage="${key}" class="${key===bookingStage?"on":""}">${label}<span class="n">${tally[key]}</span></button>`
+    // Money still owed is the one worth catching the eye when it isn't zero.
+    `<button data-stage="${key}" class="${key===bookingStage?"on":""}">${label}<span class="n${key==="owing"&&tally.owing>0?" owing":""}">${tally[key]}</span></button>`
   ).join("");
   wrap.querySelectorAll("[data-stage]").forEach(button=>button.onclick=()=>{
     bookingStage=button.dataset.stage;
