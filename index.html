@@ -854,6 +854,19 @@ function save(){
   if (typeof scheduleCloudBackup === "function") scheduleCloudBackup();
 }
 function activeRunName(){ return activeRunRecord()?.name || "Pickup run"; }
+// An invoice raised straight off a booking card has no stop in the ledger, so the
+// not-picked-up-yet fact and the reminder day are kept here, keyed by booking id.
+function bookingInvoiceStore(){
+  runStore.shared = runStore.shared || {};
+  if (!runStore.shared.bookingInvoices) runStore.shared.bookingInvoices = {};
+  return runStore.shared.bookingInvoices;
+}
+function rememberBookingInvoice(bookingId, meta){
+  if (!bookingId) return;
+  const store = bookingInvoiceStore();
+  store[bookingId] = { ...(store[bookingId]||{}), ...meta };
+  saveJSON(RUNS_LS, runStore);
+}
 function allRunStates(){
   return runStore.runs.map(run=>run.id===runStore.activeRunId ? state : run.data);
 }
@@ -1197,6 +1210,20 @@ function runContainingBooking(bookingId){
     return (data.stops||[]).concat(data.bad||[]).some(stop=>stop.submission_id===bookingId);
   }) || null;
 }
+// Just enough of a stop's shape for the pickup tag and the reminder line.
+function bookingInvoiceFacts(b){
+  const meta = bookingInvoiceStore()[b.id];
+  if (!meta) return null;
+  const done = b.status==="COMPLETED";
+  return {
+    id:"",                                    // no stop to tap-correct
+    invoiceStage: meta.stage || "",
+    reminderDate: meta.reminderDate || "",
+    paid: false,
+    collectedAt: done ? 1 : "",
+    historyStatus: done ? "COMPLETED" : ""
+  };
+}
 function unpaidStopForBooking(booking){
   return (state.unpaid||[]).find(stop=>
     stop.submission_id===booking.id ||
@@ -1353,8 +1380,13 @@ function renderDirectBookings(){
       <button class="good sm" onclick="markPaid('${unpaid.id}')">💰 Mark paid</button>
       <button class="ghost sm" onclick="receiptStop('${unpaid.id}')">🧾 Send receipt</button>
       <button class="ghost sm" onclick="invoiceStop('${unpaid.id}')">📄 Invoice again</button>` : "";
+    // The stop in the ledger knows best; a booking billed straight off its card
+    // has no stop, so fall back to what was saved when the invoice went out.
+    const owingFacts = unpaid || bookingInvoiceFacts(b);
+    const stageLine = owingFacts ? `<div class="small" style="margin:4px 0">${invoiceStageTag(owingFacts)} ${reminderLine(owingFacts)}</div>` : "";
     const owingBox=b.invoiceOwing ? `<div class="owing-note"><b>💰 Invoice owing · $${owingAmount.toFixed(2)}</b>
-      ${unpaid?`<div class="small" style="margin:4px 0">${invoiceStageTag(unpaid)} ${reminderLine(unpaid)}</div><div class="direct-actions">${owingActions}</div>`:`<div class="small" style="margin-top:4px">This invoice is attached below. Refresh this phone's saved runs to use payment actions here.</div>`}</div>` : "";
+      ${stageLine}
+      ${unpaid?`<div class="direct-actions">${owingActions}</div>`:`<div class="small" style="margin-top:4px">This invoice is attached below. Refresh this phone's saved runs to use payment actions here.</div>`}</div>` : "";
     const bookingWorkflowActions=b._localOnly ?
       `<button class="ghost sm" onclick="editStop('${b._unpaidStopId}')">✎ Edit pickup</button>` :
       (["CANCELLED","DECLINED"].includes(b.status)
@@ -1587,6 +1619,10 @@ async function sendBookingInvoice(id){
     const out=await res.json().catch(()=>({}));
     if (!res.ok || !out.ok) throw new Error(out.error||"The email could not be sent.");
     delete pendingBookingInvoices[id];
+    // Billed off a booking card, so the pickup hasn't happened yet.
+    rememberBookingInvoice(b.id, { stage:"before", reminderDate, reminderId:out.reminderId||"", invoicedAt:localIso(new Date()) });
+    const linkedStop = unpaidStopForBooking(b);
+    if (linkedStop && !linkedStop.invoiceStage){ linkedStop.invoiceStage = "before"; save(); }
     // Pull the booking back so the invoice appears in its paperwork and the card
     // drops into Invoice owing without needing a manual refresh.
     await loadDirectBookings(false);
@@ -3176,20 +3212,35 @@ window.addUnpaidToRun = id => {
   flash(`✓ Added back to ${activeRunName()} · the unpaid invoice is still saved`);
 };
 
-// Was the invoice sent before the gear was picked up, or after? Stamped on the
-// stop when the invoice goes out; older records fall back to whether the pickup
-// had already been completed.
+// Was the invoice sent before the gear was picked up, or after? Where the invoice
+// was raised is what tells us: off a stop in a run means it's already on the
+// truck, off a booking card means the trip hasn't happened yet.
+function isCollected(s){
+  return Boolean(s.collectedAt || s.receiptSent || s.historyStatus==="COMPLETED");
+}
 function invoiceStage(s){
   if (s.invoiceStage==="before" || s.invoiceStage==="after") return s.invoiceStage;
-  return (s.collectedAt || s.receiptSent || s.historyStatus==="COMPLETED") ? "after" : "before";
+  return isCollected(s) ? "after" : "before";
 }
+// One tap on the tag corrects it, for anything invoiced before the app tracked this.
 function invoiceStageTag(s){
-  if (invoiceStage(s)==="after") return `<span class="asaptag" style="background:var(--good)">BILLED AFTER PICKUP</span>`;
-  // Billed early: the tag says whether the gear is still sitting there.
-  return (s.collectedAt || s.receiptSent || s.historyStatus==="COMPLETED")
-    ? `<span class="asaptag" style="background:var(--good)">BILLED EARLY · PICKED UP</span>`
-    : `<span class="asaptag" style="background:var(--warn);color:#16212a">BILLED EARLY · NOT PICKED UP</span>`;
+  const tap = s.id ? ` onclick="toggleCollected('${s.id}')" title="Tap to correct this" style="cursor:pointer;` : ` style="`;
+  if (invoiceStage(s)==="after" && isCollected(s))
+    return `<span class="asaptag"${tap}background:var(--good)">BILLED AFTER PICKUP</span>`;
+  return isCollected(s)
+    ? `<span class="asaptag"${tap}background:var(--good)">BILLED EARLY · PICKED UP</span>`
+    : `<span class="asaptag"${tap}background:var(--warn);color:#16212a">NOT PICKED UP YET</span>`;
 }
+// Flip a wrong tag by hand.
+window.toggleCollected = id => {
+  const s = findStop(id); if (!s) return;
+  const nowCollected = !isCollected(s);
+  s.collectedAt = nowCollected ? Date.now() : "";
+  if (!nowCollected && s.historyStatus==="COMPLETED") s.historyStatus = "ADDED_TO_RUN";
+  if (!s.invoiceStage) s.invoiceStage = nowCollected ? "after" : "before";
+  save(); render();
+  flash(nowCollected ? "✓ Marked as picked up" : "↺ Marked as still to pick up");
+};
 // Spell the reminder out either way, so "no reminder" never looks the same as
 // "reminder set but I can't see the day".
 function reminderLine(s){
@@ -4181,13 +4232,17 @@ window.sendInvoice = async id => {
   const file = pendingInvoices[id];
   if (!s || !file){ render(); return; }
   const amt = s.invoiceAmount;
-  // Read this BEFORE the stop is forced to DONE below, or every invoice would
-  // look like it was sent after the pickup.
-  const alreadyCollected = Boolean(s.collectedAt) || s.receiptSent || s.historyStatus==="COMPLETED" || s.status==="DONE";
+  // Invoicing a stop that's sitting in a run means the gear is already on the
+  // truck. Re-sending from the unpaid ledger says nothing either way, so it
+  // leaves the pickup state alone.
+  const fromRun = state.stops.some(x => x.id === id);
   const markSent = (rid, rdate) => {
     delete pendingInvoices[id];
     s.invoiceSent = true; s.paid = false;
-    if (!s.invoiceStage) s.invoiceStage = alreadyCollected ? "after" : "before";   // a re-send keeps the original
+    if (fromRun){
+      if (!s.invoiceStage) s.invoiceStage = "after";
+      s.collectedAt = s.collectedAt || Date.now();
+    }
     if (rid){ s.reminderId = rid; s.reminderDate = rdate||""; }   // keep any earlier reminder on a re-send
     // Out of the run, into the unpaid ledger — Clear all won't touch it there.
     if (!s.historyStatus) s.historyStatus = s.status==="DONE" ? "COMPLETED" : "ADDED_TO_RUN";
