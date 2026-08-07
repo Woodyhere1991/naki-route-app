@@ -262,6 +262,13 @@
   .direct-items{margin:8px 0;color:var(--txt);font-weight:700}
   .direct-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:11px}
   .direct-actions button,.direct-actions a{flex:1 1 135px}
+  /* The once-in-a-while taps: quiet until you ask for them. */
+  .more-tools{margin-top:8px}
+  .more-tools>summary{list-style:none;cursor:pointer;font-size:14px;font-weight:700;color:var(--muted);
+    padding:7px 11px;border-radius:11px;border:1px dashed var(--line);text-align:center}
+  .more-tools>summary::-webkit-details-marker{display:none}
+  .more-tools[open]>summary{color:var(--txt);border-style:solid}
+  .more-tools .direct-actions{margin-top:8px}
   .confirmed-day{margin-top:9px;padding:9px 11px;border-radius:11px;background:#123f37;color:#c9ffe3;font-weight:800}
   .direct-contact{display:flex;flex-wrap:wrap;gap:4px 16px;margin-top:8px;font-size:15px;font-weight:700}
   .direct-contact a{color:#ffd36b;text-decoration:none;overflow-wrap:anywhere}
@@ -516,10 +523,6 @@
       <span>Customers</span>
       <span><button class="ghost sm" id="customersRefresh">Refresh</button></span>
     </div>
-    <div class="card" id="insightsCard" style="display:none">
-      <b>Where customers come from</b>
-      <div id="insightsBody" class="small muted">Loading…</div>
-    </div>
     <div class="list-toolbar" id="customerToolbar" style="display:none">
       <input id="customerSearch" class="grow" placeholder="Search name, town, address, email or phone" />
       <span class="view-switch" id="customerViewSwitch" aria-label="Customer view">
@@ -529,6 +532,11 @@
     </div>
     <div id="customerStatus" class="small muted"></div>
     <div id="customerList"></div>
+    <!-- Occasional reading, not the reason you opened this page: it sits under the list. -->
+    <details class="card" id="insightsCard" style="display:none">
+      <summary><b>📊 Where customers come from</b><span class="chev">›</span></summary>
+      <div id="insightsBody" class="small muted" style="margin-top:8px">Loading…</div>
+    </details>
   </section>
 
   <!-- WEATHER -->
@@ -631,9 +639,6 @@
 
   <!-- NEEDS ADDRESS -->
   <div id="badWrap" class="view-panel view-today today-bad"></div>
-
-  <!-- UNPAID INVOICES — separate ledger, survives Clear all and sheet loads -->
-  <div id="unpaidWrap" class="view-panel view-today today-unpaid"></div>
 
   <footer>Only pickups you load • No login • Your runs are saved on this phone</footer>
 </div>
@@ -753,7 +758,6 @@ const customerDocsOpen = new Set();
 let bookingCompact = loadBool("naki_booking_compact_v1", true);
 let customerCompact = loadBool("naki_customer_compact_v1", true);
 let routeDrawVersion = 0;   // prevents an old run's road line appearing after a quick switch
-let unpaidOpen = false;     // the Unpaid invoices dropdown stays as you left it across redraws
 // Payment details printed on every invoice + reminder email.
 const BANK_ACCOUNT = "06-0709-0967040-00";
 const BANK_NAME = "TRADING AS NWR";
@@ -1116,7 +1120,17 @@ function stageOfBooking(b){
   if (["COMPLETED","DECLINED","CANCELLED"].includes(b.status)) return "done";
   return runContainingBooking(b.id) ? "scheduled" : "new";
 }
-const BOOKING_STAGES=[["all","All"],["new","New"],["scheduled","Scheduled"],["owing","Invoice owing"],["done","Done"]];
+const BOOKING_STAGES=[["all","All"],["new","New"],["scheduled","Scheduled"],["owing","Owing"],["done","Done"]];
+// The card and the buttons above it have to say the same word about the same job,
+// so both come from here. Cancelled and declined keep their own words - they are
+// not one of the four stages, and calling either of them "Done" would read wrong.
+function bookingStatusWord(b){
+  if (b.invoiceOwing) return "Owing";
+  if (b.status==="CANCELLED") return "Cancelled";
+  if (b.status==="DECLINED") return "Declined";
+  if (b.status==="COMPLETED") return "Done";
+  return runContainingBooking(b.id) ? "Scheduled" : "New";
+}
 function hideBookingStageTabs(){
   const wrap=$("#bookingStageTabs"); if (wrap){ wrap.style.display="none"; wrap.innerHTML=""; }
 }
@@ -1338,7 +1352,7 @@ function renderDirectBookings(){
     const linkedRun=runContainingBooking(b.id);
     const actuallyAdded=Boolean(linkedRun);
     const added=actuallyAdded;
-    const statusText=b.invoiceOwing ? "INVOICE OWING" : b.status==="ADDED_TO_RUN" && !actuallyAdded ? "New request" : (b.status==="NEW" ? "New request" : b.status.replaceAll("_"," "));
+    const statusText=bookingStatusWord(b);
     const statusClass=b.status==="CANCELLED" ? " cancelled" : "";
     const sync=(b.source==="PICKUP_RUN" || b.source==="LOCAL_INVOICE")
       ? '<span class="sync-ok">Pickup run</span>'
@@ -1394,7 +1408,7 @@ function renderDirectBookings(){
     const owingFacts = unpaid || bookingInvoiceFacts(b);
     const stageTap = unpaid ? "" : `toggleBookingCollected('${esc(b.id)}')`;
     const stageLine = `<div class="small" style="margin:4px 0">${invoiceStageTag(owingFacts, stageTap)} ${reminderLine(owingFacts)}</div>`;
-    const owingBox=b.invoiceOwing ? `<div class="owing-note"><b>💰 Invoice owing · $${owingAmount.toFixed(2)}</b>
+    const owingBox=b.invoiceOwing ? `<div class="owing-note"><b>💰 Owing · $${owingAmount.toFixed(2)}</b>
       ${stageLine}
       ${unpaid?`<div class="direct-actions">${owingActions}</div>`:`<div class="small" style="margin-top:4px">This invoice is attached below. Refresh this phone's saved runs to use payment actions here.</div>`}</div>` : "";
     const bookingWorkflowActions=b._localOnly ?
@@ -1409,6 +1423,14 @@ function renderDirectBookings(){
             ? `<button class="ghost sm" data-add-direct="${esc(b.id)}">↺ Re-add to active run</button>`
             : `<button class="good sm" data-add-direct="${esc(b.id)}">Add to active run</button>`) +
           `<button class="ghost sm" data-complete-direct="${esc(b.id)}">✓ Done</button>`);
+    const moreActions=b._localOnly ? "" : [
+      b.photoCount ? `<button class="ghost sm" data-photos-direct="${esc(b.id)}">📷 ${b.photoCount} photo${b.photoCount===1?"":"s"}</button>` : "",
+      `<button class="good sm" data-edit-direct="${esc(b.id)}">✎ Edit details &amp; price</button>`,
+      // Taking an invoice off the owing list without pretending it was paid. This
+      // used to live on the old Today ledger, which no longer exists.
+      unpaid && !unpaid.paid ? `<button class="ghost sm" title="Take this off the owing list without marking it paid" onclick="removeUnpaid('${unpaid.id}')">✕ Clear from Owing</button>` : "",
+      `<button class="ghost sm" title="Delete this booking" data-delete-direct="${esc(b.id)}">✕ Delete booking</button>`
+    ].filter(Boolean).join("");
     const body = `<div class="direct-meta"><span>${esc(date)}</span><span class="booking-status${statusClass}">${esc(statusText)}</span>${sync}</div>
       <div>${address}</div>
       ${contact}
@@ -1428,15 +1450,16 @@ function renderDirectBookings(){
         ${b.phone?`<a class="ghost sm" href="sms:${esc(String(b.phone).replace(/[^\d+]/g,""))}${pickupDay?`?body=${smsText}`:""}">💬 ${pickupDay?"Text details":"Text"}</a>`:""}
         ${navAddress?`<a class="ghost sm" target="_blank" rel="noopener" href="https://www.google.com/maps/search/?api=1&amp;query=${encodeURIComponent(navAddress)}">🧭 Navigate</a>`:""}
         ${bookingWorkflowActions}
-        ${b._localOnly?"":`${b.photoCount ? `<button class="ghost sm" data-photos-direct="${esc(b.id)}">📷 ${b.photoCount} photo${b.photoCount===1?"":"s"}</button>` : ""}
         ${/* A built-but-unsent invoice has to stay visible, or closing the preview
               would quietly lose it and the button would still say "Send invoice". */""}
-        ${goodEmail(b.email) && !unpaid ? (pendingBookingInvoices[b.id]
+        ${b._localOnly ? "" : (goodEmail(b.email) && !unpaid ? (pendingBookingInvoices[b.id]
           ? `<button class="good sm" data-invoice-direct="${esc(b.id)}">👁 Invoice preview</button><button class="ghost sm" title="Throw this invoice away and start again" data-invoice-cancel="${esc(b.id)}">↺ Redo</button>`
-          : `<button class="ghost sm" title="Email this customer an invoice" data-invoice-direct="${esc(b.id)}">📄 ${b.invoiceOwing?"Invoice again":"Send invoice"}</button>`) : ""}
-        <button class="good sm" data-edit-direct="${esc(b.id)}">✎ Edit details &amp; price</button>
-        <button class="ghost sm" title="Delete this booking" data-delete-direct="${esc(b.id)}">✕ Delete</button>`}
-      </div>`;
+          : `<button class="ghost sm" title="Email this customer an invoice" data-invoice-direct="${esc(b.id)}">📄 ${b.invoiceOwing?"Invoice again":"Send invoice"}</button>`) : "")}
+      </div>
+      ${/* Editing, deleting and the photo list are the once-in-a-while taps, and
+            Delete sitting in the everyday row was one slip from losing a booking.
+            They live behind More now; the everyday buttons stay one tap away. */""}
+      ${moreActions ? `<details class="more-tools"><summary>⋯ More</summary><div class="direct-actions">${moreActions}</div></details>` : ""}`;
     const classes=`direct-booking${actuallyAdded?' added':''}${b.status==='CANCELLED'?' cancelled':''}`;
     // Which jobs came with photos was only findable by opening every card. A quiet
     // camera chip on the closed line answers it at a glance, and tapping it goes
@@ -1483,7 +1506,7 @@ function renderDirectBookings(){
   const narrowed = Boolean(bookingSearchText || bookingFocusEmail || bookingStage!=="all");
   const openWhenSearching = narrowed ? " open" : "";
   if (bookingStage==="owing") {
-    html += `<details class="town-group" open><summary>💰 Invoice owing (${rest.length})<span class="chev">›</span></summary>${rest.map(bookingCard).join("")}</details>`;
+    html += `<details class="town-group" open><summary>💰 Owing (${rest.length})<span class="chev">›</span></summary>${rest.map(bookingCard).join("")}</details>`;
   } else townGroups.forEach(group=>{
     // A town with a not-yet-added job stays open by default so it's obvious it's still waiting.
     const hasFresh = group.rows.some(isNewBooking);
@@ -1501,7 +1524,7 @@ function renderDirectBookings(){
     html += `<details class="town-group"${openAttr}><summary>${hasFresh?"🆕 ":"📍 "}${esc(group.label)} (${group.rows.length})<span class="chev">›</span></summary>${bulkAction}${group.rows.map(bookingCard).join("")}</details>`;
   });
   if (previousRows.length){
-    html += `<details class="town-group"${openWhenSearching}><summary>✅ Previous (${previousRows.length})<span class="chev">›</span></summary>${previousRows.map(bookingCard).join("")}</details>`;
+    html += `<details class="town-group"${openWhenSearching}><summary>✅ Done (${previousRows.length})<span class="chev">›</span></summary>${previousRows.map(bookingCard).join("")}</details>`;
   }
   list.innerHTML = html;
   list.querySelectorAll("[data-add-direct]").forEach(button=>{
@@ -1637,7 +1660,7 @@ async function sendBookingInvoice(id){
     // drops into Invoice owing without needing a manual refresh.
     await loadDirectBookings(false);
     directStatus(`✓ Invoice for $${amount.toFixed(2)} emailed to ${who}${out.reminderId?` — reminder set for ${reminderDate}`:""}.`);
-    flash(`✓ Invoice sent to ${who} · now in Bookings → Invoice owing`);
+    flash(`✓ Invoice sent to ${who} · now in Bookings → Owing`);
   }catch(e){
     // Keep the built PDF so Send can be tried again without rebuilding it.
     directStatus("Couldn't email that invoice: "+e.message,true);
@@ -2148,7 +2171,7 @@ function renderCustomers(){
     customerStatus(`0 of ${customerRows.length} customers.`);
     return;
   }
-  list.innerHTML = groupByTown(visibleCustomers).map(group=>{
+  list.innerHTML = groupByTown(visibleCustomers).map((group,groupIndex)=>{
     const cards = group.rows.map(c=>{
       const name=esc([c.firstName,c.lastName].filter(Boolean).join(" "))||"(No name yet)";
       // Town belongs on the card as well as in the 📍 group header — otherwise adding
@@ -2199,7 +2222,7 @@ function renderCustomers(){
         <div class="mini-body">${body}</div>
       </details>`;
     }).join("");
-    return `<details class="town-group"${customerSearchText?" open":""}><summary>📍 ${esc(group.label)} (${group.rows.length})<span class="chev">›</span></summary>${cards}</details>`;
+    return `<details class="town-group"${customerSearchText||groupIndex===0?" open":""}><summary>📍 ${esc(group.label)} (${group.rows.length})<span class="chev">›</span></summary>${cards}</details>`;
   }).join("");
   list.querySelectorAll("[data-delete-customer]").forEach(button=>button.onclick=()=>deleteCustomer(button.dataset.deleteCustomer));
   list.querySelectorAll("[data-edit-customer]").forEach(button=>button.onclick=()=>editCustomer(button.dataset.editCustomer));
@@ -3068,8 +3091,6 @@ function render(){
   renderList();
   renderContacts();
   renderBad();
-  // Invoice owing jobs live with their booking now, not at the bottom of Today.
-  const oldUnpaidHost=$("#unpaidWrap"); if(oldUnpaidHost) oldUnpaidHost.innerHTML="";
   if(ownerToken) renderDirectBookings();
   renderStart();
   renderWeather();
@@ -3260,61 +3281,6 @@ function reminderLine(s){
   const d = new Date(`${s.reminderDate}T12:00:00`);
   const when = isNaN(d) ? s.reminderDate : d.toLocaleDateString("en-NZ",{weekday:"short",day:"numeric",month:"short"});
   return `⏰ Reminder ${when}`;
-}
-
-// The unpaid-invoices ledger: its own collapsible card, separate from the run.
-function renderUnpaid(){
-  const wrap = $("#unpaidWrap"); if (!wrap) return;
-  const list = state.unpaid || [];
-  if (!list.length){ wrap.innerHTML = ""; return; }
-  const owe = list.filter(s => !s.paid);
-  const settled = list.filter(s => s.paid);
-  const entry = s => {
-    const phone  = s.phone ? `<button class="ghost sm" onclick="callStop('${s.id}')">📞 Call</button>` : "";
-    const textB  = s.phone ? `<button class="ghost sm" onclick="textStop('${s.id}')">💬 Text</button>` : "";
-    const emailB = goodEmail(s.email) ? `<button class="ghost sm" onclick="gmailStop('${s.id}')">Email</button>` : "";
-    const invB = pendingInvoices[s.id]
-      ? `<button class="good sm" onclick="openInvoicePreview('${s.id}')">👁 Invoice preview</button><button class="ghost sm" onclick="cancelInvoice('${s.id}')">↺ Redo</button>`
-      : `<button class="ghost sm" onclick="invoiceStop('${s.id}')">📄 Invoice again</button>`;
-    const recB = pendingReceipts[s.id]
-      ? `<button class="good sm" onclick="openReceiptPreview('${s.id}')">👁 Preview &amp; send</button><button class="ghost sm" onclick="cancelReceipt('${s.id}')">↺ Redo</button>`
-      : `<button class="ghost sm" onclick="receiptStop('${s.id}')">🧾 ${s.receiptSent?'Receipt ✓':'Receipt'}</button>`;
-    const paidB = s.paid ? "" : `<button class="good sm" onclick="markPaid('${s.id}')">💰 Paid</button>`;
-    const linkedRun=runHoldingUnpaidPickup(s.id);
-    const runB = s.paid ? "" : linkedRun
-      ? (linkedRun.id===runStore.activeRunId
-          ? `<button class="ghost sm" disabled>✓ In active run</button>`
-          : `<button class="ghost sm" onclick="openRunForUnpaid('${linkedRun.id}')">📍 Go to ${esc(linkedRun.name)}</button>`)
-      : `<button class="good sm" onclick="addUnpaidToRun('${s.id}')">↩ Add to active run</button>`;
-    const del = `<button class="ghost sm" title="Remove from this list" onclick="removeUnpaid('${s.id}')">✕</button>`;
-    const priceB = `<button class="ghost sm" onclick="editStop('${s.id}')">✎ Edit pickup</button>`;
-    const meta = [
-      s.invoiceAmount!=null ? `$${Number(s.invoiceAmount).toFixed(2)}` : "",
-      s.invoicedAt ? `invoiced ${s.invoicedAt}` : "",
-      reminderLine(s)
-    ].filter(Boolean).join(" · ");
-    return `<div class="stop ${s.paid?'done':''}" data-id="${s.id}" style="border-left-color:${s.paid?'var(--good)':'#c0392b'}">
-      <div class="num">${s.paid?'✓':'$'}</div>
-      <div class="stopbody">
-        <div class="name">${esc(fullName(s)) || esc(fullAddr(s))} ${s.paid?'':`<span class="asaptag" style="background:#c0392b">UNPAID</span> ${invoiceStageTag(s)}`}</div>
-        <div class="addr">${esc(fullAddr(s))}</div>
-        ${meta?`<div class="small muted" style="margin:2px 0">${meta}</div>`:""}
-        <div class="stopbtns">${s.paid ? `${recB}${priceB}${emailB}${del}` : `${runB}${paidB}${recB}${invB}${priceB}${phone}${textB}${emailB}${del}`}</div>
-      </div>
-    </div>`;
-  };
-  wrap.innerHTML = `<div class="card" style="padding:10px">
-    <details id="unpaidBox"${unpaidOpen?" open":""}>
-      <summary>💰 Unpaid invoices${owe.length?` (${owe.length})`:""} <span class="chev">›</span></summary>
-      <div style="padding-top:10px">
-        <p class="small muted" style="margin:0 0 8px">Invoice sent before collection? Tap <b>Add to active run</b>. The unpaid invoice stays safely here. When the money lands just send the receipt — that marks it paid and completed for you. Then ✕ to clear it off.</p>
-        ${owe.map(entry).join("") || `<div class="empty small" style="padding:8px 4px">No one owes you right now 🎉</div>`}
-        ${settled.length ? `<div class="sectitle">Paid — send receipt, then ✕ (${settled.length})</div>${settled.map(entry).join("")}` : ""}
-      </div>
-    </details>
-  </div>`;
-  const box = document.getElementById("unpaidBox");
-  box.ontoggle = () => { unpaidOpen = box.open; };
 }
 
 function renderBad(){
@@ -4287,7 +4253,7 @@ window.sendInvoice = async id => {
       if (res.ok && out.ok){
         markSent(out.reminderId||"", reminderDate);
         if(ownerToken) await loadDirectBookings(false);
-        flash("✓ Invoice emailed to " + to + (out.reminderId ? ` — reminder set for ${reminderDate}` : "") + " · shown in Bookings → Invoice owing");
+        flash("✓ Invoice emailed to " + to + (out.reminderId ? ` — reminder set for ${reminderDate}` : "") + " · shown in Bookings → Owing");
         return;
       }
     }catch(e){ busy(""); }
@@ -4328,10 +4294,10 @@ window.markPaid = async id => {
   if (!confirm(`Mark ${fullName(s)||"this pickup"} as paid?`)) return;
   await cancelReminderFor(s);
   await settleAsPaid(s);
-  flash("✓ Paid — send the receipt, then ✕ to clear them off the list.");
+  flash("✓ Paid — send the receipt to finish the job.");
 };
-// Paid means the job is finished, so push it up as COMPLETED — that's what puts it
-// under Previous in Bookings, and it has to happen before ✕ clears the card away.
+// Paid means the job is finished, so push it up as COMPLETED — that's what moves
+// it out of Owing and down into Done in Bookings.
 async function settleAsPaid(s){
   s.paid = true;
   s.status = "DONE";
