@@ -1346,7 +1346,7 @@ function renderDirectBookings(){
     // Unescaped copy for the maps link - esc() is for putting text in the page,
     // and double-encoding it here would break the search.
     const navAddress=[b.streetAddress,b.town,b.area].filter(Boolean).join(", ");
-    const items=esc((b.items||[]).join(", "));
+    const items=esc(groupItems(b.items).join(", "));
     const date=new Date(b.createdAt).toLocaleString("en-NZ",{day:"numeric",month:"short",hour:"numeric",minute:"2-digit"});
     const terminal=["COMPLETED","DECLINED","CANCELLED"].includes(b.status) && !b.invoiceOwing;
     const linkedRun=runContainingBooking(b.id);
@@ -3839,6 +3839,60 @@ async function loadReceiptLogo(){
   return receiptLogo;
 }
 loadReceiptLogo();   // warm it up at boot so the first Receipt tap is instant
+// "Fridge, Fridge, Washing machine" reads as three different jobs. Roll the
+// repeats up into "Fridge x2" — shorter to read and shorter on the page.
+function groupItems(list){
+  const order=[], seen=new Map();
+  (list||[]).forEach(raw=>{
+    const name=String(raw==null?"":raw).trim();
+    if (!name) return;
+    const key=name.toLowerCase();
+    if (!seen.has(key)){ seen.set(key,{name,count:0}); order.push(key); }
+    seen.get(key).count++;
+  });
+  return order.map(key=>{
+    const {name,count}=seen.get(key);
+    return count>1 ? `${name} x${count}` : name;
+  });
+}
+// The footer sits at y=200 on an A5 page, so nothing may be drawn below this.
+const PDF_BOTTOM = 193;
+// Keep a block whole: if it won't fit above the footer, start it on a fresh page.
+function ensureRoom(doc, y, need){
+  if (y + need <= PDF_BOTTOM) return y;
+  doc.addPage();
+  return 24;
+}
+// A long list of appliances used to run straight over the footer. Past six lines
+// it goes into two columns, and it still page-breaks if it is longer than that.
+function addItemList(doc, items, y, W, M){
+  const lineH=6, colLineH=5.5, colW=(W-M*2)/2;
+  doc.setFont("helvetica","normal");
+  if (items.length<=4){
+    doc.setFontSize(10);
+    items.forEach(item=>{
+      y=ensureRoom(doc, y, lineH);
+      doc.text("• "+item, M+4, y);
+      y+=lineH;
+    });
+    return y;
+  }
+  const rows=Math.ceil(items.length/2);
+  y=ensureRoom(doc, y, rows*colLineH);
+  const top=y;
+  items.forEach((item,i)=>{
+    const col=i<rows ? 0 : 1;
+    const x=M+4+col*colW;
+    const label="• "+item;
+    // Shrink a long name rather than let it run into the next column.
+    let size=9;
+    doc.setFontSize(size);
+    while (size>6.5 && doc.getTextWidth(label) > colW-6){ size-=0.5; doc.setFontSize(size); }
+    doc.text(label, x, top+(col===0?i:i-rows)*colLineH);
+  });
+  doc.setFontSize(10);
+  return top+rows*colLineH;
+}
 function addPdfFooters(doc, W, M){
   const pages=doc.getNumberOfPages();
   for(let page=1;page<=pages;page++){
@@ -3855,7 +3909,7 @@ function addPdfFooters(doc, W, M){
 const REVIEW_LINK_URL = "https://g.page/r/CQPARM-ojFNrEBM/review";
 const REVIEW_QR_PNG = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAMYAAADGAQAAAACh4MLwAAABRklEQVR42u1YwY3DMAwTzgNkpKyukTyAAJ4oOvfrAf0UfNQICqf+EBRJyQm8WBXfk39PdvRa+64re98bvsddP/Fqfeqksd2NcRHhvZCNbfX7dsE2qBBXxoU1OJcVtv5tbFNcO2zICm5gxhvx0BbByoaV3uIp5XmMfKq1h8Cp5kkXE72NQ2nS5pBWpfZMsFH5DeaSC1hQF72hSUvJTCYFsw4m2ETa5BvrCyefqk+RqxMpueDCG8V/ynqyLoy8MNGxVd+wwlakizGCvyHExwvT5WuMMNjCBhukf7pVz0SxS69nKVMzkspq41PICDP0RsWJFBO9nRiZ8UN/+vAmySl7xaFNhjzzG3RZYNyVjxc0hyM1gcAJm+4LeK6oGsut7lnFvtCzZarjO2E7TX+6KszuWTmMyQhpozf5dLL3+eZg1E+/X7LePvkFIFLakSmetN8AAAAASUVORK5CYII=";
 function addReviewAsk(doc, y, W, M){
-  const boxH = 32, qr = 24;
+  const boxH = 30, qr = 24;
   doc.setFillColor(255, 249, 240);
   doc.setDrawColor(244, 135, 34);
   doc.roundedRect(M, y, W-M*2, boxH, 2, 2, "FD");
@@ -3868,7 +3922,7 @@ function addReviewAsk(doc, y, W, M){
   doc.text(doc.splitTextToSize("Scan the code, or tap below, to leave us a Google review. It only takes a minute and it really helps us out.", textW), M+5, y+14);
   doc.setTextColor(0, 98, 170);
   doc.setFont("helvetica", "bold"); doc.setFontSize(9);
-  doc.textWithLink("Leave a Google review", M+5, y+28, {url: REVIEW_LINK_URL});
+  doc.textWithLink("Leave a Google review", M+5, y+27, {url: REVIEW_LINK_URL});
   return y + boxH;
 }
 function addProfileMessage(doc, y, W, M, s){
@@ -3879,20 +3933,22 @@ function addProfileMessage(doc, y, W, M, s){
       ? "Set up your free online account to save your addresses, request your next pickup in seconds, and keep every receipt and invoice in one place."
       : "Open your account page to sign in, or set up a free account if you have not made one yet.";
   doc.setFillColor(244, 247, 249);
-  doc.roundedRect(M, y, W-M*2, 28, 2, 2, "F");
+  doc.roundedRect(M, y, W-M*2, 26, 2, 2, "F");
   doc.setTextColor(30, 30, 30);
   doc.setFont("helvetica", "normal"); doc.setFontSize(9);
   const lines=doc.splitTextToSize(message, W-M*2-10);
   doc.text(lines, M+5, y+7);
   doc.setTextColor(0, 98, 170);
   doc.setFont("helvetica", "bold"); doc.setFontSize(10);
-  doc.textWithLink(hasProfile===true ? "View your account" : "Open the account page", M+5, y+23, {url:s.profileUrl||`${WEBSITE_URL}/account.html`});
+  doc.textWithLink(hasProfile===true ? "View your account" : "Open the account page", M+5, y+22, {url:s.profileUrl||`${WEBSITE_URL}/account.html`});
 }
 async function buildReceiptPdf(s, amt){
   const { jsPDF } = window.jspdf;
   const doc = new jsPDF({ unit:"mm", format:"a5" });
   const W = 148, M = 14;
-  const items = (s.appliances&&s.appliances.length) ? s.appliances : ["Whiteware"];
+  const rawItems = (s.appliances&&s.appliances.length) ? s.appliances : ["Whiteware"];
+  const items = groupItems(rawItems);
+  const total = rawItems.length;
   const today = new Date().toLocaleDateString("en-NZ",{weekday:"long", day:"numeric", month:"long", year:"numeric"});
   // Header band with logo
   doc.setFillColor(6, 29, 46);            // app navy
@@ -3924,9 +3980,9 @@ async function buildReceiptPdf(s, amt){
   row("Received from", fullName(s) || "Customer");
   row("Address", fullAddr(s));
   y += 3;
-  doc.setFont("helvetica", "bold"); doc.setFontSize(10); doc.text("Collected", M, y); y += 7;
-  doc.setFont("helvetica", "normal");
-  items.forEach(it => { doc.text("• " + it, M + 4, y); y += 6; });
+  doc.setFont("helvetica", "bold"); doc.setFontSize(10);
+  doc.text(`Collected${total>1?` (${total} items)`:""}`, M, y); y += 7;
+  y = addItemList(doc, items, y, W, M);
   y += 4;
   doc.setDrawColor(180); doc.line(M, y, W - M, y); y += 9;
   doc.setFont("helvetica", "bold"); doc.setFontSize(13);
@@ -3934,8 +3990,10 @@ async function buildReceiptPdf(s, amt){
   doc.setFont("helvetica", "normal"); doc.setFontSize(10);
   doc.text("Payment received in full — thank you!", M, y);
   y += 10;
+  // The account box and the review box travel together — 26 + 4 + 30 tall.
+  y = ensureRoom(doc, y, 60);
   addProfileMessage(doc, y, W, M, s);
-  addReviewAsk(doc, y + 34, W, M);
+  addReviewAsk(doc, y + 30, W, M);
   addPdfFooters(doc, W, M);
   return doc.output("blob");
 }
@@ -3944,7 +4002,9 @@ async function buildInvoicePdf(s, amt){
   const { jsPDF } = window.jspdf;
   const doc = new jsPDF({ unit:"mm", format:"a5" });
   const W = 148, M = 14;
-  const items = (s.appliances&&s.appliances.length) ? s.appliances : ["Whiteware"];
+  const rawItems = (s.appliances&&s.appliances.length) ? s.appliances : ["Whiteware"];
+  const items = groupItems(rawItems);
+  const total = rawItems.length;
   const today = new Date().toLocaleDateString("en-NZ",{weekday:"long", day:"numeric", month:"long", year:"numeric"});
   doc.setFillColor(6, 29, 46);
   doc.rect(0, 0, W, 32, "F");
@@ -3974,13 +4034,15 @@ async function buildInvoicePdf(s, amt){
   row("Invoice to", fullName(s) || "Customer");
   row("Address", fullAddr(s));
   y += 3;
-  doc.setFont("helvetica", "bold"); doc.setFontSize(10); doc.text("Collection items", M, y); y += 7;
-  doc.setFont("helvetica", "normal");
-  items.forEach(it => { doc.text("• " + it, M + 4, y); y += 6; });
+  doc.setFont("helvetica", "bold"); doc.setFontSize(10);
+  doc.text(`Collection items${total>1?` (${total} items)`:""}`, M, y); y += 7;
+  y = addItemList(doc, items, y, W, M);
   y += 4;
   doc.setDrawColor(180); doc.line(M, y, W - M, y); y += 9;
   doc.setFont("helvetica", "bold"); doc.setFontSize(13);
   doc.text(`Amount due: $${amt.toFixed(2)}`, M, y); y += 10;
+  // How to pay and the account box must not be split off from each other.
+  y = ensureRoom(doc, y, 59);
   // How to pay — bank account + the reference the customer should use.
   doc.setFontSize(11);
   doc.text("How to pay", M, y); y += 7;
