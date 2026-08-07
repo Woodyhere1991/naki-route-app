@@ -1354,7 +1354,7 @@ function renderDirectBookings(){
       <button class="ghost sm" onclick="receiptStop('${unpaid.id}')">🧾 Send receipt</button>
       <button class="ghost sm" onclick="invoiceStop('${unpaid.id}')">📄 Invoice again</button>` : "";
     const owingBox=b.invoiceOwing ? `<div class="owing-note"><b>💰 Invoice owing · $${owingAmount.toFixed(2)}</b>
-      ${unpaid?`<div class="direct-actions">${owingActions}</div>`:`<div class="small" style="margin-top:4px">This invoice is attached below. Refresh this phone's saved runs to use payment actions here.</div>`}</div>` : "";
+      ${unpaid?`<div class="small" style="margin:4px 0">${invoiceStageTag(unpaid)} ${reminderLine(unpaid)}</div><div class="direct-actions">${owingActions}</div>`:`<div class="small" style="margin-top:4px">This invoice is attached below. Refresh this phone's saved runs to use payment actions here.</div>`}</div>` : "";
     const bookingWorkflowActions=b._localOnly ?
       `<button class="ghost sm" onclick="editStop('${b._unpaidStopId}')">✎ Edit pickup</button>` :
       (["CANCELLED","DECLINED"].includes(b.status)
@@ -3160,6 +3160,7 @@ window.addUnpaidToRun = id => {
     src:"unpaid-return",
     status:"NEW",
     invoiceSent:false,
+    invoiceStage:"",
     paid:false,
     reminderId:"",
     reminderDate:"",
@@ -3174,6 +3175,30 @@ window.addUnpaidToRun = id => {
   syncExternalBooking(pickup);
   flash(`✓ Added back to ${activeRunName()} · the unpaid invoice is still saved`);
 };
+
+// Was the invoice sent before the gear was picked up, or after? Stamped on the
+// stop when the invoice goes out; older records fall back to whether the pickup
+// had already been completed.
+function invoiceStage(s){
+  if (s.invoiceStage==="before" || s.invoiceStage==="after") return s.invoiceStage;
+  return (s.collectedAt || s.receiptSent || s.historyStatus==="COMPLETED") ? "after" : "before";
+}
+function invoiceStageTag(s){
+  if (invoiceStage(s)==="after") return `<span class="asaptag" style="background:var(--good)">BILLED AFTER PICKUP</span>`;
+  // Billed early: the tag says whether the gear is still sitting there.
+  return (s.collectedAt || s.receiptSent || s.historyStatus==="COMPLETED")
+    ? `<span class="asaptag" style="background:var(--good)">BILLED EARLY · PICKED UP</span>`
+    : `<span class="asaptag" style="background:var(--warn);color:#16212a">BILLED EARLY · NOT PICKED UP</span>`;
+}
+// Spell the reminder out either way, so "no reminder" never looks the same as
+// "reminder set but I can't see the day".
+function reminderLine(s){
+  if (s.paid) return "";
+  if (!s.reminderDate) return `<span style="color:var(--warn)">⏰ No reminder set</span>`;
+  const d = new Date(`${s.reminderDate}T12:00:00`);
+  const when = isNaN(d) ? s.reminderDate : d.toLocaleDateString("en-NZ",{weekday:"short",day:"numeric",month:"short"});
+  return `⏰ Reminder ${when}`;
+}
 
 // The unpaid-invoices ledger: its own collapsible card, separate from the run.
 function renderUnpaid(){
@@ -3204,12 +3229,12 @@ function renderUnpaid(){
     const meta = [
       s.invoiceAmount!=null ? `$${Number(s.invoiceAmount).toFixed(2)}` : "",
       s.invoicedAt ? `invoiced ${s.invoicedAt}` : "",
-      (!s.paid && s.reminderDate) ? `⏰ reminder ${s.reminderDate}` : ""
+      reminderLine(s)
     ].filter(Boolean).join(" · ");
     return `<div class="stop ${s.paid?'done':''}" data-id="${s.id}" style="border-left-color:${s.paid?'var(--good)':'#c0392b'}">
       <div class="num">${s.paid?'✓':'$'}</div>
       <div class="stopbody">
-        <div class="name">${esc(fullName(s)) || esc(fullAddr(s))} ${s.paid?'':'<span class="asaptag" style="background:#c0392b">UNPAID</span>'}</div>
+        <div class="name">${esc(fullName(s)) || esc(fullAddr(s))} ${s.paid?'':`<span class="asaptag" style="background:#c0392b">UNPAID</span> ${invoiceStageTag(s)}`}</div>
         <div class="addr">${esc(fullAddr(s))}</div>
         ${meta?`<div class="small muted" style="margin:2px 0">${meta}</div>`:""}
         <div class="stopbtns">${s.paid ? `${recB}${priceB}${emailB}${del}` : `${runB}${paidB}${recB}${invB}${priceB}${phone}${textB}${emailB}${del}`}</div>
@@ -4156,9 +4181,13 @@ window.sendInvoice = async id => {
   const file = pendingInvoices[id];
   if (!s || !file){ render(); return; }
   const amt = s.invoiceAmount;
+  // Read this BEFORE the stop is forced to DONE below, or every invoice would
+  // look like it was sent after the pickup.
+  const alreadyCollected = Boolean(s.collectedAt) || s.receiptSent || s.historyStatus==="COMPLETED" || s.status==="DONE";
   const markSent = (rid, rdate) => {
     delete pendingInvoices[id];
     s.invoiceSent = true; s.paid = false;
+    if (!s.invoiceStage) s.invoiceStage = alreadyCollected ? "after" : "before";   // a re-send keeps the original
     if (rid){ s.reminderId = rid; s.reminderDate = rdate||""; }   // keep any earlier reminder on a re-send
     // Out of the run, into the unpaid ledger — Clear all won't touch it there.
     if (!s.historyStatus) s.historyStatus = s.status==="DONE" ? "COMPLETED" : "ADDED_TO_RUN";
