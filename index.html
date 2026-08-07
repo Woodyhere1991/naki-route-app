@@ -572,11 +572,13 @@
   <!-- BACKUP — runs live only in this browser, so give them a way out -->
   <div class="card view-panel view-add">
     <details id="backupBox">
-      <summary>Back up my runs <span class="chev">›</span></summary>
+      <summary>My runs on other phones <span class="chev">›</span></summary>
       <div style="padding-top:10px">
         <p class="small muted" style="margin:0 0 10px">
-          Your runs, unpaid list and saved settings live only in this browser. Deleting the app,
-          clearing your history or switching phones loses them. Save a copy here first.
+          While you're signed in this happens on its own. Your runs save up to your account a few
+          seconds after every change, and any phone you open the app on pulls the latest copy down.
+          Sign in on a new phone and your runs come with you — the buttons below are only for when
+          you want to force it.
         </p>
         <div id="cloudBackup" class="confirmed-day" style="margin:0 0 10px">
           <span id="cloudBackupState">Checking your saved copy…</span>
@@ -589,8 +591,9 @@
           <button class="ghost grow" id="cloudRestore">↺ Restore from my account</button>
         </div>
         <p class="small muted" style="margin:6px 0 0">
-          Save puts today's runs on the server under your email. Restore pulls that copy back down
-          and replaces what's on this phone — use it on a new phone, or after a wipe.
+          Save now pushes this phone up straight away instead of waiting. Restore pulls the account
+          copy down and replaces what's on this phone. If two phones both change things while one
+          is offline, the app asks which copy to keep rather than picking for you.
         </p>
         <p class="small muted" style="margin:12px 0 6px">
           Or keep a copy as a file on your phone, no sign-in needed. Save writes a
@@ -1928,7 +1931,10 @@ $("#ownerCodeVerify").onclick=async()=>{
     await loadDirectBookings(true);
     await syncPastBulkBookingDates();
     refreshCloudBackupInfo();
-    pushCloudBackup(true);            // signed in again — get a copy up straight away
+    // Newer runs on the account win on a phone that just signed in - that is the
+    // whole point of signing in somewhere else. Only push if there was nothing newer.
+    await syncFromCloud(true);
+    pushCloudBackup(true);
     // A phone that signed in with nothing on it is most likely a restore — say so.
     offerCloudRestoreIfEmpty();
   }catch(e){ $("#ownerLoginStatus").textContent=e.message; }
@@ -4775,8 +4781,12 @@ function backupStatus(message, bad=false){
 // Everything this browser holds EXCEPT the sign-in token. A backup that carried
 // the token would put a live key to the account inside a file and inside the
 // server copy; a restored phone should sign in with its own emailed code.
+// SYNC_KEY is this phone's private note of where it is up to. Including it in the
+// backup would change the payload every time we saved the note, so the phone would
+// never look settled and would upload forever.
+const SYNC_KEY="naki_cloud_sync_v1";
 function nakiStorageKeys(){
-  return Object.keys(localStorage).filter(key=>key.startsWith("naki_") && key!==OWNER_TOKEN_KEY);
+  return Object.keys(localStorage).filter(key=>key.startsWith("naki_") && key!==OWNER_TOKEN_KEY && key!==SYNC_KEY);
 }
 $("#backupSave").onclick=()=>{
   try{
@@ -4859,8 +4869,9 @@ async function pushCloudBackup(quiet=true){
   if (quiet && stamp===lastCloudPush) return;         // nothing actually changed
   cloudBackupBusy=true;
   try{
-    await ownerApi("/owner/backup",{ method:"PUT", body:stamp });
+    const result=await ownerApi("/owner/backup",{ method:"PUT", body:stamp });
     lastCloudPush=stamp;
+    setSyncMark(result.savedAt||Date.now(), stamp);
     paintCloudState(`✓ Saved to your account just now · ${payload.runCount} run${payload.runCount===1?"":"s"}`);
     if (!quiet) backupStatus("Saved to your account.");
   }catch(e){
@@ -4872,6 +4883,49 @@ function scheduleCloudBackup(){
   if (!ownerToken) return;
   clearTimeout(cloudBackupTimer);
   cloudBackupTimer=setTimeout(()=>pushCloudBackup(true), 8000);
+}
+
+/* Saving up was already automatic. Coming back DOWN was not — a second phone kept
+   showing its own old copy until someone found the Restore button. This closes
+   that half, so signing in on any phone shows the same runs.
+
+   Where this phone is up to is one note: the savedAt the server gave us, and the
+   payload that went with it. Server moved on and we haven't? Take theirs. We moved
+   and they haven't? save() is already uploading. Both moved? That's the only case
+   worth asking about, and it asks. */
+function syncMark(){ return loadJSON(SYNC_KEY, {serverAt:0, payload:""}); }
+function setSyncMark(serverAt, payload){ saveJSON(SYNC_KEY, {serverAt:Number(serverAt)||0, payload}); }
+function localHasWork(){
+  const store=loadJSON(RUNS_LS,{});
+  return (store.runs||[]).some(run=>(run.data?.stops||[]).length) || Boolean((store.shared?.unpaid||[]).length);
+}
+async function applyCloudBackup(saved){
+  Object.entries(saved.data||{}).forEach(([key,value])=>{ if (typeof value==="string") localStorage.setItem(key,value); });
+  // Stamped from what actually landed, so the next check sees a settled phone.
+  setSyncMark(saved.savedAt, JSON.stringify(backupPayload()));
+  backupStatus("Brought your runs down from your account. Reloading…");
+  setTimeout(()=>location.reload(), 700);
+}
+let cloudPullAt=0;
+async function syncFromCloud(force=false){
+  if (!ownerToken || cloudBackupBusy) return;
+  if (!force && Date.now()-cloudPullAt < 30000) return;      // don't hammer it on every glance
+  cloudPullAt=Date.now();
+  let info;
+  try{ info=await ownerApi("/owner/backup/info"); }catch(e){ return; }
+  if (!info.latest || !info.latest.savedAt) return;           // nothing up there yet
+  const mark=syncMark();
+  if (info.latest.savedAt <= mark.serverAt) return;           // this phone is level or ahead
+  const changedHere=JSON.stringify(backupPayload())!==mark.payload;
+  if (changedHere && localHasWork()){
+    const keepTheirs=confirm(
+      `Your account has newer runs saved ${whenText(info.latest.savedAt)}, probably from your other phone.\n\n` +
+      `This phone also has changes that haven't gone up yet.\n\n` +
+      `OK — use the newer copy and replace what's on this phone.\n` +
+      `Cancel — keep this phone and save it up instead.`);
+    if (!keepTheirs){ pushCloudBackup(false); return; }
+  }
+  try{ await applyCloudBackup(await ownerApi("/owner/backup")); }catch(e){ /* offline — try again later */ }
 }
 // A fresh or wiped phone shouldn't have to know the backup exists — tell it.
 async function offerCloudRestoreIfEmpty(){
@@ -4911,9 +4965,7 @@ $("#cloudRestore").onclick=async ()=>{
     if (!confirm(`Restore ${incoming.length} run${incoming.length===1?"":"s"} saved ${whenText(saved.savedAt)}?\n\nThis replaces the ${current} run${current===1?"":"s"} on this phone.`)) {
       backupStatus(""); return;
     }
-    Object.entries(saved.data).forEach(([key,value])=>{ if (typeof value==="string") localStorage.setItem(key,value); });
-    backupStatus("Restored. Reloading…");
-    setTimeout(()=>location.reload(), 700);
+    await applyCloudBackup(saved);
   }catch(e){ backupStatus("Couldn't restore: "+e.message, true); }
 };
 $("#backupLoad").onclick=()=>$("#backupFile").click();
@@ -5273,8 +5325,14 @@ if (ownerToken) refreshOwnerData();
 if (ownerToken) setTimeout(syncPastBulkBookingDates, 1800);
 refreshCloudBackupInfo();
 if (ownerToken) setTimeout(offerCloudRestoreIfEmpty, 2500);
-// Last chance to push before the app is closed or backgrounded.
-document.addEventListener("visibilitychange",()=>{ if (document.hidden) pushCloudBackup(true); });
+// Pull down anything the other phone did while this one was closed.
+if (ownerToken) setTimeout(()=>syncFromCloud(true), 1200);
+// Push the moment the app is backgrounded, and check for their changes on the
+// way back in, so switching phones needs no buttons at all.
+document.addEventListener("visibilitychange",()=>{
+  if (document.hidden) pushCloudBackup(true);
+  else syncFromCloud();
+});
 setInterval(refreshOwnerData,15000);
 document.addEventListener("visibilitychange",()=>{ if(document.visibilityState==="visible") refreshOwnerData(); });
 window.addEventListener("focus",refreshOwnerData);
