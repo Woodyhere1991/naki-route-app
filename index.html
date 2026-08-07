@@ -1210,20 +1210,29 @@ function runContainingBooking(bookingId){
     return (data.stops||[]).concat(data.bad||[]).some(stop=>stop.submission_id===bookingId);
   }) || null;
 }
-// Just enough of a stop's shape for the pickup tag and the reminder line.
+// Just enough of a stop's shape for the pickup tag and the reminder line. An
+// invoice owing on a booking card was raised off that card, so it starts as
+// not-picked-up unless the booking is done or he's tapped the tag to say so.
 function bookingInvoiceFacts(b){
-  const meta = bookingInvoiceStore()[b.id];
-  if (!meta) return null;
-  const done = b.status==="COMPLETED";
+  const meta = bookingInvoiceStore()[b.id] || {};
+  const collected = meta.collected!==undefined ? Boolean(meta.collected) : b.status==="COMPLETED";
   return {
-    id:"",                                    // no stop to tap-correct
-    invoiceStage: meta.stage || "",
+    id:"",                                    // corrected by booking id, not stop id
+    invoiceStage: meta.stage || "before",
     reminderDate: meta.reminderDate || "",
     paid: false,
-    collectedAt: done ? 1 : "",
-    historyStatus: done ? "COMPLETED" : ""
+    collectedAt: collected ? 1 : "",
+    historyStatus: ""
   };
 }
+// Same one-tap correction as the ledger, for bookings with no stop on this phone.
+window.toggleBookingCollected = id => {
+  const meta = bookingInvoiceStore()[id] || {};
+  const collected = !meta.collected;
+  rememberBookingInvoice(id, { collected, stage: meta.stage || "before" });
+  renderDirectBookings();
+  flash(collected ? "✓ Marked as picked up" : "↺ Marked as still to pick up");
+};
 function unpaidStopForBooking(booking){
   return (state.unpaid||[]).find(stop=>
     stop.submission_id===booking.id ||
@@ -1383,7 +1392,8 @@ function renderDirectBookings(){
     // The stop in the ledger knows best; a booking billed straight off its card
     // has no stop, so fall back to what was saved when the invoice went out.
     const owingFacts = unpaid || bookingInvoiceFacts(b);
-    const stageLine = owingFacts ? `<div class="small" style="margin:4px 0">${invoiceStageTag(owingFacts)} ${reminderLine(owingFacts)}</div>` : "";
+    const stageTap = unpaid ? "" : `toggleBookingCollected('${esc(b.id)}')`;
+    const stageLine = `<div class="small" style="margin:4px 0">${invoiceStageTag(owingFacts, stageTap)} ${reminderLine(owingFacts)}</div>`;
     const owingBox=b.invoiceOwing ? `<div class="owing-note"><b>💰 Invoice owing · $${owingAmount.toFixed(2)}</b>
       ${stageLine}
       ${unpaid?`<div class="direct-actions">${owingActions}</div>`:`<div class="small" style="margin-top:4px">This invoice is attached below. Refresh this phone's saved runs to use payment actions here.</div>`}</div>` : "";
@@ -3223,8 +3233,9 @@ function invoiceStage(s){
   return isCollected(s) ? "after" : "before";
 }
 // One tap on the tag corrects it, for anything invoiced before the app tracked this.
-function invoiceStageTag(s){
-  const tap = s.id ? ` onclick="toggleCollected('${s.id}')" title="Tap to correct this" style="cursor:pointer;` : ` style="`;
+function invoiceStageTag(s, onTap){
+  const handler = onTap || (s.id ? `toggleCollected('${s.id}')` : "");
+  const tap = handler ? ` onclick="${handler}" title="Tap to correct this" style="cursor:pointer;` : ` style="`;
   if (invoiceStage(s)==="after" && isCollected(s))
     return `<span class="asaptag"${tap}background:var(--good)">BILLED AFTER PICKUP</span>`;
   return isCollected(s)
