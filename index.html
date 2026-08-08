@@ -262,6 +262,12 @@
   .direct-items{margin:8px 0;color:var(--txt);font-weight:700}
   .direct-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:11px}
   .direct-actions button,.direct-actions a{flex:1 1 135px}
+  /* Buttons sorted by what they're for. The caption is quiet on purpose - it's
+     there to break the pile up, not to be read every time. */
+  .action-group{margin-top:12px}
+  .action-group>h4{margin:0 0 6px;font-size:11px;font-weight:800;letter-spacing:.07em;
+    text-transform:uppercase;color:var(--muted)}
+  .action-group .direct-actions{margin-top:0}
   .confirmed-day{margin-top:9px;padding:9px 11px;border-radius:11px;background:#123f37;color:#c9ffe3;font-weight:800}
   .direct-contact{display:flex;flex-wrap:wrap;gap:4px 16px;margin-top:8px;font-size:15px;font-weight:700}
   .direct-contact a{color:#ffd36b;text-decoration:none;overflow-wrap:anywhere}
@@ -1401,12 +1407,14 @@ function renderDirectBookings(){
     const linkedUnpaidRun=unpaid ? runHoldingUnpaidPickup(unpaid.id) : null;
     const owingAmount=unpaid && unpaid.invoiceAmount!=null ? Number(unpaid.invoiceAmount) :
       Number((((b.documents||[]).find(document=>document.kind==="INVOICE")||{}).amount)||b.quotedPrice||b.total||0);
-    const owingActions=unpaid ? `${linkedUnpaidRun
+    // An unpaid pickup has both kinds of button on it: getting it back on a run is
+    // job work, settling it is money work. They go to different groups below.
+    const unpaidRunAction=unpaid ? (linkedUnpaidRun
       ? (linkedUnpaidRun.id===runStore.activeRunId
           ? `<button class="ghost sm" disabled>✓ In active run</button>`
           : `<button class="ghost sm" onclick="openRunForUnpaid('${linkedUnpaidRun.id}')">📍 Go to run</button>`)
-      : `<button class="good sm" onclick="addUnpaidToRun('${unpaid.id}')">↩ Add to active run</button>`}
-      <button class="good sm" onclick="markPaid('${unpaid.id}')">💰 Mark paid</button>
+      : `<button class="good sm" onclick="addUnpaidToRun('${unpaid.id}')">↩ Add to active run</button>`) : "";
+    const unpaidMoneyActions=unpaid ? `<button class="good sm" onclick="markPaid('${unpaid.id}')">💰 Mark paid</button>
       <button class="ghost sm" onclick="receiptStop('${unpaid.id}')">🧾 Send receipt</button>
       <button class="ghost sm" onclick="invoiceStop('${unpaid.id}')">📄 Invoice again</button>` : "";
     // The stop in the ledger knows best; a booking billed straight off its card
@@ -1414,9 +1422,8 @@ function renderDirectBookings(){
     const owingFacts = unpaid || bookingInvoiceFacts(b);
     const stageTap = unpaid ? "" : `toggleBookingCollected('${esc(b.id)}')`;
     const stageLine = `<div class="small" style="margin:4px 0">${invoiceStageTag(owingFacts, stageTap)} ${reminderLine(owingFacts)}</div>`;
-    // Chasing the money is a button like any other, so it sits in the one action
-    // row with the rest - not buried in the red box on some cards and missing on
-    // others. Needs an email address, because a reminder is an email.
+    // Chasing the money is a button like any other - not buried in the red box on
+    // some cards and missing on others. Needs an email, because a reminder is one.
     const remindAction=(b.invoiceOwing && goodEmail(b.email))
       ? `<button class="ghost sm" title="Set, change or stop the automatic payment reminder"
            onclick="editReminder('${unpaid?"stop":"booking"}','${esc(unpaid?unpaid.id:b.id)}')">⏰ ${owingFacts.reminderDate?"Change reminder":"Set reminder"}</button>`
@@ -1438,16 +1445,42 @@ function renderDirectBookings(){
             ? `<button class="ghost sm" data-add-direct="${esc(b.id)}">↺ Re-add to active run</button>`
             : `<button class="good sm" data-add-direct="${esc(b.id)}">Add to active run</button>`) +
           `<button class="ghost sm" data-complete-direct="${esc(b.id)}">✓ Done</button>`);
-    // Once behind a "More" flap, now just the tail of the same row - Delete still
-    // asks before it does anything, so nothing here is one slip from a lost booking.
-    const extraActions=b._localOnly ? "" : [
-      b.photoCount ? `<button class="ghost sm" data-photos-direct="${esc(b.id)}">📷 ${b.photoCount} photo${b.photoCount===1?"":"s"}</button>` : "",
-      `<button class="good sm" data-edit-direct="${esc(b.id)}">✎ Edit details &amp; price</button>`,
+    // A built-but-unsent invoice has to stay visible, or closing the preview would
+    // quietly lose it and the button would still say "Send invoice".
+    const invoiceAction=(b._localOnly || unpaid || !goodEmail(b.email)) ? "" : (pendingBookingInvoices[b.id]
+      ? `<button class="good sm" data-invoice-direct="${esc(b.id)}">👁 Invoice preview</button><button class="ghost sm" title="Throw this invoice away and start again" data-invoice-cancel="${esc(b.id)}">↺ Redo</button>`
+      : `<button class="ghost sm" title="Email this customer an invoice" data-invoice-direct="${esc(b.id)}">📄 ${b.invoiceOwing?"Invoice again":"Send invoice"}</button>`);
+    /* Four jobs of work, four labelled rows. One flat row of a dozen buttons made
+       reaching the customer, chasing the money, working the job and tidying the
+       card all look like the same thing. Nothing is hidden and nothing costs an
+       extra tap - the buttons are only sorted. */
+    const contactActions=[
+      b.phone?`<a class="ghost sm" href="tel:${esc(String(b.phone).replace(/[^\d+]/g,""))}">📞 Call</a>`:"",
+      b.email?`<a class="ghost sm" href="mailto:${encodeURIComponent(b.email)}">✉️ Email</a>`:"",
+      // Text is always here. With a confirmed day it pre-fills the confirmation;
+      // without one it just opens an empty message, which still beats copying the
+      // number out by hand.
+      b.phone?`<a class="ghost sm" href="sms:${esc(String(b.phone).replace(/[^\d+]/g,""))}${pickupDay?`?body=${smsText}`:""}">💬 ${pickupDay?"Text details":"Text"}</a>`:"",
+      navAddress?`<a class="ghost sm" target="_blank" rel="noopener" href="https://www.google.com/maps/search/?api=1&amp;query=${encodeURIComponent(navAddress)}">🧭 Navigate</a>`:""
+    ].filter(Boolean).join("");
+    const moneyActions=[
+      unpaidMoneyActions,
+      invoiceAction,
+      remindAction,
       // Taking an invoice off the owing list without pretending it was paid. This
       // used to live on the old Today ledger, which no longer exists.
-      unpaid && !unpaid.paid ? `<button class="ghost sm" title="Take this off the owing list without marking it paid" onclick="removeUnpaid('${unpaid.id}')">✕ Clear from Owing</button>` : "",
+      unpaid && !unpaid.paid ? `<button class="ghost sm" title="Take this off the owing list without marking it paid" onclick="removeUnpaid('${unpaid.id}')">✕ Clear from Owing</button>` : ""
+    ].filter(Boolean).join("");
+    const jobActions=[unpaidRunAction, b._localOnly ? "" : bookingWorkflowActions].filter(Boolean).join("");
+    // Delete still asks before it does anything, so nothing here is one slip from
+    // a lost booking.
+    const cardActions=b._localOnly ? bookingWorkflowActions : [
+      b.photoCount ? `<button class="ghost sm" data-photos-direct="${esc(b.id)}">📷 ${b.photoCount} photo${b.photoCount===1?"":"s"}</button>` : "",
+      `<button class="good sm" data-edit-direct="${esc(b.id)}">✎ Edit details &amp; price</button>`,
       `<button class="ghost sm" title="Delete this booking" data-delete-direct="${esc(b.id)}">✕ Delete booking</button>`
     ].filter(Boolean).join("");
+    const actionGroup=(label, buttons)=>buttons
+      ? `<div class="action-group"><h4>${label}</h4><div class="direct-actions">${buttons}</div></div>` : "";
     const body = `<div class="direct-meta"><span>${esc(date)}</span><span class="booking-status${statusClass}">${esc(statusText)}</span>${sync}</div>
       <div>${address}</div>
       ${contact}
@@ -1458,24 +1491,10 @@ function renderDirectBookings(){
       ${confirmed}
       ${owingBox}
       ${documentBox}
-      <div class="direct-actions">
-        ${b.phone?`<a class="ghost sm" href="tel:${esc(String(b.phone).replace(/[^\d+]/g,""))}">📞 Call</a>`:""}
-        ${b.email?`<a class="ghost sm" href="mailto:${encodeURIComponent(b.email)}">✉️ Email</a>`:""}
-        ${/* Text is always here now. With a confirmed day it pre-fills the
-              confirmation; without one it just opens an empty message, which
-              still beats copying the number out by hand. */""}
-        ${b.phone?`<a class="ghost sm" href="sms:${esc(String(b.phone).replace(/[^\d+]/g,""))}${pickupDay?`?body=${smsText}`:""}">💬 ${pickupDay?"Text details":"Text"}</a>`:""}
-        ${navAddress?`<a class="ghost sm" target="_blank" rel="noopener" href="https://www.google.com/maps/search/?api=1&amp;query=${encodeURIComponent(navAddress)}">🧭 Navigate</a>`:""}
-        ${owingActions}
-        ${remindAction}
-        ${bookingWorkflowActions}
-        ${/* A built-but-unsent invoice has to stay visible, or closing the preview
-              would quietly lose it and the button would still say "Send invoice". */""}
-        ${b._localOnly ? "" : (goodEmail(b.email) && !unpaid ? (pendingBookingInvoices[b.id]
-          ? `<button class="good sm" data-invoice-direct="${esc(b.id)}">👁 Invoice preview</button><button class="ghost sm" title="Throw this invoice away and start again" data-invoice-cancel="${esc(b.id)}">↺ Redo</button>`
-          : `<button class="ghost sm" title="Email this customer an invoice" data-invoice-direct="${esc(b.id)}">📄 ${b.invoiceOwing?"Invoice again":"Send invoice"}</button>`) : "")}
-        ${extraActions}
-      </div>`;
+      ${actionGroup("Get in touch", contactActions)}
+      ${actionGroup("Money", moneyActions)}
+      ${actionGroup("The job", jobActions)}
+      ${actionGroup("This card", cardActions)}`;
     const classes=`direct-booking${actuallyAdded?' added':''}${b.status==='CANCELLED'?' cancelled':''}`;
     // Which jobs came with photos was only findable by opening every card. A quiet
     // camera chip on the closed line answers it at a glance, and tapping it goes
