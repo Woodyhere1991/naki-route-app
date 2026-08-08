@@ -677,7 +677,7 @@ function invoiceText(name, amount, profileUrl, profileStatus) {
 function reminderText(name, amount) {
   const first = firstName(name);
   const amt = Number.isFinite(Number(amount)) ? ` of $${Number(amount).toFixed(2)}` : "";
-  return `Hi${first ? " " + first : ""},\n\nJust a friendly reminder about the payment${amt} for your whiteware collection.\n\n${BANK_LINE}\n${REF_LINE}\n\nIf you've already paid, thanks heaps — please ignore this.\n\nCheers,\nWoody\nNaki Whiteware Removal\nnakiwhitewareremoval@gmail.com`;
+  return `Hi${first ? " " + first : ""},\n\nJust a friendly reminder about the payment${amt} for your whiteware collection.\n\n${BANK_LINE}\n${REF_LINE}\n\nIf you've already paid, thanks heaps — please ignore this.\n\nCheers,\nWoody\nNaki Whiteware Removal\nnakiwhitewareremoval@gmail.com\n\n(This is an automated reminder — Woody set it up when he sent your invoice.)`;
 }
 
 // A reminder can repeat until it's paid. Only these gaps are allowed, and it
