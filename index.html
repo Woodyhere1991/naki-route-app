@@ -1409,11 +1409,16 @@ function renderDirectBookings(){
       Number((((b.documents||[]).find(document=>document.kind==="INVOICE")||{}).amount)||b.quotedPrice||b.total||0);
     // An unpaid pickup has both kinds of button on it: getting it back on a run is
     // job work, settling it is money work. They go to different groups below.
-    const unpaidRunAction=unpaid ? (linkedUnpaidRun
-      ? (linkedUnpaidRun.id===runStore.activeRunId
-          ? `<button class="ghost sm" disabled>✓ In active run</button>`
-          : `<button class="ghost sm" onclick="openRunForUnpaid('${linkedUnpaidRun.id}')">📍 Go to run</button>`)
-      : `<button class="good sm" onclick="addUnpaidToRun('${unpaid.id}')">↩ Add to active run</button>`) : "";
+    // A run is a list of places still to drive to, so once the gear is on the truck
+    // there is nothing left to add - only an invoice raised before the pickup still
+    // needs the trip. Tapping the tag back to "not picked up yet" brings it back.
+    const unpaidRunAction=!unpaid ? ""
+      : linkedUnpaidRun
+        ? (linkedUnpaidRun.id===runStore.activeRunId
+            ? `<button class="ghost sm" disabled>✓ In active run</button>`
+            : `<button class="ghost sm" onclick="openRunForUnpaid('${linkedUnpaidRun.id}')">📍 Go to run</button>`)
+        : isCollected(unpaid) ? ""
+        : `<button class="good sm" onclick="addUnpaidToRun('${unpaid.id}')">↩ Add to active run</button>`;
     const unpaidMoneyActions=unpaid ? `<button class="good sm" onclick="markPaid('${unpaid.id}')">💰 Mark paid</button>
       <button class="ghost sm" onclick="receiptStop('${unpaid.id}')">🧾 Send receipt</button>
       <button class="ghost sm" onclick="invoiceStop('${unpaid.id}')">📄 Invoice again</button>` : "";
