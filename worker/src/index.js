@@ -680,6 +680,33 @@ function reminderText(name, amount) {
   return `Hi${first ? " " + first : ""},\n\nJust a friendly reminder about the payment${amt} for your whiteware collection.\n\n${BANK_LINE}\n${REF_LINE}\n\nIf you've already paid, thanks heaps — please ignore this.\n\nCheers,\nWoody\nNaki Whiteware Removal\nnakiwhitewareremoval@gmail.com`;
 }
 
+// A reminder can repeat until it's paid. Only these gaps are allowed, and it
+// gives up after MAX_REMINDER_SENDS so nobody gets chased forever.
+const REPEAT_DAY_CHOICES = [0, 3, 7, 14, 30];
+const MAX_REMINDER_SENDS = 6;
+const REMINDER_TTL = 60 * 60 * 24 * 120;
+const REMINDER_TTL_REPEATING = 60 * 60 * 24 * 400;
+function repeatDaysOf(value) {
+  const days = Number(value);
+  return REPEAT_DAY_CHOICES.includes(days) ? days : 0;
+}
+// Noon UTC on purpose - it keeps the date from sliding a day either way.
+function addDays(isoDay, days) {
+  const d = new Date(`${isoDay}T12:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+async function storeReminder(env, { to, name, amount, date, repeatDays, sent }) {
+  const id = crypto.randomUUID();
+  const repeat = repeatDaysOf(repeatDays);
+  await env.REMINDERS.put(`rem:${id}`, JSON.stringify({
+    to, name,
+    amount: Number.isFinite(Number(amount)) ? Number(amount) : null,
+    date, repeatDays: repeat, sent: Number(sent) || 0
+  }), { expirationTtl: repeat ? REMINDER_TTL_REPEATING : REMINDER_TTL });
+  return id;
+}
+
 // Email the invoice PDF now and, if asked, park a reminder in KV for the cron.
 async function handleSendInvoice(request, env) {
   if (!mailConfigured(env)) return json(request, { error: "Email sending is not configured" }, 503);
@@ -691,6 +718,7 @@ async function handleSendInvoice(request, env) {
   const filename = (String(body.filename || "").replace(/[^\w .\-]/g, "").slice(0, 80)) || "Invoice.pdf";
   const amount = Number(body.amount);
   const reminderDate = String(body.reminderDate || "").trim();
+  const reminderRepeat = repeatDaysOf(body.reminderRepeat);
   if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(to)) return json(request, { error: "Invalid email address" }, 400);
   if (!/^[A-Za-z0-9+/=]+$/.test(pdf) || pdf.length < 100 || pdf.length > 2000000) return json(request, { error: "Invalid PDF" }, 400);
   const sent = await sendMail(env, {
@@ -709,10 +737,29 @@ async function handleSendInvoice(request, env) {
   // Reminder: only for a real future-or-today date, and only if KV is bound.
   let reminderId = "";
   if (env.REMINDERS && /^\d{4}-\d{2}-\d{2}$/.test(reminderDate) && reminderDate >= isoDate(aucklandToday())) {
-    reminderId = crypto.randomUUID();
-    await env.REMINDERS.put(`rem:${reminderId}`, JSON.stringify({ to, name, amount: Number.isFinite(amount) ? amount : null, date: reminderDate }), { expirationTtl: 60 * 60 * 24 * 120 });
+    reminderId = await storeReminder(env, { to, name, amount, date: reminderDate, repeatDays: reminderRepeat });
   }
-  return json(request, { ok: true, reminderId });
+  return json(request, { ok: true, reminderId, reminderRepeat });
+}
+
+// Set, move or repeat a payment reminder AFTER the invoice has already gone out.
+// Same store the invoice send writes to, so the daily cron picks it up as usual.
+async function handleSetReminder(request, env) {
+  if (!env.REMINDERS) return json(request, { error: "Reminders are not set up on this account" }, 503);
+  let body;
+  try { body = await request.json(); } catch { return json(request, { error: "Bad request" }, 400); }
+  const to = String(body.to || "").trim();
+  const name = String(body.name || "").trim().slice(0, 80);
+  const date = String(body.date || "").trim();
+  const repeatDays = repeatDaysOf(body.repeatDays);
+  const replacing = String(body.id || "").trim();
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(to)) return json(request, { error: "That customer has no usable email address" }, 400);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return json(request, { error: "Pick a day first" }, 400);
+  if (date < isoDate(aucklandToday())) return json(request, { error: "That day has already been and gone" }, 400);
+  // Changing an existing reminder drops the old one, so nobody gets chased twice.
+  if (/^[\w-]{8,64}$/.test(replacing)) await env.REMINDERS.delete(`rem:${replacing}`);
+  const reminderId = await storeReminder(env, { to, name, amount: body.amount, date, repeatDays });
+  return json(request, { ok: true, reminderId, date, repeatDays });
 }
 
 // Customer paid: drop their queued reminder.
@@ -740,7 +787,20 @@ async function runReminders(env) {
       try { r = JSON.parse(raw); } catch { await env.REMINDERS.delete(key.name); continue; }
       if (!r.date || r.date > today) continue;   // not due yet
       const ok = await sendMail(env, { to: r.to, name: r.name, subject: "Payment reminder - whiteware collection", text: reminderText(r.name, r.amount) });
-      if (ok) { await env.REMINDERS.delete(key.name); sent++; }
+      if (ok) {
+        const repeat = repeatDaysOf(r.repeatDays);
+        const times = (Number(r.sent) || 0) + 1;
+        if (repeat && times < MAX_REMINDER_SENDS) {
+          // Still owing, so line the next nudge up. Counted off today, not off the
+          // day it was due — an overdue one would otherwise fire again straight away.
+          await env.REMINDERS.put(key.name, JSON.stringify({
+            ...r, date: addDays(today, repeat), repeatDays: repeat, sent: times
+          }), { expirationTtl: REMINDER_TTL_REPEATING });
+        } else {
+          await env.REMINDERS.delete(key.name);
+        }
+        sent++;
+      }
       else failed++;                             // left in KV — retried on the next run
     }
     cursor = page.list_complete ? null : page.cursor;
@@ -765,6 +825,7 @@ export default {
       if (path === "/send-receipt" && request.method === "POST") return await handleSendReceipt(request, env);
       if (path === "/send-bulk" && request.method === "POST") return await handleSendBulk(request, env);
       if (path === "/send-invoice" && request.method === "POST") return await handleSendInvoice(request, env);
+      if (path === "/set-reminder" && request.method === "POST") return await handleSetReminder(request, env);
       if (path === "/cancel-reminder" && request.method === "POST") return await handleCancelReminder(request, env);
       if (path === "/run-reminders" && request.method === "GET") return json(request, await runReminders(env));
       return json(request, { error: "Not found" }, 404);

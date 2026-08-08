@@ -262,13 +262,6 @@
   .direct-items{margin:8px 0;color:var(--txt);font-weight:700}
   .direct-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:11px}
   .direct-actions button,.direct-actions a{flex:1 1 135px}
-  /* The once-in-a-while taps: quiet until you ask for them. */
-  .more-tools{margin-top:8px}
-  .more-tools>summary{list-style:none;cursor:pointer;font-size:14px;font-weight:700;color:var(--muted);
-    padding:7px 11px;border-radius:11px;border:1px dashed var(--line);text-align:center}
-  .more-tools>summary::-webkit-details-marker{display:none}
-  .more-tools[open]>summary{color:var(--txt);border-style:solid}
-  .more-tools .direct-actions{margin-top:8px}
   .confirmed-day{margin-top:9px;padding:9px 11px;border-radius:11px;background:#123f37;color:#c9ffe3;font-weight:800}
   .direct-contact{display:flex;flex-wrap:wrap;gap:4px 16px;margin-top:8px;font-size:15px;font-weight:700}
   .direct-contact a{color:#ffd36b;text-decoration:none;overflow-wrap:anywhere}
@@ -664,18 +657,27 @@
   </div>
 </div>
 
-<!-- Pick the auto payment-reminder day (native calendar) before an invoice goes out -->
+<!-- Pick the auto payment-reminder day (native calendar). Used both before an
+     invoice goes out and later, from the Reminder button on any owing card. -->
 <div id="remindPick" style="position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:10000;display:none;align-items:center;justify-content:center;padding:20px">
   <div style="background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px;max-width:360px;width:100%">
-    <b style="font-size:1.05em">💰 Auto payment reminder</b>
-    <p class="small muted" style="margin:8px 0 10px">If they haven't paid by this day, they get an automatic reminder email that morning. Tap the date to change it.</p>
+    <b style="font-size:1.05em" id="remindTitle">💰 Auto payment reminder</b>
+    <p class="small muted" style="margin:8px 0 10px" id="remindNote">If they haven't paid by this day, they get an automatic reminder email that morning. Tap the date to change it.</p>
     <input type="date" id="remindDate" style="width:100%;color-scheme:dark" />
+    <label class="small muted" for="remindRepeat" style="display:block;margin:10px 0 4px">Keep reminding them?</label>
+    <select id="remindRepeat" style="width:100%;color-scheme:dark">
+      <option value="0">Just the once</option>
+      <option value="3">Every 3 days until paid</option>
+      <option value="7" selected>Every week until paid</option>
+      <option value="14">Every 2 weeks until paid</option>
+      <option value="30">Every month until paid</option>
+    </select>
     <div style="display:flex;gap:8px;margin-top:12px">
       <button class="ghost" style="flex:1" id="remindBack">← Back</button>
       <button class="ghost" style="flex:1" id="remindSkip">Send, no reminder</button>
       <button class="good" style="flex:1" id="remindOk">Set &amp; send</button>
     </div>
-    <p class="small muted" style="margin:8px 0 0">Nothing is emailed until you tap one of the send buttons — Back cancels.</p>
+    <p class="small muted" style="margin:8px 0 0" id="remindFoot">Nothing is emailed until you tap one of the send buttons — Back cancels.</p>
   </div>
 </div>
 
@@ -1237,6 +1239,7 @@ function bookingInvoiceFacts(b){
     id:"",                                    // corrected by booking id, not stop id
     invoiceStage: meta.stage || "before",
     reminderDate: meta.reminderDate || "",
+    reminderRepeat: Number(meta.reminderRepeat) || 0,
     paid: false,
     collectedAt: collected ? 1 : "",
     historyStatus: ""
@@ -1411,9 +1414,18 @@ function renderDirectBookings(){
     const owingFacts = unpaid || bookingInvoiceFacts(b);
     const stageTap = unpaid ? "" : `toggleBookingCollected('${esc(b.id)}')`;
     const stageLine = `<div class="small" style="margin:4px 0">${invoiceStageTag(owingFacts, stageTap)} ${reminderLine(owingFacts)}</div>`;
+    // Chasing the money is a button like any other, so it sits in the one action
+    // row with the rest - not buried in the red box on some cards and missing on
+    // others. Needs an email address, because a reminder is an email.
+    const remindAction=(b.invoiceOwing && goodEmail(b.email))
+      ? `<button class="ghost sm" title="Set, change or stop the automatic payment reminder"
+           onclick="editReminder('${unpaid?"stop":"booking"}','${esc(unpaid?unpaid.id:b.id)}')">⏰ ${owingFacts.reminderDate?"Change reminder":"Set reminder"}</button>`
+      : "";
+    // The red box states the position and nothing else. Every card's buttons live
+    // in the same row underneath, so no two owing cards are laid out differently.
     const owingBox=b.invoiceOwing ? `<div class="owing-note"><b>💰 Owing · $${owingAmount.toFixed(2)}</b>
       ${stageLine}
-      ${unpaid?`<div class="direct-actions">${owingActions}</div>`:`<div class="small" style="margin-top:4px">This invoice is attached below. Refresh this phone's saved runs to use payment actions here.</div>`}</div>` : "";
+      ${unpaid?"":`<div class="small" style="margin-top:4px">This invoice is attached below. Refresh this phone's saved runs to use the payment buttons here.</div>`}</div>` : "";
     const bookingWorkflowActions=b._localOnly ?
       `<button class="ghost sm" onclick="editStop('${b._unpaidStopId}')">✎ Edit pickup</button>` :
       (["CANCELLED","DECLINED"].includes(b.status)
@@ -1426,7 +1438,9 @@ function renderDirectBookings(){
             ? `<button class="ghost sm" data-add-direct="${esc(b.id)}">↺ Re-add to active run</button>`
             : `<button class="good sm" data-add-direct="${esc(b.id)}">Add to active run</button>`) +
           `<button class="ghost sm" data-complete-direct="${esc(b.id)}">✓ Done</button>`);
-    const moreActions=b._localOnly ? "" : [
+    // Once behind a "More" flap, now just the tail of the same row - Delete still
+    // asks before it does anything, so nothing here is one slip from a lost booking.
+    const extraActions=b._localOnly ? "" : [
       b.photoCount ? `<button class="ghost sm" data-photos-direct="${esc(b.id)}">📷 ${b.photoCount} photo${b.photoCount===1?"":"s"}</button>` : "",
       `<button class="good sm" data-edit-direct="${esc(b.id)}">✎ Edit details &amp; price</button>`,
       // Taking an invoice off the owing list without pretending it was paid. This
@@ -1452,17 +1466,16 @@ function renderDirectBookings(){
               still beats copying the number out by hand. */""}
         ${b.phone?`<a class="ghost sm" href="sms:${esc(String(b.phone).replace(/[^\d+]/g,""))}${pickupDay?`?body=${smsText}`:""}">💬 ${pickupDay?"Text details":"Text"}</a>`:""}
         ${navAddress?`<a class="ghost sm" target="_blank" rel="noopener" href="https://www.google.com/maps/search/?api=1&amp;query=${encodeURIComponent(navAddress)}">🧭 Navigate</a>`:""}
+        ${owingActions}
+        ${remindAction}
         ${bookingWorkflowActions}
         ${/* A built-but-unsent invoice has to stay visible, or closing the preview
               would quietly lose it and the button would still say "Send invoice". */""}
         ${b._localOnly ? "" : (goodEmail(b.email) && !unpaid ? (pendingBookingInvoices[b.id]
           ? `<button class="good sm" data-invoice-direct="${esc(b.id)}">👁 Invoice preview</button><button class="ghost sm" title="Throw this invoice away and start again" data-invoice-cancel="${esc(b.id)}">↺ Redo</button>`
           : `<button class="ghost sm" title="Email this customer an invoice" data-invoice-direct="${esc(b.id)}">📄 ${b.invoiceOwing?"Invoice again":"Send invoice"}</button>`) : "")}
-      </div>
-      ${/* Editing, deleting and the photo list are the once-in-a-while taps, and
-            Delete sitting in the everyday row was one slip from losing a booking.
-            They live behind More now; the everyday buttons stay one tap away. */""}
-      ${moreActions ? `<details class="more-tools"><summary>⋯ More</summary><div class="direct-actions">${moreActions}</div></details>` : ""}`;
+        ${extraActions}
+      </div>`;
     const classes=`direct-booking${actuallyAdded?' added':''}${b.status==='CANCELLED'?' cancelled':''}`;
     // Which jobs came with photos was only findable by opening every card. A quiet
     // camera chip on the closed line answers it at a glance, and tapping it goes
@@ -1586,16 +1599,12 @@ async function invoiceDirectBooking(id, askAmount){
     saveLabel:"Build the invoice",
     fields:[
       { key:"amount", label:"Amount owed ($)", value:seed?String(seed):"", inputmode:"decimal",
-        validate:v=>parseMoney(v)===null ? "Enter the amount as a number." : "" },
-      { key:"remind", label:"Remind them on (optional, YYYY-MM-DD)",
-        value:previous?previous.reminderDate:"",
-        placeholder:localIso(new Date(Date.now()+7*86400000)),
-        validate:v=>{ const t=String(v||"").trim(); return !t||/^\d{4}-\d{2}-\d{2}$/.test(t) ? "" : "Use the date format YYYY-MM-DD, or leave it blank."; } }
+        validate:v=>parseMoney(v)===null ? "Enter the amount as a number." : "" }
+      // The reminder day is asked on Send, with the same calendar the run uses.
     ]
   });
   if (!entered) return;
   const amount=parseMoney(entered.amount);
-  const reminderDate=String(entered.remind||"").trim();
   // The PDF builder speaks "stop", so hand it a stop-shaped view of the booking.
   const asStop={
     id:`booking:${b.id}`, src:"direct", submission_id:b.id,
@@ -1610,7 +1619,7 @@ async function invoiceDirectBooking(id, askAmount){
     const blob=await buildInvoicePdf(asStop, amount);
     pendingBookingInvoices[id]={
       file:new File([blob],`Invoice - ${(who||"pickup").replace(/[^\w \-]/g,"")}.pdf`,{type:"application/pdf"}),
-      amount, reminderDate, who, asStop
+      amount, who, asStop
     };
   }catch(e){ return directStatus("Couldn't build that invoice: "+e.message,true); }
   directStatus("");
@@ -1636,7 +1645,12 @@ function openBookingInvoicePreview(id){
 async function sendBookingInvoice(id){
   const pending=pendingBookingInvoices[id]; if(!pending) return;
   const b=directBookingRows.find(row=>row.id===id); if(!b) return;
-  const { file, amount, reminderDate, who, asStop }=pending;
+  const { file, amount, who, asStop }=pending;
+  // Same calendar the run's invoices use, so both paths set reminders the same way.
+  const already=bookingInvoiceStore()[id]||{};
+  const picked=await pickReminder({ date:already.reminderDate||"", repeat:already.reminderRepeat });
+  if (picked===null){ openBookingInvoicePreview(id); return; }   // backed out — send nothing
+  const reminderDate=picked.date, reminderRepeat=picked.repeat;
   directStatus("Emailing the invoice…");
   try{
     const res=await fetch(`${API}/send-invoice`,{
@@ -1644,7 +1658,7 @@ async function sendBookingInvoice(id){
       headers:{ "Content-Type":"application/json" },
       body:JSON.stringify({
         to:b.email.trim(), name:who, filename:file.name,
-        pdfBase64:await fileToBase64(file), amount, reminderDate,
+        pdfBase64:await fileToBase64(file), amount, reminderDate, reminderRepeat,
         bookingId:b.id,
         items:(b.items&&b.items.length)?b.items:["Whiteware"],
         address:[b.streetAddress,b.town].filter(Boolean).join(", "),
@@ -1656,13 +1670,13 @@ async function sendBookingInvoice(id){
     if (!res.ok || !out.ok) throw new Error(out.error||"The email could not be sent.");
     delete pendingBookingInvoices[id];
     // Billed off a booking card, so the pickup hasn't happened yet.
-    rememberBookingInvoice(b.id, { stage:"before", reminderDate, reminderId:out.reminderId||"", invoicedAt:localIso(new Date()) });
+    rememberBookingInvoice(b.id, { stage:"before", reminderDate, reminderRepeat, reminderId:out.reminderId||"", invoicedAt:localIso(new Date()) });
     const linkedStop = unpaidStopForBooking(b);
     if (linkedStop && !linkedStop.invoiceStage){ linkedStop.invoiceStage = "before"; save(); }
     // Pull the booking back so the invoice appears in its paperwork and the card
     // drops into Invoice owing without needing a manual refresh.
     await loadDirectBookings(false);
-    directStatus(`✓ Invoice for $${amount.toFixed(2)} emailed to ${who}${out.reminderId?` — reminder set for ${reminderDate}`:""}.`);
+    directStatus(`✓ Invoice for $${amount.toFixed(2)} emailed to ${who}${out.reminderId?` — reminder set for ${reminderDate}${reminderRepeat?`, then ${repeatWord(reminderRepeat)}`:""}`:""}.`);
     flash(`✓ Invoice sent to ${who} · now in Bookings → Owing`);
   }catch(e){
     // Keep the built PDF so Send can be tried again without rebuilding it.
@@ -3286,7 +3300,8 @@ function reminderLine(s){
   if (!s.reminderDate) return `<span style="color:var(--warn)">⏰ No reminder set</span>`;
   const d = new Date(`${s.reminderDate}T12:00:00`);
   const when = isNaN(d) ? s.reminderDate : d.toLocaleDateString("en-NZ",{weekday:"short",day:"numeric",month:"short"});
-  return `⏰ Reminder ${when}`;
+  const again = repeatWord(s.reminderRepeat);
+  return `⏰ Reminder ${when}${again ? ` · then ${again}` : ""}`;
 }
 
 function renderBad(){
@@ -4254,24 +4269,113 @@ window.cancelInvoice = id => {
   if (s) s.invoiceAmount = null;              // forget the wrong amount so Invoice re-asks fresh
   save(); render();
 };
-// Calendar picker for the reminder day. Resolves "" for no reminder,
-// null for Back/cancel — the caller must NOT send anything on null.
+// Calendar picker for the reminder day, plus how often to repeat it.
+// Resolves {date,repeat} — date "" means no reminder — or null for Back/cancel,
+// and on null the caller must NOT send anything.
 // Local date maths on purpose — toISOString() is UTC and lands a day early in NZ mornings.
 function localIso(d){ return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`; }
-function pickReminderDate(){
+// Only these gaps exist — the worker rejects anything else.
+const REPEAT_CHOICES = [0,3,7,14,30];
+function repeatWord(days){
+  const d = Number(days)||0;
+  return d===3 ? "every 3 days" : d===7 ? "every week" : d===14 ? "every 2 weeks" : d===30 ? "every month" : "";
+}
+function pickReminder(opts){
+  const o = opts || {};
   return new Promise(resolve => {
     const wrap = document.getElementById("remindPick");
     const input = document.getElementById("remindDate");
-    input.min = localIso(new Date());
-    input.value = localIso(new Date(Date.now()+7*86400000));   // a week out by default
+    const repeat = document.getElementById("remindRepeat");
+    const today = localIso(new Date());
+    input.min = today;
+    // Keep whatever is already set if it's still ahead of us, otherwise a week out.
+    input.value = (o.date && o.date >= today) ? o.date : localIso(new Date(Date.now()+7*86400000));
+    repeat.value = String(REPEAT_CHOICES.includes(Number(o.repeat)) ? Number(o.repeat) : 7);
+    document.getElementById("remindTitle").textContent = o.title || "💰 Auto payment reminder";
+    document.getElementById("remindNote").textContent = o.note ||
+      "If they haven't paid by this day, they get an automatic reminder email that morning. Tap the date to change it.";
+    document.getElementById("remindFoot").textContent = o.foot ||
+      "Nothing is emailed until you tap one of the send buttons — Back cancels.";
+    document.getElementById("remindBack").textContent = o.backLabel || "← Back";
+    document.getElementById("remindSkip").textContent = o.skipLabel || "Send, no reminder";
+    document.getElementById("remindOk").textContent = o.okLabel || "Set & send";
     const close = v => { wrap.style.display = "none"; wrap.onclick = null; resolve(v); };
     document.getElementById("remindBack").onclick = () => close(null);
     wrap.onclick = e => { if (e.target === wrap) close(null); };   // tap outside = cancel
-    document.getElementById("remindSkip").onclick = () => close("");
-    document.getElementById("remindOk").onclick = () => close(/^\d{4}-\d{2}-\d{2}$/.test(input.value) ? input.value : "");
+    document.getElementById("remindSkip").onclick = () => close({ date:"", repeat:0 });
+    document.getElementById("remindOk").onclick = () => close({
+      date: /^\d{4}-\d{2}-\d{2}$/.test(input.value) ? input.value : "",
+      repeat: Number(repeat.value)||0
+    });
     wrap.style.display = "flex";
   });
 }
+// The ⏰ Reminder button on an owing card. Works for a pickup in the unpaid
+// ledger and for a booking invoiced straight off its card - the only difference
+// is where the chosen day gets saved afterwards.
+window.editReminder = async (kind, id) => {
+  let to = "", who = "", amount = null, current = { date:"", repeat:0, id:"" }, persist;
+  if (kind === "stop"){
+    const s = findStop(id); if (!s) return;
+    to = (s.email||"").trim(); who = fullName(s);
+    amount = s.invoiceAmount!=null ? Number(s.invoiceAmount) : null;
+    current = { date:s.reminderDate||"", repeat:Number(s.reminderRepeat)||0, id:s.reminderId||"" };
+    persist = out => {
+      s.reminderId = out.id; s.reminderDate = out.date; s.reminderRepeat = out.repeat;
+      save(); render(); renderDirectBookings();
+    };
+  }else{
+    const b = directBookingRows.find(row=>row.id===id); if (!b) return;
+    const meta = bookingInvoiceStore()[id] || {};
+    to = (b.email||"").trim(); who = [b.firstName,b.lastName].filter(Boolean).join(" ");
+    const invoice = (b.documents||[]).find(document=>document.kind==="INVOICE");
+    amount = invoice && invoice.amount!=null ? Number(invoice.amount)
+      : b.quotedPrice!=null ? Number(b.quotedPrice) : (b.total!=null ? Number(b.total) : null);
+    current = { date:meta.reminderDate||"", repeat:Number(meta.reminderRepeat)||0, id:meta.reminderId||"" };
+    persist = out => {
+      rememberBookingInvoice(id, { reminderId:out.id, reminderDate:out.date, reminderRepeat:out.repeat });
+      renderDirectBookings();
+    };
+  }
+  if (!goodEmail(to)) return alert("No email address saved for this customer, so there's nobody to remind.");
+  const picked = await pickReminder({
+    date: current.date, repeat: current.repeat,
+    title: current.date ? "⏰ Change the payment reminder" : "⏰ Set a payment reminder",
+    note: `${who||"This customer"} gets an automatic email on this day if the invoice still isn't paid.`,
+    foot: "Marking them paid cancels it automatically.",
+    backLabel: "← Cancel", skipLabel: "Turn reminder off", okLabel: "Save reminder"
+  });
+  if (picked === null) return;
+  // Turned off: drop whatever was queued and leave nothing behind.
+  if (!picked.date){
+    if (current.id){
+      busy("Turning the reminder off…");
+      try{
+        await fetch(`${API}/cancel-reminder`, { method:"POST", headers:{ "Content-Type":"application/json" }, body: JSON.stringify({ id: current.id }) });
+      }catch(e){ busy(""); return alert("Couldn't reach the reminder service — try again when you're back online."); }
+      busy("");
+    }
+    persist({ id:"", date:"", repeat:0 });
+    flash("⏰ Reminder turned off");
+    return;
+  }
+  busy("Saving the reminder…");
+  try{
+    const res = await fetch(`${API}/set-reminder`, {
+      method:"POST", headers:{ "Content-Type":"application/json" },
+      body: JSON.stringify({ id: current.id, to, name: who, amount, date: picked.date, repeatDays: picked.repeat })
+    });
+    const out = await res.json().catch(()=>({}));
+    busy("");
+    if (!res.ok || !out.ok) return alert(out.error || "Couldn't save the reminder — try again in a minute.");
+    persist({ id: out.reminderId||"", date: picked.date, repeat: picked.repeat });
+    const when = new Date(`${picked.date}T12:00:00`).toLocaleDateString("en-NZ",{weekday:"short",day:"numeric",month:"short"});
+    flash(`⏰ Reminder set for ${when}${picked.repeat?`, then ${repeatWord(picked.repeat)}`:""}`);
+  }catch(e){
+    busy("");
+    alert("Couldn't reach the reminder service — try again when you're back online.");
+  }
+};
 window.sendInvoice = async id => {
   const s = findStop(id);
   const file = pendingInvoices[id];
@@ -4281,14 +4385,14 @@ window.sendInvoice = async id => {
   // truck. Re-sending from the unpaid ledger says nothing either way, so it
   // leaves the pickup state alone.
   const fromRun = state.stops.some(x => x.id === id);
-  const markSent = (rid, rdate) => {
+  const markSent = (rid, rdate, rrepeat) => {
     delete pendingInvoices[id];
     s.invoiceSent = true; s.paid = false;
     if (fromRun){
       if (!s.invoiceStage) s.invoiceStage = "after";
       s.collectedAt = s.collectedAt || Date.now();
     }
-    if (rid){ s.reminderId = rid; s.reminderDate = rdate||""; }   // keep any earlier reminder on a re-send
+    if (rid){ s.reminderId = rid; s.reminderDate = rdate||""; s.reminderRepeat = Number(rrepeat)||0; }   // keep any earlier reminder on a re-send
     // Out of the run, into the unpaid ledger — Clear all won't touch it there.
     if (!s.historyStatus) s.historyStatus = s.status==="DONE" ? "COMPLETED" : "ADDED_TO_RUN";
     s.status = "DONE";
@@ -4302,15 +4406,17 @@ window.sendInvoice = async id => {
   // Customer has an email: server sends the PDF and can auto-remind later.
   if (goodEmail(s.email)){
     const to = s.email.trim();
-    const reminderDate = await pickReminderDate();
-    if (reminderDate === null){ openInvoicePreview(id); return; }   // backed out — send nothing
+    const picked = await pickReminder({ date: s.reminderDate||"", repeat: s.reminderRepeat });
+    if (picked === null){ openInvoicePreview(id); return; }   // backed out — send nothing
+    const reminderDate = picked.date;
+    const reminderRepeat = picked.repeat;
     busy("Emailing the invoice…");
     try{
       const res = await fetch(`${API}/send-invoice`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ to, name: fullName(s), filename: file.name,
-          pdfBase64: await fileToBase64(file), amount: amt, reminderDate,
+          pdfBase64: await fileToBase64(file), amount: amt, reminderDate, reminderRepeat,
           bookingId: s.src==="direct" ? (s.submission_id||"") : historyBookingKey(s),
           items: (s.appliances && s.appliances.length) ? s.appliances : ["Whiteware"],
           address: fullAddr(s), profileUrl: s.profileUrl || "",
@@ -4319,9 +4425,10 @@ window.sendInvoice = async id => {
       const out = await res.json().catch(()=>({}));
       busy("");
       if (res.ok && out.ok){
-        markSent(out.reminderId||"", reminderDate);
+        markSent(out.reminderId||"", reminderDate, reminderRepeat);
         if(ownerToken) await loadDirectBookings(false);
-        flash("✓ Invoice emailed to " + to + (out.reminderId ? ` — reminder set for ${reminderDate}` : "") + " · shown in Bookings → Owing");
+        const repeatBit = reminderRepeat ? `, then ${repeatWord(reminderRepeat)}` : "";
+        flash("✓ Invoice emailed to " + to + (out.reminderId ? ` — reminder set for ${reminderDate}${repeatBit}` : "") + " · shown in Bookings → Owing");
         return;
       }
     }catch(e){ busy(""); }
