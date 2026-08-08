@@ -1456,7 +1456,10 @@ function renderDirectBookings(){
     // in the same row underneath, so no two owing cards are laid out differently.
     const owingBox=b.invoiceOwing ? `<div class="owing-note"><b>💰 Owing · $${owingAmount.toFixed(2)}</b>
       ${stageLine}
-      ${unpaid?"":`<div class="small" style="margin-top:4px">This invoice is attached below. Refresh this phone's saved runs to use the payment buttons here.</div>`}</div>` : "";
+      ${/* No stop on this phone means Mark paid and Send receipt have nothing to
+            act on. Naming the buttons and the exact way to get them back, because
+            "refresh this phone's saved runs" pointed at nothing you can tap. */""}
+      ${unpaid?"":`<div class="small" style="margin-top:6px">This phone hasn't got the pickup record for this invoice, so <b>💰 Mark paid</b> and <b>🧾 Send receipt</b> aren't here. To get them: <b>Add &amp; setup</b> → <b>My runs on other phones</b> → <b>Restore from my account</b>.</div>`}</div>` : "";
     const bookingWorkflowActions=b._localOnly ?
       `<button class="ghost sm" onclick="editStop('${b._unpaidStopId}')">✎ Edit pickup</button>` :
       (["CANCELLED","DECLINED"].includes(b.status)
