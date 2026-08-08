@@ -1848,12 +1848,54 @@ function syncBookingChangesIntoRuns(rows){
   if (touched){ save(); render(); if (typeof drawRoute==="function") drawRoute(); }
   return { changes, removals };
 }
+/* Invoices raised off a booking card never used to write a row into the unpaid
+   ledger. The ones sent before that was fixed are still short a row, so their
+   cards keep saying this phone has no pickup record and go without Mark paid and
+   Send receipt. Everything needed to rebuild the row is on the booking itself and
+   the invoice the server kept, so build it rather than making him do anything. */
+function backfillMissingUnpaid(rows){
+  const repaired=[];
+  (rows||[]).forEach(b=>{
+    if (!b.invoiceOwing || unpaidStopForBooking(b)) return;
+    const invoice=(b.documents||[])
+      .filter(document=>document.kind==="INVOICE")
+      .sort((x,y)=>new Date(y.createdAt)-new Date(x.createdAt))[0];
+    if (!invoice) return;
+    const meta=bookingInvoiceStore()[b.id]||{};
+    // Same rule the card's tag uses: billed off a booking card means the trip
+    // hasn't happened, unless the booking is done or he's tapped it to say so.
+    const collected=meta.collected!==undefined ? Boolean(meta.collected) : b.status==="COMPLETED";
+    const amount=invoice.amount!=null ? Number(invoice.amount)
+      : b.quotedPrice!=null ? Number(b.quotedPrice) : Number(b.total||0);
+    state.unpaid=state.unpaid||[];
+    state.unpaid.unshift({
+      id:uid(), src:"direct", submission_id:b.id,
+      first_name:b.firstName||"", last_name:b.lastName||"",
+      street:b.streetAddress||"", town:b.town||"", area:b.area||"",
+      phone:b.phone||"", email:b.email||"",
+      appliances:(b.items&&b.items.length)?b.items.slice():["Whiteware"],
+      amount, invoiceAmount:amount,
+      invoiceSent:true, paid:false, receiptSent:false,
+      invoiceStage:meta.stage || (collected ? "after" : "before"),
+      collectedAt:collected ? new Date(invoice.createdAt).getTime() || Date.now() : "",
+      status:"DONE",
+      historyStatus:b.status==="COMPLETED" ? "COMPLETED" : "ADDED_TO_RUN",
+      invoicedAt:meta.invoicedAt || localIso(new Date(invoice.createdAt)),
+      reminderId:meta.reminderId||"", reminderDate:meta.reminderDate||"",
+      reminderRepeat:Number(meta.reminderRepeat)||0
+    });
+    repaired.push([b.firstName,b.lastName].filter(Boolean).join(" ") || "a booking");
+  });
+  if (repaired.length) save();
+  return repaired;
+}
 async function loadDirectBookings(showLoading=false){
   if (!ownerToken){ renderDirectBookings(); return; }
   if (showLoading) directStatus("Loading bookings…");
   try{
     const data=await ownerApi("/owner/bookings");
     directBookingRows=Array.isArray(data.bookings) ? data.bookings : [];
+    const repaired=backfillMissingUnpaid(directBookingRows);
     await flushDirectCompletions();
     const { changes, removals }=syncBookingChangesIntoRuns(directBookingRows);
     renderDirectBookings();
@@ -1863,6 +1905,9 @@ async function loadDirectBookings(showLoading=false){
       flash(`✓ Updated ${changes.length} pickup${changes.length===1?"":"s"} in your runs`);
     }
     const notes=[...removals,...changes];
+    if (repaired.length){
+      notes.push(`Payment buttons put back on ${repaired.length} owing booking${repaired.length===1?"":"s"}: ${repaired.join(", ")}.`);
+    }
     if (notes.length) directStatus(notes.join("; "));
   }catch(e){ directStatus(e.message,true); }
 }
