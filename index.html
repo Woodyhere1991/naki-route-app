@@ -591,8 +591,8 @@
         </div>
         <p class="small muted" style="margin:6px 0 0">
           Save now pushes this phone up straight away instead of waiting. Restore pulls the account
-          copy down and replaces what's on this phone. If two phones both change things while one
-          is offline, the app asks which copy to keep rather than picking for you.
+          copy down and replaces what's on this phone. Nothing on this phone is ever replaced on its
+          own — the phone you're holding always wins, and only Restore brings the account copy down.
         </p>
         <p class="small muted" style="margin:12px 0 6px">
           Or keep a copy as a file on your phone, no sign-in needed. Save writes a
@@ -1721,7 +1721,36 @@ async function sendBookingInvoice(id){
     // Billed off a booking card, so the pickup hasn't happened yet.
     rememberBookingInvoice(b.id, { stage:"before", reminderDate, reminderRepeat, reminderId:out.reminderId||"", invoicedAt:localIso(new Date()) });
     const linkedStop = unpaidStopForBooking(b);
-    if (linkedStop && !linkedStop.invoiceStage){ linkedStop.invoiceStage = "before"; save(); }
+    if (linkedStop){
+      if (!linkedStop.invoiceStage) linkedStop.invoiceStage = "before";
+      save();
+    }else{
+      /* An invoice sent from a booking card used to leave nothing in the unpaid
+         ledger, so its own card came back saying this phone had no pickup record
+         for it - on the only phone that had ever touched it. Mark paid and Send
+         receipt had nothing to act on either. The ledger entry goes in here, the
+         same as invoicing off a run does. */
+      state.unpaid = state.unpaid || [];
+      state.unpaid.unshift({
+        ...asStop,
+        id: uid(),
+        src: "direct",
+        submission_id: b.id,
+        phone: b.phone || "",
+        amount, invoiceAmount: amount,
+        invoiceSent: true,
+        paid: false,
+        invoiceStage: "before",
+        collectedAt: "",
+        receiptSent: false,
+        status: "DONE",
+        historyStatus: b.status==="COMPLETED" ? "COMPLETED" : "ADDED_TO_RUN",
+        invoicedAt: localIso(new Date()),
+        reminderId: out.reminderId || "",
+        reminderDate, reminderRepeat
+      });
+      save();
+    }
     // Pull the booking back so the invoice appears in its paperwork and the card
     // drops into Invoice owing without needing a manual refresh.
     await loadDirectBookings(false);
@@ -5074,12 +5103,14 @@ async function syncFromCloud(force=false){
   if (info.latest.savedAt <= mark.serverAt) return;           // this phone is level or ahead
   const changedHere=JSON.stringify(backupPayload())!==mark.payload;
   if (changedHere && localHasWork()){
-    const keepTheirs=confirm(
-      `Your account has newer runs saved ${whenText(info.latest.savedAt)}, probably from your other phone.\n\n` +
-      `This phone also has changes that haven't gone up yet.\n\n` +
-      `OK — use the newer copy and replace what's on this phone.\n` +
-      `Cancel — keep this phone and save it up instead.`);
-    if (!keepTheirs){ pushCloudBackup(false); return; }
+    // This used to stop everything and ask which copy to keep. It's one phone and
+    // one person, so there is no other copy to weigh up - the account is a spare
+    // in case the phone is lost, not a second desk. The phone in his hand wins and
+    // goes straight up; nothing on it is ever replaced without him tapping Restore.
+    // Forced, not quiet, so the sync mark settles - a skipped push would leave the
+    // clash unresolved and land right back here on the next check.
+    pushCloudBackup(false);
+    return;
   }
   try{ await applyCloudBackup(await ownerApi("/owner/backup")); }catch(e){ /* offline — try again later */ }
 }
