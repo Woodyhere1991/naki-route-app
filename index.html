@@ -1123,20 +1123,37 @@ function rememberGroupOpen(root, groups, storageKey, attribute){
   });
 }
 function clearBookingFocus(){ bookingFocusEmail=""; bookingFocusName=""; }
+// Has the gear actually left the driveway? Same fact the card's tag shows - the
+// stop in the ledger knows best, and a booking billed off its own card falls back
+// to what was saved when the invoice went out.
+function bookingCollected(b){
+  const unpaid = b._unpaidStopId ? findStop(b._unpaidStopId) : null;
+  return isCollected(unpaid || bookingInvoiceFacts(b));
+}
 // Where a booking sits in the job's life. "Scheduled" means it is genuinely on a
 // run right now - a booking marked ADDED_TO_RUN whose run was since deleted drops
 // back to New, because it needs putting on a run again.
-function stageOfBooking(b){
-  if (b.invoiceOwing) return "owing";
-  if (["COMPLETED","DECLINED","CANCELLED"].includes(b.status)) return "done";
-  return runContainingBooking(b.id) ? "scheduled" : "new";
+//
+// A booking can be in two places at once. Sending an invoice used to move it to
+// Owing and nowhere else, so a job billed BEFORE the pickup vanished off New and
+// the trip got missed. Money owing and gear still to collect are two separate
+// jobs of work, so it now sits under both until each one is finished.
+function stagesOfBooking(b){
+  if (!b.invoiceOwing){
+    if (["COMPLETED","DECLINED","CANCELLED"].includes(b.status)) return ["done"];
+    return [runContainingBooking(b.id) ? "scheduled" : "new"];
+  }
+  if (bookingCollected(b)) return ["owing"];
+  return ["owing", runContainingBooking(b.id) ? "scheduled" : "new"];
 }
 const BOOKING_STAGES=[["all","All"],["new","New"],["scheduled","Scheduled"],["owing","Owing"],["done","Done"]];
 // The card and the buttons above it have to say the same word about the same job,
 // so both come from here. Cancelled and declined keep their own words - they are
 // not one of the four stages, and calling either of them "Done" would read wrong.
 function bookingStatusWord(b){
-  if (b.invoiceOwing) return "Owing";
+  // Spelling out the half that isn't finished, or a card sitting in New would
+  // just say "Owing" and read like it landed there by mistake.
+  if (b.invoiceOwing) return bookingCollected(b) ? "Owing" : "Owing · to pick up";
   if (b.status==="CANCELLED") return "Cancelled";
   if (b.status==="DECLINED") return "Declined";
   if (b.status==="COMPLETED") return "Done";
@@ -1154,7 +1171,9 @@ function paintBookingStageTabs(rows){
   // and its tab was showing NaN instead of a number.
   const tally=Object.fromEntries(BOOKING_STAGES.map(([key])=>[key,0]));
   tally.all=rows.length;
-  rows.forEach(b=>{ const stage=stageOfBooking(b); if (stage in tally) tally[stage]++; });
+  // A booking counts under every stage it is genuinely in, so an invoiced job
+  // still waiting to be picked up shows up in both New and Owing.
+  rows.forEach(b=>stagesOfBooking(b).forEach(stage=>{ if (stage in tally) tally[stage]++; }));
   wrap.style.display="flex";
   wrap.innerHTML=BOOKING_STAGES.map(([key,label])=>
     // Money still owed is the one worth catching the eye when it isn't zero.
@@ -1341,7 +1360,7 @@ function renderDirectBookings(){
     matchesSearch(b,bookingSearchText) &&
     (!bookingFocusEmail || String(b.email||"").toLowerCase()===bookingFocusEmail));
   paintBookingStageTabs(searchable);
-  const visibleRows = searchable.filter(b=>bookingStage==="all" || stageOfBooking(b)===bookingStage);
+  const visibleRows = searchable.filter(b=>bookingStage==="all" || stagesOfBooking(b).includes(bookingStage));
   if (!visibleRows.length){
     const stageLabel=(BOOKING_STAGES.find(s=>s[0]===bookingStage)||[])[1]||"";
     list.innerHTML=`<div class="card"><b>${
@@ -1516,7 +1535,10 @@ function renderDirectBookings(){
     </article>`;
     }
     // Compact: name, where and what it costs on one line - open it for the rest.
-    const dot=b.invoiceOwing || b.status==="CANCELLED"||b.status==="DECLINED" ? "off" : actuallyAdded ? "added" : isNewBooking(b) ? "new" : "";
+    // A job still waiting to be picked up keeps its live dot even with an invoice
+    // out, because it is still work to do - only a settled-up or dead one goes dim.
+    const finishedWithTruck=(b.invoiceOwing && bookingCollected(b)) || b.status==="CANCELLED" || b.status==="DECLINED";
+    const dot=finishedWithTruck ? "off" : actuallyAdded ? "added" : isNewBooking(b) ? "new" : "";
     const where=townLabel(b.town);
     const sub=[where==="No town"?"":where, statusText].filter(Boolean).join(" · ");
     return `<details class="card ${classes} mini" data-booking-id="${esc(b.id)}"${bookingCardsOpen.has(b.id)?" open":""}>
