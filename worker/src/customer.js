@@ -2787,10 +2787,23 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
         documents: documentsByEmail.get(String(row.email || "").trim().toLowerCase()) || [],
         lastBookingAt: row.last_booking_at ? new Date(row.last_booking_at).toISOString() : "",
         joinedAt: new Date(row.created_at).toISOString(),
+        isNew: !row.owner_seen_at,
         pwaInstalledAt: row.pwa_installed_at ? new Date(row.pwa_installed_at).toISOString() : "",
         pwaLastSeenAt: row.pwa_last_seen_at ? new Date(row.pwa_last_seen_at).toISOString() : ""
       }));
       return json(request, { customers });
+    }
+
+    const customerSeenMatch = path.match(/^\/owner\/customers\/([^/]+)\/seen$/);
+    // A profile stays visibly New until Woody has actually opened its card. This
+    // is shared by every signed-in owner device, unlike a browser-only flag.
+    if (customerSeenMatch && request.method === "POST") {
+      const customerId = decodeURIComponent(customerSeenMatch[1]);
+      const result = await env.CUSTOMER_DB.prepare(
+        "UPDATE customers SET owner_seen_at = COALESCE(owner_seen_at, ?1) WHERE id = ?2"
+      ).bind(now(), customerId).run();
+      if (!result.meta || !result.meta.changes) return json(request, { error: "Customer not found" }, 404);
+      return json(request, { ok: true });
     }
 
     const customerMatch = path.match(/^\/owner\/customers\/([^/]+)$/);
@@ -3089,14 +3102,32 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
     const match = path.match(/^\/owner\/bookings\/([^/]+)$/);
     if (match && request.method === "DELETE") {
       const bookingId = decodeURIComponent(match[1]);
-      const result = await env.CUSTOMER_DB.prepare(
-        bookingId.startsWith("JOTFORM-")
-          ? "DELETE FROM jotform_bookings WHERE id = ?1"
-          : bookingId.startsWith("PICKUP-")
-            ? "DELETE FROM external_bookings WHERE id = ?1"
-          : "DELETE FROM bookings WHERE id = ?1"
-      ).bind(bookingId).run();
+      const jotform = bookingId.startsWith("JOTFORM-");
+      const pickupRun = bookingId.startsWith("PICKUP-");
+      const table = jotform ? "jotform_bookings" : pickupRun ? "external_bookings" : "bookings";
+      const existing = await env.CUSTOMER_DB.prepare(`SELECT id FROM ${table} WHERE id = ?1`).bind(bookingId).first();
+      if (!existing) return json(request, { error: "Booking not found" }, 404);
+      // A permanent delete must not leave its invoice behind to make the same job
+      // reappear as owing after a refresh. Remove the stored PDF too when there is
+      // one; an R2 hiccup should not stop the database deletion succeeding.
+      const documents = await env.CUSTOMER_DB.prepare(
+        "SELECT r2_key FROM booking_documents WHERE booking_id = ?1"
+      ).bind(bookingId).all();
+      const statements = [
+        env.CUSTOMER_DB.prepare("DELETE FROM booking_documents WHERE booking_id = ?1").bind(bookingId),
+        env.CUSTOMER_DB.prepare(`DELETE FROM ${table} WHERE id = ?1`).bind(bookingId)
+      ];
+      if (!jotform && !pickupRun) {
+        statements.unshift(env.CUSTOMER_DB.prepare("DELETE FROM booking_events WHERE booking_id = ?1").bind(bookingId));
+      }
+      const results = await env.CUSTOMER_DB.batch(statements);
+      const result = results[results.length - 1];
       if (!result.meta || !result.meta.changes) return json(request, { error: "Booking not found" }, 404);
+      if (env.DOCUMENTS) {
+        await Promise.all((documents.results || []).map(document =>
+          document.r2_key ? env.DOCUMENTS.delete(document.r2_key).catch(() => {}) : Promise.resolve()
+        ));
+      }
       return json(request, { ok: true });
     }
 
