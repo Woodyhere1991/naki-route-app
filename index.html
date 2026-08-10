@@ -1580,7 +1580,10 @@ function renderDirectBookings(){
       <div class="mini-body">${body}</div>
     </details>`;
   };
-  const isNewBooking=b=>b.status==="NEW" || (b.status==="ADDED_TO_RUN" && !runContainingBooking(b.id));
+  // A saved NEW status can outlive the phone adding it to a run.  The town
+  // marker means "still waiting for the truck", so the run is the deciding fact.
+  const isNewBooking=b=>!runContainingBooking(b.id) &&
+    (b.status==="NEW" || b.status==="ADDED_TO_RUN");
   const previousRows = visibleRows.filter(b=>["COMPLETED","DECLINED","CANCELLED"].includes(b.status) && !b.invoiceOwing);
   // New and already-added jobs both live in their town group now - splitting new
   // ones out into their own bucket made a town look like it had lost a booking
@@ -2695,9 +2698,14 @@ function addFileStops(rows, srcName, setStatus, extraNote){
   // from Today. Still dedupe against this run so loading the sheet twice is safe.
   const activeStops=(state.stops||[]).concat(state.bad||[]);
   const sheetImport=srcName==="Google Sheet";
+  // An unpaid-ledger entry is money work, not a stop already on a truck.  It
+  // must not make Add all skip a booking that still needs collecting.
+  const directBooking=srcName==="Direct booking";
   const known = sheetImport
     ? new Set(activeStops.flatMap(stop=>pickupKeys(stop)))
-    : knownPickupKeys();
+    : directBooking
+      ? new Set(knownPickupStops().keys())
+      : knownPickupKeys();
   const existing = sheetImport
     ? new Map(activeStops.flatMap(stop=>pickupKeys(stop).map(key=>[key,stop])))
     : knownPickupStops();
