@@ -81,11 +81,23 @@ const CHAT_TRUSTED_AUTHOR_SET = new Set(CHAT_TRUSTED_AUTHORS);
 // these approved authors. Private chat and friend features use the same rule.
 // No prize is offered for the monthly boards - kept empty so the page hides the prize card.
 const ARCADE_PRIZE = "";
-const JOTFORM_FORM_IDS = new Set(["251768488640874", "240411186193047"]);
-const JOTFORM_APPLIANCE_QIDS = {
-  "251768488640874": [7, 8, 54, 55, 56, 57, 58, 59, 60, 61],
-  "240411186193047": [7, 8, 46, 47, 48, 49, 50, 51, 52, 53]
-};
+export const JOTFORM_FORM_CONFIG = Object.freeze({
+  "251768488640874": {
+    applianceQids: [7, 8, 54, 55, 56, 57, 58, 59, 60, 61],
+    referralSourceQid: 70,
+    referralDetailsQid: 74
+  },
+  "240411186193047": {
+    applianceQids: [7, 8, 46, 47, 48, 49, 50, 51, 52, 53],
+    referralSourceQid: 60,
+    referralDetailsQid: 64
+  },
+  "252021546019044": {
+    applianceQids: [7, 8, 54, 55, 56, 57, 58, 59, 60, 61],
+    referralSourceQid: 69,
+    referralDetailsQid: 70
+  }
+});
 let googleToken = { value: "", expiresAt: 0 };
 
 function clean(value, max = 200) {
@@ -510,7 +522,8 @@ async function handleJotformSubmission(request, env, json) {
   const { body, raw } = await parseJotformRequest(request);
   const formId = clean(body.formID || body.formId || raw.formID || raw.formId, 30);
   const submissionId = clean(body.submissionID || body.submissionId || raw.submissionID || raw.submissionId, 40);
-  if (!JOTFORM_FORM_IDS.has(formId) || !/^\d{10,30}$/.test(submissionId)) {
+  const formConfig = JOTFORM_FORM_CONFIG[formId];
+  if (!formConfig || !/^\d{10,30}$/.test(submissionId)) {
     return json(request, { error: "Unsupported Jotform submission" }, 400);
   }
 
@@ -518,7 +531,7 @@ async function handleJotformSubmission(request, env, json) {
   const location = jotformAddress(jotformValue(raw, 5, "address"));
   const address = email(jotformValue(raw, 35, "email"));
   if (!EMAIL_RE.test(address)) return json(request, { error: "Customer email is missing" }, 400);
-  const items = JOTFORM_APPLIANCE_QIDS[formId]
+  const items = formConfig.applianceQids
     .map(qid => clean(jotformValue(raw, qid), 100))
     .filter(Boolean);
   const createdAt = now();
@@ -546,8 +559,8 @@ async function handleJotformSubmission(request, env, json) {
     location.streetAddress, location.town, location.area,
     clean(jotformValue(raw, 37, "ifRural37"), 120), JSON.stringify(items),
     clean(jotformValue(raw, 18, "additionalInformationenquires"), 1500),
-    clean(jotformValue(raw, formId === "251768488640874" ? 70 : 60, "howDidYouHear"), 80),
-    clean(jotformValue(raw, formId === "251768488640874" ? 74 : 64, "otherReferralDetails"), 160),
+    clean(jotformValue(raw, formConfig.referralSourceQid, "howDidYouHear"), 80),
+    clean(jotformValue(raw, formConfig.referralDetailsQid, "otherReferralDetails"), 160),
     jotformMoney(jotformValue(raw, 31, "total")), items.includes("Other") ? 1 : 0, createdAt
   ).run();
   const booking = await env.CUSTOMER_DB.prepare(
