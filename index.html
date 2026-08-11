@@ -743,6 +743,7 @@ let routeStartOverride = null; // one-off GPS optimisation; never replaces the s
 let routeTiming = {};       // id -> {order, driveSec} cumulative drive time from start to that stop
 let importBusy = false;     // a sheet load is still geocoding — block overlapping loads
 let runChangeBusy = false;  // a GPS/address action must finish before changing runs
+let bulkSendBusy = false;   // one bulk send at a time — prevents accidental duplicate emails
 let pendingReceipts = {};   // stop id -> built PDF File, waiting for the Send tap
 let pendingInvoices = {};   // stop id -> built invoice PDF, waiting for the Send tap
 // Same idea for an invoice raised from a booking card rather than a run stop.
@@ -3811,7 +3812,8 @@ function renderContacts(){
     <div class="recipient-list">${recipientRows}</div>
     <button class="ghost sm" style="margin-top:6px" onclick="clearMessageMarks()">Clear sent marks for this day</button>`;
   const actions = `<div class="message-actions"><b id="selectedCount">${selCount} selected customer${selCount!==1?'s':''}</b>
-    <div class="row" style="margin-top:6px"><button class="good grow" onclick="bulkSend()">📣 Text &amp; email everyone</button></div>
+    <div class="row" style="margin-top:6px"><button id="bulkSendButton" class="good grow" onclick="bulkSend()" ${bulkSendBusy?'disabled aria-busy="true"':''}>${bulkSendBusy?'Sending… please wait':'📣 Text &amp; email everyone'}</button></div>
+    <div id="bulkSendStatus" class="small" aria-live="polite" style="margin-top:6px;${bulkSendBusy?'color:var(--warn)':''}">${bulkSendBusy?'<span class="spinner"></span> Sending now — please do not press it again.':''}</div>
     <p class="small muted" style="margin:6px 0 0">Shows you exactly what it's about to do, then does the lot — texts, emails, saves the day to their accounts and marks them messaged. In Messages, tap <b>To</b> then <b>Paste</b> once.</p></div>`;
   wrap.innerHTML = `<div class="card"><details open>
     <summary>Bulk message<span class="se-sum">${missing.length?` · ${missing.length} missing contact${missing.length!==1?'s':''}`:""}</span><span class="chev">›</span></summary>
@@ -4710,6 +4712,31 @@ function copyPlainText(value){
   box.remove();
   return copied;
 }
+let bulkSendStatusTimer = 0;
+function setBulkSendBusy(isBusy, recipientCount=0){
+  const btn = document.getElementById("bulkSendButton");
+  const status = document.getElementById("bulkSendStatus");
+  if (btn){
+    btn.disabled = isBusy;
+    btn.setAttribute("aria-busy", isBusy ? "true" : "false");
+    btn.textContent = isBusy ? "Sending… please wait" : "📣 Text & email everyone";
+  }
+  if (status && isBusy){
+    status.style.color = "var(--warn)";
+    status.innerHTML = `<span class="spinner"></span> Sending to ${recipientCount} customer${recipientCount!==1?"s":""} now — please do not press it again.`;
+  }
+}
+function showBulkSendResult(message, hasProblem=false){
+  const status = document.getElementById("bulkSendStatus");
+  if (!status) return;
+  clearTimeout(bulkSendStatusTimer);
+  status.style.color = hasProblem ? "var(--warn)" : "var(--good)";
+  status.textContent = message;
+  bulkSendStatusTimer = setTimeout(()=>{
+    const current = document.getElementById("bulkSendStatus");
+    if (current){ current.textContent = ""; current.style.color = ""; }
+  }, 10000);
+}
 /* One tap does the whole confirmation: copy the numbers, save the day to their
    online accounts, email them the confirmation, mark them sent, open Messages.
    The clipboard write has to be started first and synchronously - a phone only
@@ -4725,6 +4752,7 @@ function copyPlainText(value){
    page write to the clipboard while it is still handling the tap, so it cannot
    wait behind a network call. */
 window.bulkSend = async () => {
+  if (bulkSendBusy) return;
   const recipients = selectedRecipients();
   if (!recipients.length) return alert("Select at least one customer first.");
   const nums = selectedNumbers().map(n=>n.replace(/[^\d+]/g,""));
@@ -4748,48 +4776,54 @@ window.bulkSend = async () => {
   lines.push(`Mark ${recipients.length} customer${recipients.length!==1?"s":""} as messaged`);
   if (!confirm(`${confirming?"Send the confirmation":"Send the reminder"} to ${recipients.length} customer${recipients.length!==1?"s":""}?\n\n`
     + lines.map(line => `• ${line}`).join("\n"))) return;
-  // Start the copy inside the tap, then wait on it before anything slow runs.
-  if (nums.length){
-    const phoneList = nums.join("\n");
-    const copying = copyPlainText(phoneList)
-      ? Promise.resolve(true)
-      : navigator.clipboard?.writeText
-        ? navigator.clipboard.writeText(phoneList).then(()=>true, ()=>false)
-        : Promise.resolve(false);
-    if (!await copying) return alert("Couldn't copy the numbers. Please try again.");
-  }
+  bulkSendBusy = true;
+  setBulkSendBusy(true, recipients.length);
   let datesSaved=false, emailed=0, problem="";
-  busy(confirming ? "Saving the day and emailing everyone…" : "Emailing everyone…");
-  if (confirming){
-    // Saves the day AND sends the confirmation email, which opens with this very
-    // message so the email and the text read the same.
-    try{
-      const result = await publishBulkPickupDate(recipients,state.confirmationDate||"",true,message);
-      datesSaved=true; emailed=Number(result.emailed||0);
-    }catch(e){ problem=e.message; }
-  } else if (mailable.length){
-    // A reminder has no day to save, so it goes out through the plain bulk mailer.
-    try{
-      const res = await fetch(`${API}/send-bulk`, {
-        method:"POST", headers:{ "Content-Type":"application/json" },
-        body: JSON.stringify({ subject:"Whiteware collection reminder", messages: mailable.map(s=>{
-          const first=(s.first_name||"").trim();
-          return { to:s.email.trim(), name:fullName(s),
-                   body: first ? message.replace(/^Hey /, `Hi ${first}, `) : message };
-        })})
-      });
-      const out = await res.json().catch(()=>({}));
-      if (res.ok && out.ok) emailed = Number(out.sent||0);
-      else problem = "the reminder emails could not be sent";
-      if ((out.failed||[]).length) problem = `couldn't email ${out.failed.join(", ")}`;
-    }catch(e){ problem = "the reminder emails could not be sent"; }
+  try{
+    // Start the copy inside the tap, then wait on it before anything slow runs.
+    if (nums.length){
+      const phoneList = nums.join("\n");
+      const copying = copyPlainText(phoneList)
+        ? Promise.resolve(true)
+        : navigator.clipboard?.writeText
+          ? navigator.clipboard.writeText(phoneList).then(()=>true, ()=>false)
+          : Promise.resolve(false);
+      if (!await copying) return alert("Couldn't copy the numbers. Please try again.");
+    }
+    if (confirming){
+      // Saves the day AND sends the confirmation email, which opens with this very
+      // message so the email and the text read the same.
+      try{
+        const result = await publishBulkPickupDate(recipients,state.confirmationDate||"",true,message);
+        datesSaved=true; emailed=Number(result.emailed||0);
+      }catch(e){ problem=e.message; }
+    } else if (mailable.length){
+      // A reminder has no day to save, so it goes out through the plain bulk mailer.
+      try{
+        const res = await fetch(`${API}/send-bulk`, {
+          method:"POST", headers:{ "Content-Type":"application/json" },
+          body: JSON.stringify({ subject:"Whiteware collection reminder", messages: mailable.map(s=>{
+            const first=(s.first_name||"").trim();
+            return { to:s.email.trim(), name:fullName(s),
+                     body: first ? message.replace(/^Hey /, `Hi ${first}, `) : message };
+          })})
+        });
+        const out = await res.json().catch(()=>({}));
+        if (res.ok && out.ok) emailed = Number(out.sent||0);
+        else problem = "the reminder emails could not be sent";
+        if ((out.failed||[]).length) problem = `couldn't email ${out.failed.join(", ")}`;
+      }catch(e){ problem = "the reminder emails could not be sent"; }
+    }
+    markRecipientsSentLocally(recipients,state.confirmationDate||"",datesSaved);
+    save();
+  } finally {
+    bulkSendBusy = false;
+    render();
   }
-  busy("");
-  markRecipientsSentLocally(recipients,state.confirmationDate||"",datesSaved);
-  save(); render();
-  flash(problem
+  const resultMessage = problem
     ? `⚠ ${nums.length?"Numbers copied — ":""}${problem}`
-    : `✓ ${recipients.length} messaged${emailed?` · emailed ${emailed}`:""}`);
+    : `✓ Finished — ${recipients.length} messaged${emailed?` · emailed ${emailed}`:""}`;
+  showBulkSendResult(resultMessage, Boolean(problem));
   // The texts are the part that matters most, so Messages still opens even if
   // the email or the account side failed - he just gets told about it.
   if (problem) alert(`The texts are ready to send, but ${problem}.`);
