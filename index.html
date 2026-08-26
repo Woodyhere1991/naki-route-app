@@ -3278,24 +3278,77 @@ function reminderTowns(){
   state.stops.filter(s=>s.status!=="DONE").forEach(push);
   return out;
 }
-// A reminder window owns the actual pickups, not just a town name. That means
-// two New Plymouth pickups can have different windows (for example, a couple
-// collected on the way out to Okato and the rest on the way back), while a
-// single window can cover as many towns as make sense for that leg of the run.
+// Nearby stops belong in one useful promise, even when the town names differ.
+// 18 km is wide enough for Oakura + Okato and New Plymouth + Bell Block, but the
+// full span rule stops those two corridors chaining into one giant window.
+const AUTO_WINDOW_MAX_SPAN_KM = 18;
+function reminderStopsInRouteOrder(){
+  const ordered=scheduleStopsInOrder(), seen=new Set(ordered.map(s=>s.id));
+  return ordered.concat(state.stops.filter(s=>s.status!=="DONE" && !seen.has(s.id)));
+}
+function autoClusterDistance(a,b){
+  let max=0;
+  for (const left of a) for (const right of b){
+    if (isFinite(left.lat) && isFinite(left.lng) && isFinite(right.lat) && isFinite(right.lng)) max=Math.max(max,haversine(left,right));
+    else if ((townKey(left.town||left.area)||"your area")!==(townKey(right.town||right.area)||"your area")) return Infinity;
+  }
+  return max;
+}
+function windowForStops(stops){
+  const timed=stops.filter(s=>routeTiming[s.id]);
+  if (timed.length){
+    const arrivals=timed.map(s=>stopArriveMin(routeTiming[s.id]));
+    return { start:minToHM(Math.max(runStartMin(),Math.floor((Math.min(...arrivals)-15)/15)*15)),
+      end:minToHM(Math.ceil((Math.max(...arrivals)+stopServiceMin()+45)/15)*15) };
+  }
+  const townWindows=[...new Set(stops.map(s=>townKey(s.town||s.area)||"your area"))].map(townWindow);
+  if (!townWindows.length) return {start:"09:00",end:"12:00"};
+  return {start:minToHM(Math.min(...townWindows.map(w=>parseHM(w.start)))),end:minToHM(Math.max(...townWindows.map(w=>parseHM(w.end))))};
+}
 function defaultReminderWindows(){
-  return reminderTowns().map(t=>{
-    const w=townWindow(t.key);
-    return {
-      id:`town:${t.key}`,
-      label:"",
-      stopIds:state.stops.filter(s=>s.status!=="DONE" && (townKey(s.town||s.area)||"your area")===t.key).map(s=>s.id),
-      start:w.start, end:w.end
-    };
+  const ordered=reminderStopsInRouteOrder();
+  const clusters=ordered.map(stop=>[stop]);
+  // Complete-link clustering: every stop in the merged window must remain
+  // within the maximum span of every other stop. This prevents nearby places
+  // forming a chain that eventually joins the whole run together.
+  while (clusters.length>1){
+    let best=null;
+    for(let a=0;a<clusters.length-1;a++) for(let b=a+1;b<clusters.length;b++){
+      const distance=autoClusterDistance(clusters[a],clusters[b]);
+      if(distance<=AUTO_WINDOW_MAX_SPAN_KM && (!best || distance<best.distance)) best={a,b,distance};
+    }
+    if(!best) break;
+    clusters[best.a]=clusters[best.a].concat(clusters[best.b]);
+    clusters.splice(best.b,1);
+  }
+  const clusterByStop=new Map();
+  clusters.forEach((cluster,index)=>cluster.forEach(stop=>clusterByStop.set(stop.id,index)));
+  // Route order still wins. If the route leaves New Plymouth, does the western
+  // corridor, then returns, the two New Plymouth visits become separate windows.
+  const legs=[];
+  ordered.forEach(stop=>{
+    const cluster=clusterByStop.get(stop.id), last=legs[legs.length-1];
+    if(!last || last.cluster!==cluster) legs.push({cluster,stops:[stop]}); else last.stops.push(stop);
+  });
+  return legs.map((leg,index)=>{
+    const time=windowForStops(leg.stops);
+    return {id:`auto:${index}:${leg.stops[0].id}`,label:"",stopIds:leg.stops.map(s=>s.id),start:time.start,end:time.end};
   });
 }
 function reminderWindows(){
   const pending=new Set(state.stops.filter(s=>s.status!=="DONE").map(s=>s.id));
-  const saved=Array.isArray(state.reminderWindows) ? state.reminderWindows : [];
+  const rawSaved=Array.isArray(state.reminderWindows) ? state.reminderWindows : [];
+  // The first version saved one plain window per town. Treat that untouched old
+  // shape as automatic so today's route immediately benefits from clustering.
+  // A named, added or mixed-town window is genuinely manual and stays untouched.
+  const oldTownOnly=rawSaved.length && rawSaved.every(w=>{
+    const key=String(w.id||"").replace(/^town:/,"");
+    return /^town:/.test(String(w.id||"")) && !String(w.label||"").trim() && (w.stopIds||[]).every(id=>{
+      const stop=state.stops.find(s=>s.id===id);
+      return !stop || (townKey(stop.town||stop.area)||"your area")===key;
+    });
+  });
+  const saved=oldTownOnly ? [] : rawSaved;
   const seen=new Set();
   const windows=saved.map((raw,i)=>{
     const ids=(raw.stopIds||[]).filter(id=>pending.has(id) && !seen.has(id));
@@ -3917,9 +3970,9 @@ function renderContacts(){
     </div>`;
   }).join("");
   const reminderControls = mode!=="reminder" ? "" : `<label style="margin-top:10px">Smart time windows</label>
-    <p class="small muted" style="margin:0 0 2px">A window can cover several towns, or just selected addresses. Move people between windows when you pass through a town twice — each person gets only their own window.</p>
+    <p class="small muted" style="margin:0 0 2px">Nearby stops are grouped automatically (about 18 km across) in route order. If you leave an area and return later, it starts another window. You can still move individual people.</p>
     ${windowRows || `<p class="small muted">No pickups yet.</p>`}
-    <div style="display:flex;gap:6px;margin-top:5px"><button class="ghost sm" onclick="addReminderWindow()">＋ Add time window</button><button class="ghost sm" onclick="resetReminderWindows()">Use one per town</button></div>`;
+    <div style="display:flex;gap:6px;margin-top:5px"><button class="ghost sm" onclick="addReminderWindow()">＋ Add time window</button><button class="ghost sm" onclick="resetReminderWindows()">Auto-organise from route</button></div>`;
   const previewPlaceholder = mode==="reminder"
     ? "Add pickups first — each place gets a time window"
     : "Choose a collection day above";
