@@ -3043,7 +3043,7 @@ function stopPrice(s){
   return estimateStopPrice(s);
 }
 
-/* ---------- Route optimisation (nearest-neighbour + 2-opt) ---------- */
+/* ---------- Route optimisation (road-time matrix + multi-start search) ---------- */
 function routeStops(){
   // Pending stops with coords, in current order.
   return state.stops.filter(s => s.status!=="DONE" && isFinite(s.lat) && isFinite(s.lng));
@@ -3051,53 +3051,135 @@ function routeStops(){
 function startPoint(){ return routeStartOverride || state.start || NP; }
 function endPoint(){ return state.end || (state.roundTrip ? startPoint() : null); }
 function replanIfAuto(){ if (!state.manual && routeStops().length>1) optimise(); else drawRoute(); }
-
-// Order one group of stops by nearest-neighbour from `from`, improved with 2-opt.
-function planOrder(pts, from, closeTo){
-  if (pts.length <= 1) return pts.slice();
-  let remaining = pts.slice(), order = [], cur = from;
-  while (remaining.length){
-    let bi=0, bd=Infinity;
-    remaining.forEach((p,i)=>{ const d=haversine(cur,p); if (d<bd){ bd=d; bi=i; } });
-    cur = remaining[bi]; order.push(cur); remaining.splice(bi,1);
-  }
-  const cost = seq => {
-    let t = haversine(from, seq[0]);
-    for (let i=0;i<seq.length-1;i++) t += haversine(seq[i], seq[i+1]);
-    if (closeTo) t += haversine(seq[seq.length-1], closeTo);
-    return t;
-  };
-  let improved = true, best = order;
-  while (improved){
-    improved = false;
-    for (let i=0;i<best.length-1;i++){
-      for (let k=i+1;k<best.length;k++){
-        const cand = best.slice(0,i).concat(best.slice(i,k+1).reverse(), best.slice(k+1));
-        if (cost(cand) + 1e-9 < cost(best)){ best = cand; improved = true; }
+let routeOptimiseBusy=false;
+function routeMatrixFallback(points){
+  return points.map(from=>points.map(to=>haversine(from,to)/45*3600));
+}
+async function roadTimeMatrix(points){
+  // OSRM's Table service returns the fastest driving time between every pair.
+  // The old optimiser used straight lines here, which is why a route could look
+  // tidy mathematically but still backtrack once real roads and turn-offs applied.
+  if(points.length>50) throw new Error("too many stops for one road-time table");
+  const coords=points.map(p=>`${p.lng},${p.lat}`).join(";");
+  const controller=new AbortController(), timeout=setTimeout(()=>controller.abort(),12000);
+  try{
+    const res=await fetch(`https://router.project-osrm.org/table/v1/driving/${coords}?annotations=duration`,{signal:controller.signal});
+    const data=await res.json();
+    if(!res.ok || data.code!=="Ok" || !Array.isArray(data.durations)) throw new Error(data.message||"road-time table unavailable");
+    const fallback=routeMatrixFallback(points);
+    return data.durations.map((row,i)=>row.map((seconds,j)=>Number.isFinite(seconds)?seconds:fallback[i][j]));
+  }finally{ clearTimeout(timeout); }
+}
+function routeSequenceCost(order,matrix,startIndex,endIndex){
+  if(!order.length) return endIndex==null?0:matrix[startIndex][endIndex];
+  let total=matrix[startIndex][order[0]];
+  for(let i=0;i<order.length-1;i++) total+=matrix[order[i]][order[i+1]];
+  if(endIndex!=null) total+=matrix[order[order.length-1]][endIndex];
+  return total;
+}
+function greedyRoadOrder(nodes,matrix,startIndex,firstNode){
+  const priority=nodes.filter(n=>n.priority), normal=nodes.filter(n=>!n.priority), order=[];
+  let current=startIndex;
+  [priority,normal].forEach((group,groupIndex)=>{
+    const remaining=group.slice();
+    if(groupIndex===0 && firstNode!=null){
+      const i=remaining.findIndex(n=>n.index===firstNode);
+      if(i>=0){order.push(remaining[i].index);current=remaining[i].index;remaining.splice(i,1);}
+    }else if(groupIndex===1 && !priority.length && firstNode!=null){
+      const i=remaining.findIndex(n=>n.index===firstNode);
+      if(i>=0){order.push(remaining[i].index);current=remaining[i].index;remaining.splice(i,1);}
+    }
+    while(remaining.length){
+      let best=0;
+      for(let i=1;i<remaining.length;i++) if(matrix[current][remaining[i].index]<matrix[current][remaining[best].index]) best=i;
+      current=remaining[best].index;order.push(current);remaining.splice(best,1);
+    }
+  });
+  return order;
+}
+function improveRoadOrder(seed,priorityCount,matrix,startIndex,endIndex){
+  let best=seed.slice(), bestCost=routeSequenceCost(best,matrix,startIndex,endIndex);
+  const blocks=priorityCount&&priorityCount<best.length ? [[0,priorityCount],[priorityCount,best.length]] : [[0,best.length]];
+  for(let round=0;round<40;round++){
+    let winner=null,winnerCost=bestCost;
+    for(const [from,to] of blocks){
+      for(let i=from;i<to;i++) for(let j=i+1;j<to;j++){
+        const reversed=best.slice();reversed.splice(i,j-i+1,...reversed.slice(i,j+1).reverse());
+        const reverseCost=routeSequenceCost(reversed,matrix,startIndex,endIndex);
+        if(reverseCost+0.5<winnerCost){winner=reversed;winnerCost=reverseCost;}
+        const swapped=best.slice();[swapped[i],swapped[j]]=[swapped[j],swapped[i]];
+        const swapCost=routeSequenceCost(swapped,matrix,startIndex,endIndex);
+        if(swapCost+0.5<winnerCost){winner=swapped;winnerCost=swapCost;}
+      }
+      for(let i=from;i<to;i++) for(let j=from;j<to;j++){
+        if(i===j) continue;
+        const moved=best.slice(), [node]=moved.splice(i,1);moved.splice(j,0,node);
+        const movedCost=routeSequenceCost(moved,matrix,startIndex,endIndex);
+        if(movedCost+0.5<winnerCost){winner=moved;winnerCost=movedCost;}
       }
     }
   }
-  return best;
+  const full=size-1;
+  let last=0,best=Infinity;
+  for(let i=0;i<n;i++){
+    const cost=costs[full*n+i]+(endIndex==null?0:matrix[nodes[i].index][endIndex]);
+    if(cost<best){best=cost;last=i;}
+  }
+  const order=[];let mask=full;
+  while(mask){
+    order.push(nodes[last].index);
+    const before=previous[mask*n+last];mask^=1<<last;last=before;
+  }
+  return order.reverse();
 }
-
-function optimise(){
+function smartestRoadOrder(all,matrix,startIndex,endIndex){
+  const nodes=all.map((stop,i)=>({index:i+1,priority:!!stop.priority}));
+  if(nodes.length<=13) return exactRoadOrder(nodes,matrix,startIndex,endIndex).map(index=>all[index-1]);
+  const firstGroup=nodes.filter(n=>n.priority).length ? nodes.filter(n=>n.priority) : nodes;
+  const ranked=firstGroup.slice().sort((a,b)=>matrix[startIndex][a.index]-matrix[startIndex][b.index]);
+  const seeds=ranked.length<=10 ? ranked : ranked.filter((_,i)=>i<5 || i%Math.ceil(ranked.length/5)===0).slice(0,10);
+  let winner=null;
+  seeds.forEach(first=>{
+    const greedy=greedyRoadOrder(nodes,matrix,startIndex,first.index);
+    const improved=improveRoadOrder(greedy,nodes.filter(n=>n.priority).length,matrix,startIndex,endIndex);
+    if(!winner || improved.cost<winner.cost) winner=improved;
+  });
+  return (winner?.order||nodes.map(n=>n.index)).map(index=>all[index-1]);
+}
+function setRouteOptimiseBusy(isBusy,message=""){
+  routeOptimiseBusy=isBusy;
+  ["optimise","optimiseHere"].forEach(id=>{const button=document.getElementById(id);if(button){button.disabled=isBusy;button.setAttribute("aria-busy",isBusy?"true":"false");}});
+  busy(message);
+}
+async function optimise(){
+  if(routeOptimiseBusy) return false;
   const all = routeStops();
-  if (all.length < 1){ render(); drawRoute(); return; }
+  if (all.length < 1){ render(); drawRoute(); return false; }
   const start = startPoint();
   const back = endPoint();
-  // ASAP stops are visited first (optimised among themselves), then the rest.
-  const prio = all.filter(s => s.priority);
-  const norm = all.filter(s => !s.priority);
-  const seqP = planOrder(prio, start, norm.length ? null : back);
-  const lastP = seqP.length ? seqP[seqP.length-1] : start;
-  const seqN = planOrder(norm, lastP, back);
-  const best = seqP.concat(seqN);
-  // Re-seat optimised stops at the front of state.stops, keep DONE + others after.
-  const ids = best.map(s=>s.id);
-  const rest = state.stops.filter(s => !ids.includes(s.id));
-  state.stops = best.concat(rest);
-  state.manual = false;
-  save(); render(); drawRoute();
+  const points=[start,...all];
+  let endIndex=null;
+  if(back){
+    if(back===start || (back.lat===start.lat&&back.lng===start.lng)) endIndex=0;
+    else{endIndex=points.length;points.push(back);}
+  }
+  setRouteOptimiseBusy(true,"Checking real road travel times…");
+  try{
+    let matrix,usedRoadTimes=true;
+    try{matrix=await roadTimeMatrix(points);}
+    catch(e){matrix=routeMatrixFallback(points);usedRoadTimes=false;}
+    const currentIds=routeStops().map(s=>s.id).join("|");
+    if(currentIds!==all.map(s=>s.id).join("|")) return false;
+    const best=smartestRoadOrder(all,matrix,0,endIndex);
+    // Re-seat optimised stops at the front of state.stops, keep DONE + others after.
+    const ids = best.map(s=>s.id);
+    const rest = state.stops.filter(s => !ids.includes(s.id));
+    state.stops = best.concat(rest);
+    state.manual = false;
+    save(); render(); await drawRoute();
+    flash(usedRoadTimes?"✓ Route optimised using real driving times":"⚠ Road timings were unavailable — route optimised using distance estimates");
+    return usedRoadTimes;
+  }finally{setRouteOptimiseBusy(false);}
 }
 
 /* ---------- Map drawing + OSRM road line (best-effort) ---------- */
@@ -3377,6 +3459,30 @@ function reminderWindowPlaces(window){
     const town=townLabel(stop?.town||stop?.area).replace(/^No town$/,"Your area");
     if (!towns.includes(town)) towns.push(town);
   });
+    if(!winner) break;
+    best=winner;bestCost=winnerCost;
+  }
+  return {order:best,cost:bestCost};
+}
+function exactRoadOrder(nodes,matrix,startIndex,endIndex){
+  // Most daily runs are small enough to prove the best order, not merely guess
+  // one. Held-Karp checks every useful combination while still enforcing that
+  // every ASAP stop comes before any ordinary stop.
+  const n=nodes.length,size=1<<n,priorityMask=nodes.reduce((mask,node,i)=>node.priority?mask|(1<<i):mask,0);
+  const costs=new Float64Array(size*n);costs.fill(Infinity);
+  const previous=new Int16Array(size*n);previous.fill(-1);
+  for(let i=0;i<n;i++){
+    if(priorityMask && !(priorityMask&(1<<i))) continue;
+    costs[(1<<i)*n+i]=matrix[startIndex][nodes[i].index];
+  }
+  for(let mask=1;mask<size;mask++) for(let last=0;last<n;last++){
+    const current=costs[mask*n+last];if(!Number.isFinite(current)) continue;
+    for(let next=0;next<n;next++){
+      const bit=1<<next;if(mask&bit) continue;
+      if(!(priorityMask&bit) && (mask&priorityMask)!==priorityMask) continue;
+      const nextMask=mask|bit,index=nextMask*n+next,candidate=current+matrix[nodes[last].index][nodes[next].index];
+      if(candidate<costs[index]){costs[index]=candidate;previous[index]=last;}
+    }
   return towns.join(", ") || "your area";
 }
 function reminderWindowForStop(stop){
@@ -5598,12 +5704,12 @@ $("#roundTrip").onchange = e => {
 };
 
 // Big actions
-$("#optimise").onclick = () => {
+$("#optimise").onclick = async () => {
   if (!routeStops().length){ alert("Add some stops first."); return; }
   routeStartOverride=null;
-  busy("Working out the shortest run…");
-  setTimeout(()=>{ optimise(); busy(""); $("#addBox").open=false; $("#startBox").open=false;
-    document.getElementById("map").scrollIntoView({behavior:"smooth",block:"start"}); }, 30);
+  await optimise();
+  $("#addBox").open=false; $("#startBox").open=false;
+  document.getElementById("map").scrollIntoView({behavior:"smooth",block:"start"});
 };
 // Re-plan from your current GPS position (for stops phoned in mid-route).
 $("#optimiseHere").onclick = () => {
@@ -5613,10 +5719,10 @@ $("#optimiseHere").onclick = () => {
   runChangeBusy=true;
   busy("Getting your location…");
   navigator.geolocation.getCurrentPosition(
-    pos => { routeStartOverride = { lat:pos.coords.latitude, lng:pos.coords.longitude, label:"My current location" };
-      runChangeBusy=false; busy("Re-planning from here…"); optimise(); busy(""); $("#addBox").open=false; $("#startBox").open=false;
+    async pos => { routeStartOverride = { lat:pos.coords.latitude, lng:pos.coords.longitude, label:"My current location" };
+      runChangeBusy=false; await optimise(); $("#addBox").open=false; $("#startBox").open=false;
       document.getElementById("map").scrollIntoView({behavior:"smooth",block:"start"}); },
-    err => { runChangeBusy=false; busy(""); alert("Couldn't get location (needs https + permission). Using your set start."); optimise(); },
+    async err => { runChangeBusy=false; busy(""); alert("Couldn't get location (needs https + permission). Using your set start."); await optimise(); },
     { enableHighAccuracy:true, timeout:10000 }
   );
 };
