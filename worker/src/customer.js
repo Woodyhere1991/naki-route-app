@@ -3005,10 +3005,6 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
             pickup_date, pickup_window, customer_note, cancellation_reason, cancelled_at, created_at,
             0 AS email_failed
           FROM external_bookings
-          WHERE status='CANCELLED' OR EXISTS (
-            SELECT 1 FROM booking_documents d
-            WHERE d.booking_id = external_bookings.id OR d.booking_id = external_bookings.external_key
-          )
         ) ORDER BY CASE status WHEN 'NEW' THEN 0 ELSE 1 END, created_at DESC LIMIT 300`
         ).all(),
         env.CUSTOMER_DB.prepare(
