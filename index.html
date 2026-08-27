@@ -3118,6 +3118,30 @@ function improveRoadOrder(seed,priorityCount,matrix,startIndex,endIndex){
         if(movedCost+0.5<winnerCost){winner=moved;winnerCost=movedCost;}
       }
     }
+    if(!winner) break;
+    best=winner;bestCost=winnerCost;
+  }
+  return {order:best,cost:bestCost};
+}
+function exactRoadOrder(nodes,matrix,startIndex,endIndex){
+  // Most daily runs are small enough to prove the best order, not merely guess
+  // one. Held-Karp checks every useful combination while still enforcing that
+  // every ASAP stop comes before any ordinary stop.
+  const n=nodes.length,size=1<<n,priorityMask=nodes.reduce((mask,node,i)=>node.priority?mask|(1<<i):mask,0);
+  const costs=new Float64Array(size*n);costs.fill(Infinity);
+  const previous=new Int16Array(size*n);previous.fill(-1);
+  for(let i=0;i<n;i++){
+    if(priorityMask && !(priorityMask&(1<<i))) continue;
+    costs[(1<<i)*n+i]=matrix[startIndex][nodes[i].index];
+  }
+  for(let mask=1;mask<size;mask++) for(let last=0;last<n;last++){
+    const current=costs[mask*n+last];if(!Number.isFinite(current)) continue;
+    for(let next=0;next<n;next++){
+      const bit=1<<next;if(mask&bit) continue;
+      if(!(priorityMask&bit) && (mask&priorityMask)!==priorityMask) continue;
+      const nextMask=mask|bit,index=nextMask*n+next,candidate=current+matrix[nodes[last].index][nodes[next].index];
+      if(candidate<costs[index]){costs[index]=candidate;previous[index]=last;}
+    }
   }
   const full=size-1;
   let last=0,best=Infinity;
@@ -3360,21 +3384,38 @@ function reminderTowns(){
   state.stops.filter(s=>s.status!=="DONE").forEach(push);
   return out;
 }
-// Nearby stops belong in one useful promise, even when the town names differ.
-// 18 km is wide enough for Oakura + Okato and New Plymouth + Bell Block, but the
-// full span rule stops those two corridors chaining into one giant window.
-const AUTO_WINDOW_MAX_SPAN_KM = 18;
+// Automatic customer windows follow the planned drive, not town boundaries.
+// Three hours is broad enough to make a useful promise without creating a text
+// group for every town. An early New Plymouth stop on the way to Oakura/Okato
+// therefore stays with that first part of the run; New Plymouth stops reached
+// after returning can land in the next block with Bell Block.
+const AUTO_WINDOW_MINUTES = 180;
 function reminderStopsInRouteOrder(){
   const ordered=scheduleStopsInOrder(), seen=new Set(ordered.map(s=>s.id));
   return ordered.concat(state.stops.filter(s=>s.status!=="DONE" && !seen.has(s.id)));
 }
-function autoClusterDistance(a,b){
-  let max=0;
-  for (const left of a) for (const right of b){
-    if (isFinite(left.lat) && isFinite(left.lng) && isFinite(right.lat) && isFinite(right.lng)) max=Math.max(max,haversine(left,right));
-    else if ((townKey(left.town||left.area)||"your area")!==(townKey(right.town||right.area)||"your area")) return Infinity;
-  }
-  return max;
+// ETA for every stop in route order. Real OSRM road times win. A best-effort
+// drive estimate keeps the grouping sensible while road routing is unavailable
+// or a stop has only just been added.
+function reminderRouteSchedule(stops){
+  const start=runStartMin(), service=stopServiceMin();
+  let elapsed=0, previous=startPoint();
+  return stops.map(stop=>{
+    const timing=routeTiming[stop.id];
+    let arrive;
+    if(timing){
+      arrive=stopArriveMin(timing);
+      elapsed=Math.max(elapsed,arrive-start);
+    }else{
+      if(isFinite(previous?.lat) && isFinite(previous?.lng) && isFinite(stop.lat) && isFinite(stop.lng)){
+        elapsed+=haversine(previous,stop)/45*60;
+      }
+      arrive=start+elapsed;
+    }
+    elapsed+=service;
+    if(isFinite(stop.lat) && isFinite(stop.lng)) previous=stop;
+    return {stop,arrive};
+  });
 }
 function windowForStops(stops){
   const timed=stops.filter(s=>routeTiming[s.id]);
@@ -3389,33 +3430,23 @@ function windowForStops(stops){
 }
 function defaultReminderWindows(){
   const ordered=reminderStopsInRouteOrder();
-  const clusters=ordered.map(stop=>[stop]);
-  // Complete-link clustering: every stop in the merged window must remain
-  // within the maximum span of every other stop. This prevents nearby places
-  // forming a chain that eventually joins the whole run together.
-  while (clusters.length>1){
-    let best=null;
-    for(let a=0;a<clusters.length-1;a++) for(let b=a+1;b<clusters.length;b++){
-      const distance=autoClusterDistance(clusters[a],clusters[b]);
-      if(distance<=AUTO_WINDOW_MAX_SPAN_KM && (!best || distance<best.distance)) best={a,b,distance};
-    }
-    if(!best) break;
-    clusters[best.a]=clusters[best.a].concat(clusters[best.b]);
-    clusters.splice(best.b,1);
-  }
-  const clusterByStop=new Map();
-  clusters.forEach((cluster,index)=>cluster.forEach(stop=>clusterByStop.set(stop.id,index)));
-  // Route order still wins. If the route leaves New Plymouth, does the western
-  // corridor, then returns, the two New Plymouth visits become separate windows.
-  const legs=[];
-  ordered.forEach(stop=>{
-    const cluster=clusterByStop.get(stop.id), last=legs[legs.length-1];
-    if(!last || last.cluster!==cluster) legs.push({cluster,stops:[stop]}); else last.stops.push(stop);
+  if(!ordered.length) return [];
+  // Anchor the blocks to departure, rounded down to a tidy quarter-hour. This
+  // includes the drive to stop one and makes the promises exactly three hours.
+  const anchor=Math.floor(runStartMin()/15)*15, blocks=[];
+  reminderRouteSchedule(ordered).forEach(({stop,arrive})=>{
+    const blockNumber=Math.max(0,Math.floor((arrive-anchor)/AUTO_WINDOW_MINUTES));
+    let block=blocks.find(item=>item.number===blockNumber);
+    if(!block){ block={number:blockNumber,stops:[]}; blocks.push(block); }
+    block.stops.push(stop);
   });
-  return legs.map((leg,index)=>{
-    const time=windowForStops(leg.stops);
-    return {id:`auto:${index}:${leg.stops[0].id}`,label:"",stopIds:leg.stops.map(s=>s.id),start:time.start,end:time.end};
-  });
+  return blocks.map((block,index)=>({
+    id:`auto:${index}:${block.stops[0].id}`,
+    label:"",
+    stopIds:block.stops.map(stop=>stop.id),
+    start:minToHM(anchor+block.number*AUTO_WINDOW_MINUTES),
+    end:minToHM(anchor+(block.number+1)*AUTO_WINDOW_MINUTES)
+  }));
 }
 function reminderWindows(){
   const pending=new Set(state.stops.filter(s=>s.status!=="DONE").map(s=>s.id));
@@ -3459,30 +3490,6 @@ function reminderWindowPlaces(window){
     const town=townLabel(stop?.town||stop?.area).replace(/^No town$/,"Your area");
     if (!towns.includes(town)) towns.push(town);
   });
-    if(!winner) break;
-    best=winner;bestCost=winnerCost;
-  }
-  return {order:best,cost:bestCost};
-}
-function exactRoadOrder(nodes,matrix,startIndex,endIndex){
-  // Most daily runs are small enough to prove the best order, not merely guess
-  // one. Held-Karp checks every useful combination while still enforcing that
-  // every ASAP stop comes before any ordinary stop.
-  const n=nodes.length,size=1<<n,priorityMask=nodes.reduce((mask,node,i)=>node.priority?mask|(1<<i):mask,0);
-  const costs=new Float64Array(size*n);costs.fill(Infinity);
-  const previous=new Int16Array(size*n);previous.fill(-1);
-  for(let i=0;i<n;i++){
-    if(priorityMask && !(priorityMask&(1<<i))) continue;
-    costs[(1<<i)*n+i]=matrix[startIndex][nodes[i].index];
-  }
-  for(let mask=1;mask<size;mask++) for(let last=0;last<n;last++){
-    const current=costs[mask*n+last];if(!Number.isFinite(current)) continue;
-    for(let next=0;next<n;next++){
-      const bit=1<<next;if(mask&bit) continue;
-      if(!(priorityMask&bit) && (mask&priorityMask)!==priorityMask) continue;
-      const nextMask=mask|bit,index=nextMask*n+next,candidate=current+matrix[nodes[last].index][nodes[next].index];
-      if(candidate<costs[index]){costs[index]=candidate;previous[index]=last;}
-    }
   return towns.join(", ") || "your area";
 }
 function reminderWindowForStop(stop){
@@ -4076,7 +4083,7 @@ function renderContacts(){
     </div>`;
   }).join("");
   const reminderControls = mode!=="reminder" ? "" : `<label style="margin-top:10px">Smart time windows</label>
-    <p class="small muted" style="margin:0 0 2px">Nearby stops are grouped automatically (about 18 km across) in route order. If you leave an area and return later, it starts another window. You can still move individual people.</p>
+    <p class="small muted" style="margin:0 0 2px">Stops are grouped into 3-hour blocks in driving order, using road travel time plus about ${stopServiceMin()} minutes at each pickup. Your start and finish help decide the route order. You can still move individual people.</p>
     ${windowRows || `<p class="small muted">No pickups yet.</p>`}
     <div style="display:flex;gap:6px;margin-top:5px"><button class="ghost sm" onclick="addReminderWindow()">＋ Add time window</button><button class="ghost sm" onclick="resetReminderWindows()">Auto-organise from route</button></div>`;
   const previewPlaceholder = mode==="reminder"
