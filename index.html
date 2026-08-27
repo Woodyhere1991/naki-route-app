@@ -699,6 +699,18 @@
     </div>
   </div>
 </div>
+<!-- What Fill in from jobs will actually write — so nothing feels random -->
+<div id="fillDetailsModal" class="modal-back" style="display:none">
+  <div class="modal-card" style="max-width:560px">
+    <b style="font-size:1.05em">Fill in from their jobs — what will change?</b>
+    <p class="small muted" style="margin:6px 0 8px">Only blank fields get filled. Nothing already saved is changed. This is exactly what will be saved for each person:</p>
+    <div id="fillDetailsBody" class="modal-fields" style="max-height:52vh"></div>
+    <div class="modal-actions">
+      <button class="ghost" style="flex:1" id="fillDetailsCancel">Cancel</button>
+      <button class="good" style="flex:1" id="fillDetailsConfirm">Fill in these</button>
+    </div>
+  </div>
+</div>
 
 <script>
 "use strict";
@@ -2666,12 +2678,38 @@ function paintCustomerFillButton(){
   button.title="Saves the name, phone and address off their jobs onto the customer record itself";
 }
 let fillBlanksBusy=false;
+function openFillDetails(pending){
+  return new Promise(resolve=>{
+    const wrap=document.getElementById("fillDetailsModal");
+    const body=document.getElementById("fillDetailsBody");
+    const fields=["firstName","lastName","phone","streetAddress","town","area","accessNotes"];
+    const label={firstName:"First name",lastName:"Last name",phone:"Phone",streetAddress:"Street address",town:"Town",area:"Area",accessNotes:"Access notes"};
+    body.innerHTML=pending.map(({saved,filled})=>{
+      const name=esc([filled.firstName,filled.lastName].filter(Boolean).join(" ")||saved.email||"(No name)");
+      const email=esc(saved.email||"");
+      const adds=fields.filter(f=>!String(saved[f]||"").trim() && String(filled[f]||"").trim())
+        .map(f=>`<div style="display:flex;gap:8px;padding:3px 0;border-top:1px solid var(--line);font-size:13px"><span style="flex:0 0 110px;color:var(--muted)">${label[f]}</span><span style="flex:1;color:var(--muted)">(blank)</span><span>→</span><span style="flex:1;font-weight:700">${esc(String(filled[f]||""))}</span></div>`).join("");
+      const kept=fields.filter(f=>String(saved[f]||"").trim())
+        .map(f=>`<span style="display:inline-block;margin:2px 4px 0 0;padding:1px 6px;border-radius:999px;background:#0b3446;border:1px solid var(--line);font-size:11px">${label[f]} kept</span>`).join("");
+      return `<div style="border:1px solid var(--line);border-radius:12px;padding:10px;margin:8px 0;background:#071f31">
+        <b>${name}</b> <span class="small muted">${email}</span>
+        <div style="margin-top:6px">${adds || `<span class="small muted">No blanks — nothing to add</span>`}</div>
+        ${kept?`<div style="margin-top:6px">${kept}</div>`:""}
+      </div>`;
+    }).join("") + `<p class="small muted" style="margin-top:10px">Checked fields: first name, last name, phone, street address, town, area, access notes. Only the “(blank) → value” lines will be saved.</p>`;
+    const close=v=>{ wrap.style.display="none"; wrap.onclick=null; resolve(v); };
+    document.getElementById("fillDetailsCancel").onclick=()=>close(false);
+    document.getElementById("fillDetailsConfirm").onclick=()=>close(true);
+    wrap.onclick=e=>{ if(e.target===wrap) close(false); };
+    wrap.style.display="flex";
+  });
+}
 async function fillCustomerBlanksFromJobs(){
   if (fillBlanksBusy) return;
   const pending=customersMissingDetails();
   if (!pending.length) return;
-  if (!confirm(`Copy the details off their jobs onto ${pending.length} customer${pending.length===1?"":"s"}?\n\n`
-    + `Only blanks get filled — nothing already saved is changed.`)) return;
+  const ok=await openFillDetails(pending);
+  if (!ok) return;
   fillBlanksBusy=true;
   let saved=0, failed=0;
   try{
