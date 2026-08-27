@@ -36,6 +36,10 @@ const ITEM_PRICES = {
   "Cast-iron bath": [3000, 2000],
   "Flat-screen TV": [2000, 1000],
   "Old box TV (CRT)": [4500, 3500],
+  "Small desktop printer": [500, 500],
+  "Large scanner/printer": [1000, 1000],
+  "Very large standing scanner/printer": [2000, 2000],
+  "Heat pump or air conditioner": [2000, 1000],
   "Other": [0, 0]
 };
 
@@ -46,7 +50,7 @@ const RURAL_PRICES = {
   "More than 10 km from a covered town or route - contact us": 0
 };
 
-const REFERRAL_OPTIONS = new Set(["Google", "Facebook", "Find My Local", "AI", "Word of mouth", "Other", ""]);
+const REFERRAL_OPTIONS = new Set(["Google", "Facebook", "Neighbourly", "Find My Local", "AI", "Word of mouth", "Other", ""]);
 const OWNER_STATUSES = new Set(["NEW", "ADDED_TO_RUN", "CONTACTED", "CONFIRMED", "COMPLETED", "DECLINED", "CANCELLED"]);
 // The arcade games. Anything else posting a score is rejected.
 const ARCADE_GAMES = new Set(["stack", "flap", "tower", "invade", "dash", "wio", "squad"]);
@@ -428,6 +432,18 @@ function authToken(request) {
   return header.startsWith("Bearer ") ? header.slice(7).trim() : "";
 }
 
+// Resolves a share-link token to the person who shared it, for tagging bookings.
+async function sharerFromToken(env, refToken) {
+  const token = clean(refToken, 64);
+  if (!token) return null;
+  const row = await env.CUSTOMER_DB.prepare(
+    "SELECT first_name, last_name FROM customers WHERE share_token = ?1"
+  ).bind(token).first();
+  if (!row) return null;
+  const name = [row.first_name, row.last_name].filter(Boolean).join(" ").trim();
+  return name ? { name } : null;
+}
+
 async function sessionFor(request, env, role) {
   const token = authToken(request);
   if (!token) return null;
@@ -644,6 +660,28 @@ async function handleJotformSubmission(request, env, json) {
     } catch (error) {
       await markSheetFailure(env, booking.id, error, "jotform_bookings");
     }
+  }
+  // Jotform's own submission alert stopped showing the customer's email, so the
+  // worker sends the same full owner alert website bookings get — with every
+  // detail, email included. Only for genuinely new submissions, so a webhook
+  // retry never spams a second copy.
+  if (!existing && booking) {
+    const price = { cents: Number(booking.total_cents || 0), quoteRequired: Boolean(booking.quote_required) };
+    try {
+      let alertText = ownerNotificationText(booking, items,
+        clean(jotformValue(raw, 18, "additionalInformationenquires"), 1500), price, booking.id);
+      // A numberless address can't be pinned or found — flag it while it is
+      // still just a booking, not a truck driving up and down the street.
+      if (!/\d/.test(String(booking.street_address || ""))) {
+        alertText += "\n\n⚠ This one has NO street number — worth a quick text to them before it goes on a run.";
+      }
+      await sendMail(env, {
+        to: OWNER_EMAIL,
+        name: "Woody",
+        subject: `Re: Whiteware collection form - ${person.firstName} ${person.lastName}`.trim(),
+        text: alertText
+      });
+    } catch { /* the booking is already saved - an alert hiccup must not fail it */ }
   }
   return json(request, { ok: true, duplicate: Boolean(existing), sheetBackedUp }, existing ? 200 : 201);
 }
@@ -877,7 +915,7 @@ async function sendCode(env, sendMail, address, role) {
   return true;
 }
 
-async function verifyCode(env, address, role, code) {
+async function verifyCode(env, address, role, code, refToken = "") {
   const row = await env.CUSTOMER_DB.prepare(
     "SELECT id, code_hash, attempts FROM login_codes WHERE email = ?1 AND role = ?2 AND consumed_at IS NULL AND expires_at > ?3 ORDER BY created_at DESC LIMIT 1"
   ).bind(address, role, now()).first();
@@ -893,13 +931,18 @@ async function verifyCode(env, address, role, code) {
   let customerId = null;
   let customerCreated = false;
   if (role === "customer") {
+    // Someone who signed up through a share link carries that onto their
+    // record, so Woody can see which customer sent them.
+    let referralSource = "", referralDetails = "";
+    const sharer = refToken ? await sharerFromToken(env, refToken) : null;
+    if (sharer) { referralSource = "Word of mouth"; referralDetails = `Shared by ${sharer.name}`; }
     let customer = await env.CUSTOMER_DB.prepare("SELECT id FROM customers WHERE email = ?1").bind(address).first();
     if (!customer) {
       customerId = crypto.randomUUID();
       customerCreated = true;
       await env.CUSTOMER_DB.prepare(
-        "INSERT INTO customers (id, email, created_at, updated_at) VALUES (?1, ?2, ?3, ?3)"
-      ).bind(customerId, address, createdAt).run();
+        "INSERT INTO customers (id, email, referral_source, referral_details, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?5)"
+      ).bind(customerId, address, referralSource, referralDetails, createdAt).run();
     } else {
       customerId = customer.id;
     }
@@ -1049,6 +1092,30 @@ export async function purgeExpiredAuth(env) {
     sessions: Number(sessions?.meta?.changes || 0),
     codes: Number(codes?.meta?.changes || 0)
   };
+}
+
+// Photos of people's places should not live forever. A closed job (completed,
+// declined or cancelled) loses its photos 30 days later; deleting a booking
+// wipes its photos immediately (see the owner delete route).
+const PHOTO_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+export async function purgeOldPhotos(env) {
+  if (!env.CUSTOMER_DB || !env.PHOTOS) return { bookings: 0, photos: 0 };
+  const cutoff = now() - PHOTO_RETENTION_MS;
+  // Bounded batch so one busy night can never blow up the cron.
+  const rows = await env.CUSTOMER_DB.prepare(
+    "SELECT id, photo_count FROM bookings WHERE photo_count > 0 AND status IN ('COMPLETED','DECLINED','CANCELLED') AND updated_at < ?1 LIMIT 50"
+  ).bind(cutoff).all();
+  const stale = rows.results || [];
+  let photos = 0;
+  for (const row of stale) {
+    const count = Math.min(Number(row.photo_count || 0), MAX_PHOTOS);
+    await Promise.all(
+      Array.from({ length: count }, (_, index) => env.PHOTOS.delete(`photo:${row.id}:${index}`).catch(() => {}))
+    );
+    photos += count;
+    await env.CUSTOMER_DB.prepare("UPDATE bookings SET photo_count = 0 WHERE id = ?1").bind(row.id).run();
+  }
+  return { bookings: stale.length, photos };
 }
 
 /* ---- Whole-database snapshot ----
@@ -1518,6 +1585,43 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
     return handleJotformSubmission(request, env, json);
   }
 
+  // Personal share links. Every customer gets one permanent link; when someone
+  // books through it the booking is tagged so Woody knows who shared it.
+  const shareResolveMatch = path.match(/^\/customer\/share\/([A-Za-z0-9]{16,})$/);
+  if (shareResolveMatch && request.method === "GET") {
+    const row = await env.CUSTOMER_DB.prepare(
+      "SELECT first_name FROM customers WHERE share_token = ?1"
+    ).bind(shareResolveMatch[1]).first();
+    if (!row || !row.first_name) return json(request, { error: "Link not found" }, 404);
+    return json(request, { ok: true, firstName: row.first_name });
+  }
+
+  if (path === "/customer/share" && request.method === "GET") {
+    const session = await sessionFor(request, env, "customer");
+    if (!session?.customer_id) return json(request, { error: "Sign in required" }, 401);
+    let row = await env.CUSTOMER_DB.prepare(
+      "SELECT share_token, first_name FROM customers WHERE id = ?1"
+    ).bind(session.customer_id).first();
+    if (!row) return json(request, { error: "Customer not found" }, 404);
+    if (!row.share_token) {
+      const token = crypto.randomUUID().replace(/-/g, "");
+      // The unique index plus this guard keeps two devices from minting twice;
+      // a lost race simply re-reads whichever token won.
+      await env.CUSTOMER_DB.prepare(
+        "UPDATE customers SET share_token = ?1 WHERE id = ?2 AND share_token IS NULL"
+      ).bind(token, session.customer_id).run();
+      row = await env.CUSTOMER_DB.prepare(
+        "SELECT share_token, first_name FROM customers WHERE id = ?1"
+      ).bind(session.customer_id).first();
+    }
+    return json(request, {
+      ok: true,
+      token: row.share_token,
+      url: `${CUSTOMER_ACCOUNT_URL}?ref=${row.share_token}`,
+      firstName: row.first_name || ""
+    });
+  }
+
   if (path === "/customer/profile-invite" && request.method === "POST") {
     // Only Woody can mint a private profile link, so nobody else can seed
     // details or pickup history against a customer's email address.
@@ -1679,7 +1783,7 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
     const address = email(body.email);
     const code = clean(body.code, 6);
     if (!EMAIL_RE.test(address) || !/^\d{6}$/.test(code)) return json(request, { error: "Enter the 6-digit code" }, 400);
-    const verified = await verifyCode(env, address, "customer", code);
+    const verified = await verifyCode(env, address, "customer", code, clean(body.refToken, 64));
     if (!verified) return json(request, { error: "That code is incorrect or has expired" }, 401);
     await applyShareReferralToCustomer(env, body.refToken, verified.customerId);
     await env.CUSTOMER_DB.prepare(
@@ -2706,6 +2810,11 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
         return json(request, { error: "Choose at least one item from the list" }, 400);
       }
       const price = calculate(items, selectedAddress.ruralOption);
+      // A booking made through someone's share link is tagged with their name,
+      // overriding the booker's own "how did you find us" answer for this job.
+      const sharer = await sharerFromToken(env, body.refToken);
+      const referralSource = sharer ? "Word of mouth" : profile.referral_source;
+      const referralDetails = sharer ? `Shared by ${sharer.name}` : profile.referral_details;
       const createdAt = now();
       const bookingId = `WEB-${createdAt}-${randomToken(6)}`;
       const additionalInfo = clean(body.additionalInfo || selectedAddress.accessNotes, 1500);
@@ -2760,11 +2869,17 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
         subject: "Whiteware Collection",
         text: customerConfirmationText(pickupProfile, items, additionalInfo, price)
       }).catch(() => false);
+      // Old profiles saved before the street-number check can still be
+      // numberless — flag those in the alert so they get fixed at the source.
+      let ownerAlertText = ownerNotificationText(pickupProfile, items, additionalInfo, price, bookingId);
+      if (!/\d/.test(String(pickupProfile.street_address || ""))) {
+        ownerAlertText += "\n\n⚠ This one has NO street number — worth a quick text to them before it goes on a run.";
+      }
       const ownerEmailed = await sendMail(env, {
         to: OWNER_EMAIL,
         name: "Woody",
         subject: `Re: Whiteware collection form - ${profile.first_name} ${profile.last_name}`.trim(),
-        text: ownerNotificationText(pickupProfile, items, additionalInfo, price, bookingId)
+        text: ownerAlertText
       }).catch(() => false);
       // Never tell a customer we emailed them when we did not. The booking is
       // already saved, so record the failure instead of losing it silently.
@@ -2917,7 +3032,7 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
     // email stays put since bookings, invites and sign-in are all matched on it.
     if (customerMatch && request.method === "PUT") {
       const customerId = decodeURIComponent(customerMatch[1]);
-      const existing = await env.CUSTOMER_DB.prepare("SELECT id FROM customers WHERE id = ?1").bind(customerId).first();
+      const existing = await env.CUSTOMER_DB.prepare("SELECT id, rural_option FROM customers WHERE id = ?1").bind(customerId).first();
       if (!existing) return json(request, { error: "Customer not found" }, 404);
       let body = {};
       try { body = await request.json(); } catch { /* handled below */ }
@@ -2928,13 +3043,21 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
       const town = clean(body.town, 100);
       const area = clean(body.area, 100);
       const accessNotes = clean(body.accessNotes, 1000);
+      // Travel fee choice - same four options the booking forms use. Left out or
+      // blank keeps whatever was there before.
+      const ruralOption = body.ruralOption == null
+        ? (existing.rural_option || "")
+        : clean(body.ruralOption, 120);
+      if (ruralOption && !Object.hasOwn(RURAL_PRICES, ruralOption)) {
+        return json(request, { error: "Choose a valid pickup area" }, 400);
+      }
       // Plenty of customers only ever give a first name, so one name is enough —
       // rejecting the whole save over a missing surname just lost the edit.
       if (!firstName && !lastName) return json(request, { error: "Enter at least a first name" }, 400);
       await env.CUSTOMER_DB.prepare(
         `UPDATE customers SET first_name=?1, last_name=?2, phone=?3, street_address=?4, town=?5,
-          area=?6, access_notes=?7, updated_at=?8 WHERE id=?9`
-      ).bind(firstName, lastName, phone, streetAddress, town, area, accessNotes, now(), customerId).run();
+          area=?6, access_notes=?7, rural_option=?8, updated_at=?9 WHERE id=?10`
+      ).bind(firstName, lastName, phone, streetAddress, town, area, accessNotes, ruralOption, now(), customerId).run();
       const row = await env.CUSTOMER_DB.prepare(
         `SELECT c.*,
            ((SELECT COUNT(*) FROM bookings b WHERE b.customer_id = c.id) +
@@ -3207,8 +3330,12 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
       const jotform = bookingId.startsWith("JOTFORM-");
       const pickupRun = bookingId.startsWith("PICKUP-");
       const table = jotform ? "jotform_bookings" : pickupRun ? "external_bookings" : "bookings";
-      const existing = await env.CUSTOMER_DB.prepare(`SELECT id FROM ${table} WHERE id = ?1`).bind(bookingId).first();
+      const existing = await env.CUSTOMER_DB.prepare(`SELECT id, photo_count FROM ${table} WHERE id = ?1`).bind(bookingId).first();
       if (!existing) return json(request, { error: "Booking not found" }, 404);
+      // Deleting the job deletes its photos too - no orphaned images left behind.
+      if (!jotform && !pickupRun && Number(existing.photo_count || 0) > 0) {
+        await clearPhotos(env, bookingId, existing.photo_count);
+      }
       // A permanent delete must not leave its invoice behind to make the same job
       // reappear as owing after a refresh. Remove the stored PDF too when there is
       // one; an R2 hiccup should not stop the database deletion succeeding.
@@ -3272,6 +3399,11 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
       const streetAddress = keep(body.streetAddress, "street_address", 180);
       const town = keep(body.town, "town", 100);
       const area = keep(body.area, "area", 100);
+      // Same four travel-fee options as the booking forms; anything already on
+      // the row (older wording included) stays put unless a new value is sent.
+      const ruralOption = body.ruralOption == null
+        ? (existing.rural_option || "")
+        : clean(body.ruralOption, 120);
       const additionalInfo = keep(body.additionalInfo, "additional_info", 1500);
       let itemsJson = existing.items_json || "[]";
       let totalCents = Number(existing.total_cents || 0);
@@ -3282,7 +3414,7 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
         // Only re-price when every item is one of ours - a hand-typed item has no
         // price we can look up, so the existing total is left alone.
         if (items.length && items.every(item => Object.hasOwn(ITEM_PRICES, item))) {
-          const priced = calculate(items, existing.rural_option || "");
+          const priced = calculate(items, ruralOption);
           totalCents = priced.cents;
           quoteRequired = priced.quoteRequired ? 1 : 0;
         }
@@ -3292,13 +3424,50 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
         `UPDATE ${table} SET status=?1, pickup_date=?2, pickup_window=?3, customer_note=?4,
           quote_cents=?7, quote_note=?8, quoted_at=?9,
           first_name=?10, last_name=?11, phone=?12, email=?13, street_address=?14, town=?15,
-          area=?16, additional_info=?17, items_json=?18, total_cents=?19, quote_required=?20,
+          area=?16, rural_option=?21, additional_info=?17, items_json=?18, total_cents=?19, quote_required=?20,
           updated_at=?5${jotform || pickupRun ? ", completed_at = CASE WHEN ?1='COMPLETED' THEN COALESCE(completed_at, ?5) ELSE NULL END" : ""}
          WHERE id=?6`
       ).bind(status, pickupDate, pickupWindow, customerNote, updatedAt, bookingId, quoteCents, quoteNote, quotedAt,
         firstName, lastName, phone, address, streetAddress, town, area, additionalInfo, itemsJson,
-        totalCents, quoteRequired).run();
+        totalCents, quoteRequired, ruralOption).run();
       if (!result.meta || !result.meta.changes) return json(request, { error: "Booking not found" }, 404);
+      // Fixing someone's details on one of their bookings should fix it
+      // everywhere: push contact/address/travel changes back onto the customer
+      // record (and their default saved address) so nothing has to be edited twice.
+      let customerSynced = false;
+      if (existing.customer_id) {
+        const syncColumns = [
+          ["first_name", firstName],
+          ["last_name", lastName],
+          ["phone", phone],
+          ["street_address", streetAddress],
+          ["town", town],
+          ["area", area],
+          ["rural_option", ruralOption]
+        ].filter(([column, value]) => String(existing[column] || "") !== String(value));
+        if (syncColumns.length) {
+          const statements = [
+            env.CUSTOMER_DB.prepare(
+              `UPDATE customers SET ${syncColumns.map((_, index) => `${syncColumns[index][0]}=?${index + 1}`).join(", ")}, updated_at=?${syncColumns.length + 1} WHERE id=?${syncColumns.length + 2}`
+            ).bind(...syncColumns.map(([, value]) => value), now(), existing.customer_id)
+          ];
+          const addressChanged = syncColumns.some(([column]) =>
+            ["street_address", "town", "area", "rural_option"].includes(column));
+          if (addressChanged) {
+            const addressValues = [
+              syncColumns.find(([column]) => column === "street_address")?.[1] ?? existing.street_address ?? "",
+              syncColumns.find(([column]) => column === "town")?.[1] ?? existing.town ?? "",
+              syncColumns.find(([column]) => column === "area")?.[1] ?? existing.area ?? "",
+              syncColumns.find(([column]) => column === "rural_option")?.[1] ?? existing.rural_option ?? ""
+            ];
+            statements.push(env.CUSTOMER_DB.prepare(
+              "UPDATE customer_addresses SET street_address=?1, town=?2, area=?3, rural_option=?4 WHERE customer_id=?5 AND is_default=1"
+            ).bind(...addressValues, existing.customer_id));
+          }
+          await env.CUSTOMER_DB.batch(statements);
+          customerSynced = true;
+        }
+      }
       if (!jotform && !pickupRun) {
         await env.CUSTOMER_DB.prepare(
           "INSERT INTO booking_events (id, booking_id, event_type, detail, created_at) VALUES (?1, ?2, 'STATUS', ?3, ?4)"
@@ -3326,7 +3495,7 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
         });
       }
       updated.booking_source = jotform ? "JOTFORM" : pickupRun ? "PICKUP_RUN" : "WEBSITE";
-      return json(request, { ok: true, booking: bookingFrom(updated), quoteEmailed });
+      return json(request, { ok: true, booking: bookingFrom(updated), quoteEmailed, customerSynced });
     }
   }
 

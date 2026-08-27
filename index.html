@@ -525,7 +525,7 @@
   <section class="view-panel view-customers" id="customerProfiles">
     <div class="view-title direct-head">
       <span>Customers</span>
-      <span><button class="ghost sm" id="customersRefresh">Refresh</button></span>
+      <span><button class="ghost sm" id="addContactBtn">＋ Add contact</button> <button class="ghost sm" id="customersRefresh">Refresh</button></span>
     </div>
     <div class="list-toolbar" id="customerToolbar" style="display:none">
       <input id="customerSearch" class="grow" placeholder="Search name, town, address, email or phone" />
@@ -533,6 +533,8 @@
         <button class="ghost sm" data-customer-view="list">List</button>
         <button class="ghost sm" data-customer-view="full">Full</button>
       </span>
+      <!-- Only appears when there are actually blanks to fill. -->
+      <button class="ghost sm" id="customerFillBlanks" style="display:none"></button>
     </div>
     <div id="customerStatus" class="small muted"></div>
     <div id="customerList"></div>
@@ -578,11 +580,11 @@
     <details id="backupBox">
       <summary>My runs on other phones <span class="chev">›</span></summary>
       <div style="padding-top:10px">
+        <!-- This used to be five buttons and four paragraphs. Saving happens on
+             its own, so only Restore earns a place on screen; the rest are still
+             here, one tap further in. -->
         <p class="small muted" style="margin:0 0 10px">
-          While you're signed in this happens on its own. Your runs save up to your account a few
-          seconds after every change, and any phone you open the app on pulls the latest copy down.
-          Sign in on a new phone and your runs come with you — the buttons below are only for when
-          you want to force it.
+          Your runs save to your account on their own and follow you to any phone you sign in on.
         </p>
         <div id="cloudBackup" class="confirmed-day" style="margin:0 0 10px">
           <span id="cloudBackupState">Checking your saved copy…</span>
@@ -591,30 +593,22 @@
           <button class="warn grow" id="cloudSignIn">🔑 Sign in so this can save</button>
         </div>
         <div class="row">
-          <button class="good grow" id="cloudSaveNow">☁ Save to my account now</button>
           <button class="ghost grow" id="cloudRestore">↺ Restore from my account</button>
         </div>
-        <p class="small muted" style="margin:6px 0 0">
-          Save now pushes this phone up straight away instead of waiting. Restore pulls the account
-          copy down and replaces what's on this phone. Nothing on this phone is ever replaced on its
-          own — the phone you're holding always wins, and only Restore brings the account copy down.
-        </p>
-        <p class="small muted" style="margin:12px 0 6px">
-          Or keep a copy as a file on your phone, no sign-in needed. Save writes a
-          naki-pickup-backup file to your downloads; Restore reads one of those files back in.
-        </p>
-        <div class="row">
-          <button class="ghost grow" id="backupSave">⬇ Save a backup file</button>
-          <button class="ghost grow" id="backupLoad">⬆ Restore from file</button>
-        </div>
-        <p class="small muted" style="margin:12px 0 6px">
-          Your customers, bookings, quotes and receipts are already kept on the server, not on this
-          phone, and a copy of the whole lot is filed away every night. This button hands you your
-          own copy of everything.
-        </p>
-        <div class="row">
-          <button class="ghost grow" id="exportEverything">⬇ Download all customers &amp; bookings</button>
-        </div>
+        <p class="small muted" style="margin:6px 0 0">Replaces what's on this phone with the account copy.</p>
+        <details style="margin-top:12px">
+          <summary class="small muted">More backup options <span class="chev">›</span></summary>
+          <div class="row" style="margin-top:8px">
+            <button class="ghost grow" id="cloudSaveNow">☁ Save to my account now</button>
+          </div>
+          <div class="row" style="margin-top:8px">
+            <button class="ghost grow" id="backupSave">⬇ Save a backup file</button>
+            <button class="ghost grow" id="backupLoad">⬆ Restore from file</button>
+          </div>
+          <div class="row" style="margin-top:8px">
+            <button class="ghost grow" id="exportEverything">⬇ Download all customers &amp; bookings</button>
+          </div>
+        </details>
         <input type="file" id="backupFile" accept="application/json,.json" style="display:none" />
         <div id="backupStatus" class="small muted" style="margin-top:8px"></div>
       </div>
@@ -716,7 +710,7 @@
 const NP = { lat: -39.0556, lng: 174.0752 };          // New Plymouth default centre
 const LS = "naki_route_v1";                            // old single-run key (kept as a safety backup)
 const RUNS_LS = "naki_pickup_runs_v1";                 // named runs + shared unpaid ledger
-const GEO = "naki_geocache_v2";                        // address -> {lat,lng,label} cache (v1 dropped: it held wrong-town matches)
+const GEO = "naki_geocache_v3";                        // address -> {lat,lng,label} cache (v2 dropped: street-level matches were saved with labels that lost the house number)
 const UA  = "NakiPickupRun/1.0 (whiteware pickup route planner; nakiwreckremoval@gmail.com)";
 const API = "https://naki-route-api.nakiwreckremoval.workers.dev/v2";
 const OWNER_TOKEN_KEY = "naki_owner_token_v1";
@@ -807,9 +801,12 @@ function cleanRunData(raw, sharedUnpaid){
   const s = raw && Array.isArray(raw.stops) ? raw : emptyRunData();
   if (!Array.isArray(s.bad)) s.bad = [];
   const oldUnpaid = Array.isArray(s.unpaid) ? s.unpaid : [];
-  const owe = s.stops.filter(x => x.invoiceSent && !x.paid);
+  // An invoice raised BEFORE the pickup keeps its stop on the run — the money is
+  // tracked in the unpaid ledger, but the gear still has to be collected. Only
+  // invoiced work that was actually picked up moves out of the run.
+  const owe = s.stops.filter(x => x.invoiceSent && !x.paid && x.invoiceStage !== "before");
   owe.forEach(x => { x.status = "DONE"; });
-  s.stops = s.stops.filter(x => !(x.invoiceSent && !x.paid));
+  s.stops = s.stops.filter(x => !owe.includes(x));
   oldUnpaid.concat(owe).forEach(x=>{
     if (!sharedUnpaid.some(existing=>existing.id===x.id)) sharedUnpaid.push(x);
   });
@@ -908,7 +905,56 @@ function rememberBookingInvoice(bookingId, meta){
 function allRunStates(){
   return runStore.runs.map(run=>run.id===runStore.activeRunId ? state : run.data);
 }
-// Buttons on unpaid-ledger cards reuse the stop handlers, so look both places.
+// Two ledger rows for the same pickup (same booking id or same email+street)
+// used to show the same person twice under one town — e.g. Kyler Palmer under
+// Owen once as BILLED EARLY and once as NOT PICKED UP YET. Collapse them to the
+// most recent row so Bookings shows one card again.
+function dedupeUnpaidLedger(){
+  const list=state.unpaid||[];
+  if (list.length<2) return false;
+  const seen=new Map();
+  const keep=[];
+  let dropped=false;
+  for (const stop of list){
+    let key="";
+    const sub=String(stop.submission_id||"").trim();
+    if (/^(?:WEB|JOTFORM|PICKUP)-[A-Z0-9_-]{6,}$/i.test(sub) || /^\d{6,}$/.test(sub)){
+      key="id:"+normKey(sub);
+    }else{
+      const email=String(stop.email||"").trim().toLowerCase();
+      const street=normKey(stop.street||"");
+      if (!email || !street) { keep.push(stop); continue; }
+      const town=townKey(stop.town||"");
+      key="addr:"+email+"|"+street+"|"+town;
+    }
+    if (seen.has(key)){
+      const prev=seen.get(key);
+      // Keep the fresher row (later invoicedAt or larger id). A newer
+      // NOT-PICKED-UP row should not hide an older PICKED-UP one that is
+      // already settled — prefer the picked-up state when times are close.
+      const prevTime=prev.invoicedAt ? Date.parse(prev.invoicedAt+"T12:00:00")||0 : Number(String(prev.id).slice(1))||0;
+      const curTime=stop.invoicedAt ? Date.parse(stop.invoicedAt+"T12:00:00")||0 : Number(String(stop.id).slice(1))||0;
+      const prevPicked=isCollected(prev);
+      const curPicked=isCollected(stop);
+      let winner=prev, loser=stop;
+      if (curTime>prevTime || (curPicked && !prevPicked)) { winner=stop; loser=prev; }
+      const idx=keep.indexOf(loser);
+      if (idx>=0) keep.splice(idx,1);
+      if (seen.get(key)===loser) seen.set(key,winner);
+      if (!keep.includes(winner)) keep.push(winner);
+      dropped=true;
+    }else{
+      seen.set(key,stop);
+      keep.push(stop);
+    }
+  }
+  if (dropped){
+    state.unpaid=keep;
+    save();
+  }
+  return dropped;
+}
+ // Buttons on unpaid-ledger cards reuse the stop handlers, so look both places.
 function findStop(id){ return state.stops.find(x => x.id === id) || (state.unpaid||[]).find(x => x.id === id); }
 function saveGeo(){ saveJSON(GEO, geocache); }
 
@@ -1231,26 +1277,65 @@ function matchesSearch(row, text){
 function tidyTown(value){
   return String(value==null?"":value).replace(/[\u200B-\u200D\uFEFF]/g,"").replace(/\s+/g," ").trim();
 }
+// Suburbs and localities that are NOT pickup towns of their own, and the town
+// each one really belongs to. Bell Block, Waitara and Inglewood stay separate on
+// purpose - each has its own place on the run and its own time window.
+// "Westtown" and "Waiwakaio" are the usual misspellings, kept so they group too.
+const TOWN_PARTS = {
+  "new plymouth": [
+    "fitzroy", "westown", "westtown", "highlands park", "merrilands",
+    "vogeltown", "lower vogeltown", "upper vogeltown", "brooklands", "strandon",
+    "moturoa", "spotswood", "lynmouth", "blagdon", "ferndale", "frankleigh park",
+    "hurdon", "marfell", "welbourn", "whalers gate", "kawaroa", "waiwhakaiho",
+    "waiwakaio", "waiwhakaio", "waiwakaiho", "glen avon", "hurworth", "mangorei",
+    "ngamotu", "paritutu", "city centre", "central", "npl", "new plymouth central"
+  ],
+  "hawera": ["hawera south", "tawhiti"],
+  "stratford": ["stratford central"],
+  "waitara": ["waitara east", "waitara west"]
+};
+// The same thing the other way round: suburb -> town it belongs to.
+const TOWN_ALIASES = Object.entries(TOWN_PARTS)
+  .reduce((all,[town,parts])=>{ parts.forEach(part=>{ all[part]=town; }); return all; }, {});
+// Towns that get a group of their own. Longer names first, so "bell block" is
+// spotted before "new plymouth" on a line that happens to name both.
+const PICKUP_TOWNS = [
+  "egmont village", "bell block", "new plymouth", "inglewood", "waitara", "oakura",
+  "okato", "urenui", "lepperton", "tikorangi", "onaero", "motunui", "omata",
+  "hawera", "stratford", "eltham", "opunake", "manaia", "patea", "normanby",
+  "kaponga", "midhirst", "waverley", "rahotu", "toko", "douglas", "ngaere"
+];
+// Proper spelling for a group heading, where plain title case gets it wrong.
+const TOWN_LABELS = {
+  "new plymouth":"New Plymouth", "bell block":"Bell Block", "egmont village":"Egmont Village",
+  "hawera":"H\u0101wera", "opunake":"\u014Cpunake", "patea":"P\u0101tea"
+};
 function townKey(value){
   // Macrons (Hāwera vs Hawera) are the same town typed two ways - strip them for
   // the grouping key only, so messages don't split into duplicate town groups.
   const normal=tidyTown(value).toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"");
-  // These are New Plymouth suburbs, not separate pickup towns.  Keep the
-  // customer's typed address untouched, but group every spelling under the
-  // one useful run label.  "Westtown" is a common spelling of Westown.
-  const newPlymouthSuburbs=new Set([
-    "fitzroy", "westown", "westtown", "highlands park", "merrilands",
-    "vogeltown", "lower vogeltown", "brooklands", "strandon", "moturoa",
-    "spotswood", "lynmouth", "blagdon", "ferndale", "frankleigh park",
-    "hurdon", "marfell", "welbourn", "whalers gate", "kawaroa"
-  ]);
-  if (newPlymouthSuburbs.has(normal) || /\bnew plymouth\b/.test(normal)) return "new plymouth";
-  return normal;
+  // "Inglewood 4330", "Inglewood, Taranaki" and "Inglewood NZ" are one town, not
+  // three separate groups with pickups quietly split between them.
+  const cleaned=normal
+    .replace(/[,/.]+/g," ")
+    .replace(/\b\d{4}\b/g," ")                                             // NZ postcode
+    .replace(/\b(taranaki|new zealand|aotearoa|nz|district|region)\b/g," ")
+    .replace(/\s+/g," ").trim();
+  if (!cleaned) return "";
+  if (TOWN_ALIASES[cleaned]) return TOWN_ALIASES[cleaned];
+  // A town line can name more than one place ("Waiwhakaiho, New Plymouth", or
+  // "Bell Block New Plymouth"). The most specific pickup town is the one that
+  // matters, because that is the one with its own spot on the run.
+  const named=PICKUP_TOWNS.find(town=>new RegExp(`\\b${town}\\b`).test(cleaned));
+  if (named) return named;
+  const part=Object.keys(TOWN_ALIASES).find(suburb=>new RegExp(`\\b${suburb}\\b`).test(cleaned));
+  if (part) return TOWN_ALIASES[part];
+  return cleaned;
 }
 function townLabel(value){
-  if (townKey(value)==="new plymouth") return "New Plymouth";
-  const tidy=tidyTown(value);
-  return tidy ? tidy.replace(/\S+/g,word=>word[0].toUpperCase()+word.slice(1).toLowerCase()) : "No town";
+  const key=townKey(value);
+  if (!key) return "No town";
+  return TOWN_LABELS[key] || key.replace(/\S+/g,word=>word[0].toUpperCase()+word.slice(1).toLowerCase());
 }
 // { key, label, rows }, sorted by label, so one town is always one group.
 function groupByTown(rows){
@@ -1302,11 +1387,29 @@ window.toggleBookingCollected = id => {
   flash(collected ? "✓ Marked as picked up" : "↺ Marked as still to pick up");
 };
 function unpaidStopForBooking(booking){
-  return (state.unpaid||[]).find(stop=>
+  const direct=(state.unpaid||[]).find(stop=>
     stop.submission_id===booking.id ||
     stop.unpaidSourceId===booking.id ||
     (booking.externalKey && historyBookingKey(stop)===booking.externalKey)
-  ) || null;
+  );
+  if (direct) return direct;
+  // Fallback: same email + same street where the phone-side id diverged
+  // (sheet row vs website booking, or an old id that was regenerated). This
+  // is what hid the duplicate Kyler Palmer under Owen: one card was the live
+  // booking, the other was its unpaid ledger twin that no longer shared an id,
+  // so Bookings showed the same person twice — one BILLED EARLY and one NOT
+  // PICKED UP YET.
+  const emailKey=String(booking.email||"").trim().toLowerCase();
+  const streetKey=normKey(booking.streetAddress||"");
+  if (!emailKey || !streetKey) return null;
+  const bookingTown=townKey(booking.town||"");
+  return (state.unpaid||[]).find(stop=>{
+    if (stop.paid) return false;
+    if (String(stop.email||"").trim().toLowerCase()!==emailKey) return false;
+    if (normKey(stop.street||"")!==streetKey) return false;
+    if (bookingTown && stop.town && townKey(stop.town)!==bookingTown) return false;
+    return true;
+  }) || null;
 }
 // Server documents make invoices visible on every signed-in device; the phone's
 // unpaid ledger supplies the live buttons and is authoritative when it says paid.
@@ -1352,7 +1455,7 @@ function renderDirectBookings(){
   const bookingRows=bookingsWithInvoiceState(directBookingRows);
   login.style.display = ownerToken ? "none" : "block";
   logout.style.display = ownerToken ? "inline-block" : "none";
-  const fresh = bookingRows.filter(b=>b.status==="NEW" && !b.invoiceOwing).length;
+  const fresh = bookingRows.filter(b=>stagesOfBooking(b).includes("new")).length;
   const count=$("#bookingCount");
   count.textContent=String(fresh); count.style.display=fresh ? "inline-grid" : "none";
   if (!ownerToken){
@@ -1430,6 +1533,7 @@ function renderDirectBookings(){
       ${b.phone?`<span>📞 <a href="tel:${esc(String(b.phone).replace(/[^\d+]/g,""))}">${phone}</a></span>`:""}
       ${b.email?`<span>✉️ <a href="mailto:${encodeURIComponent(b.email)}">${emailAddr}</a></span>`:""}
     </div>` : "";
+    const noNumberWarn=(!/\d/.test(b.streetAddress||"")) ? `<div class="direct-meta"><span style="color:#ffd08a" title="No street number was given - worth checking before this goes on a run">⚠️ No street number</span></div>` : "";
     const documents=(b.documents||[]).map(document=>{
       const kind=document.kind==="RECEIPT" ? "Receipt" : "Invoice";
       const sent=new Date(document.createdAt).toLocaleDateString("en-NZ",{day:"numeric",month:"short",year:"numeric"});
@@ -1533,6 +1637,7 @@ function renderDirectBookings(){
       ? `<div class="action-group"><h4>${label}</h4><div class="direct-actions">${buttons}</div></div>` : "";
     const body = `<div class="direct-meta"><span>${esc(date)}</span><span class="booking-status${statusClass}">${esc(statusText)}</span>${sync}</div>
       <div>${address}</div>
+      ${noNumberWarn}
       ${contact}
       <div class="direct-items">${items}</div>
       ${b.additionalInfo ? `<div class="small muted">${esc(b.additionalInfo)}</div>` : ""}
@@ -1920,12 +2025,19 @@ async function loadDirectBookings(showLoading=false){
   if (!ownerToken){ renderDirectBookings(); return; }
   if (showLoading) directStatus("Loading bookings…");
   try{
+    // Finished pickups the cloud was never told about go up FIRST, so the list
+    // that comes back already has them sitting under Done.
+    const repushed=await flushExternalBookingSyncs();
     const data=await ownerApi("/owner/bookings");
     directBookingRows=Array.isArray(data.bookings) ? data.bookings : [];
     const repaired=backfillMissingUnpaid(directBookingRows);
+    if (dedupeUnpaidLedger()) render();
     await flushDirectCompletions();
     const { changes, removals }=syncBookingChangesIntoRuns(directBookingRows);
     renderDirectBookings();
+    // Customers borrow their details from these jobs, so redraw them too rather
+    // than leaving the list blank until the next refresh comes round.
+    if (customerRows.length) renderCustomers();
     if (removals.length){
       flash(`✕ ${removals.length} cancelled pickup${removals.length===1?"":"s"} removed from your runs`);
     }else if (changes.length){
@@ -1934,6 +2046,9 @@ async function loadDirectBookings(showLoading=false){
     const notes=[...removals,...changes];
     if (repaired.length){
       notes.push(`Payment buttons put back on ${repaired.length} owing booking${repaired.length===1?"":"s"}: ${repaired.join(", ")}.`);
+    }
+    if (repushed){
+      notes.push(`${repushed} finished pickup${repushed===1?"":"s"} caught up and moved into Done.`);
     }
     if (notes.length) directStatus(notes.join("; "));
   }catch(e){ directStatus(e.message,true); }
@@ -2126,6 +2241,8 @@ $("#ownerCode").addEventListener("keydown",event=>{ if(event.key==="Enter"){even
 $("#ownerLogout").onclick=()=>{ownerToken="";localStorage.removeItem(OWNER_TOKEN_KEY);directBookingRows=[];customerRows=[];renderDirectBookings();renderCustomers();refreshCloudBackupInfo();};
 $("#directRefresh").onclick=()=>loadDirectBookings(true);
 $("#customersRefresh").onclick=()=>loadCustomers(true);
+$("#addContactBtn").onclick=()=>addCustomContact();
+$("#customerFillBlanks").onclick=()=>fillCustomerBlanksFromJobs();
 $("#bookingSearch").addEventListener("input",event=>{ bookingSearchText=event.target.value.trim().toLowerCase(); renderDirectBookings(); });
 $("#customerSearch").addEventListener("input",event=>{ customerSearchText=event.target.value.trim().toLowerCase(); renderCustomers(); });
 // Tapping List also shuts every card that was opened one at a time. Without
@@ -2165,6 +2282,7 @@ async function editDirectBooking(id){
         validate:v=>!goodEmail(v) ? "A valid email is needed - it links the booking to their account." : "" },
       { key:"streetAddress", label:"Street address", value:b.streetAddress },
       { key:"area", label:"Area (optional)", value:b.area },
+      { key:"ruralOption", label:"Pickup area (travel fee)", type:"select", options:TRAVEL_OPTIONS, value:b.ruralOption||"" },
       { key:"items", label:"Items being collected", type:"textarea", value:(b.items||[]).join(", "),
         placeholder:"Fridge or upright freezer, Microwave" },
       // Blank is allowed and means "leave the price alone" - handy for a job
@@ -2190,6 +2308,7 @@ async function editDirectBooking(id){
       status:b.status,
       firstName:result.firstName, lastName:result.lastName, phone:result.phone, email:result.email,
       streetAddress:result.streetAddress, town:result.town, area:result.area,
+      ruralOption:String(result.ruralOption||""),
       additionalInfo:result.additionalInfo, items:splitItems(result.items),
       quoteNote:String(result.quoteNote||"").trim()
     };
@@ -2204,9 +2323,9 @@ async function editDirectBooking(id){
     if (index>=0) syncBookingChangesIntoRuns([directBookingRows[index]]);
     renderDirectBookings();
     directStatus(!priceChanged
-      ? "Booking saved."
+      ? (data.customerSynced ? "Booking saved — their customer details were updated too." : "Booking saved.")
       : !notify
-      ? `Saved. Price for ${who} is now $${amount.toFixed(2)}.`
+      ? `Saved. Price for ${who} is now $${amount.toFixed(2)}.${data.customerSynced?" Their customer details were updated too.":""}`
       : data.quoteEmailed===false
       ? "Saved, but the price email did not send — tell them another way."
       : `Saved and the price was sent to ${who}.`);
@@ -2342,36 +2461,86 @@ function customerDocumentBox(c){
     <div class="customer-doc-rows">${rows}</div>
   </details>`;
 }
+// A customer record is created blank the first time their email is seen, and
+// only fills itself in if they go and set up an account on the website. Their
+// name, phone and address have been sitting on their jobs the whole time - so
+// anything still blank on the customer is taken from their most recent job.
+// Without this, people with several pickups showed up under "No town" with no
+// details at all, even though every one of their jobs had the lot.
+function detailsByEmail(){
+  const byEmail=new Map();
+  const remember=(email,details,when)=>{
+    const key=String(email||"").trim().toLowerCase();
+    if (!key) return;
+    const held=byEmail.get(key);
+    if (held && held.when >= when) return;
+    byEmail.set(key,{ ...details, when });
+  };
+  // Their jobs on the account come first - that is what Woody is looking at.
+  directBookingRows.forEach(b=>remember(b.email,{
+    firstName:b.firstName, lastName:b.lastName, phone:b.phone,
+    streetAddress:b.streetAddress, town:b.town, area:b.area, accessNotes:b.additionalInfo
+  }, Number(new Date(b.createdAt||0))||0));
+  // Then pickups saved on this phone, which covers jobs added by hand.
+  allRunStates().flatMap(data=>(data.stops||[]).concat(data.bad||[]))
+    .concat(runStore.shared?.unpaid||[])
+    .forEach(s=>remember(s.email,{
+      firstName:s.first_name, lastName:s.last_name, phone:s.phone,
+      streetAddress:s.street, town:s.town, area:s.area, accessNotes:s.additional_info||s.note
+    }, Number(s.historyCreatedAt||s.createdAt||0)||0));
+  return byEmail;
+}
+function customerWithJobDetails(customer, byEmail){
+  const found=byEmail.get(String(customer.email||"").trim().toLowerCase());
+  if (!found) return customer;
+  const fill=(mine,theirs)=>String(mine==null?"":mine).trim() ? mine : (theirs||"");
+  return {
+    ...customer,
+    firstName:fill(customer.firstName,found.firstName),
+    lastName:fill(customer.lastName,found.lastName),
+    phone:fill(customer.phone,found.phone),
+    streetAddress:fill(customer.streetAddress,found.streetAddress),
+    town:fill(customer.town,found.town),
+    area:fill(customer.area,found.area),
+    accessNotes:fill(customer.accessNotes,found.accessNotes)
+  };
+}
 function renderCustomers(){
   const list=$("#customerList"); if(!list) return;
-  if (!ownerToken){
+  // Own contacts ride alongside server customers everywhere below.
+  const allCustomers=customerRows.concat(customContactRows());
+  if (!ownerToken && !allCustomers.length){
     // Telling someone to go and find another tab is a dead end - hand them the
     // button instead. Sign-in lives on Bookings because that's where the card is.
     customerStatus("");
     list.innerHTML=`<div class="card"><b>Sign in to see your customers.</b>
-      <p class="small muted">The same owner sign-in covers bookings and customers.</p>
+      <p class="small muted">The same owner sign-in covers bookings and customers. Or tap ＋ Add contact to save someone by hand.</p>
       <button id="customerSignInJump" style="width:100%;margin-top:10px">Go to sign-in</button></div>`;
     $("#customerSignInJump").onclick=()=>setAppView("bookings");
     return;
   }
-  const toolbar=$("#customerToolbar"); if (toolbar) toolbar.style.display=customerRows.length ? "flex" : "none";
+  const toolbar=$("#customerToolbar"); if (toolbar) toolbar.style.display=allCustomers.length ? "flex" : "none";
   // Same rule as the bookings list: a box with something typed in it has to stay
   // on screen, or a short list hides the only way to clear the search.
   const search=$("#customerSearch");
-  if (search) search.style.display=(customerRows.length>5 || customerSearchText) ? "block" : "none";
+  if (search) search.style.display=(allCustomers.length>5 || customerSearchText) ? "block" : "none";
   document.querySelectorAll("[data-customer-view]").forEach(button=>{
     const selected=(button.dataset.customerView==="list")===customerCompact;
     button.classList.toggle("on",selected); button.setAttribute("aria-pressed",String(selected));
   });
-  if (!customerRows.length){
+  if (!allCustomers.length){
     list.innerHTML='<div class="card"><b>No customers yet.</b><p class="small muted">People who book through your website will appear here.</p></div>';
     customerStatus("");
     return;
   }
-  const visibleCustomers=customerRows.filter(c=>matchesSearch(c,customerSearchText));
+  // Filled in from their jobs first, so the search and the town groups both work
+  // off the same details the cards show.
+  const byEmail=detailsByEmail();
+  const filledCustomers=allCustomers.map(c=>c.custom ? c : customerWithJobDetails(c,byEmail));
+  const visibleCustomers=filledCustomers.filter(c=>matchesSearch(c,customerSearchText));
   if (!visibleCustomers.length){
     list.innerHTML='<div class="card"><b>Nothing matches that search.</b></div>';
-    customerStatus(`0 of ${customerRows.length} customers.`);
+    customerStatus(`0 of ${allCustomers.length} customers.`);
     return;
   }
   list.innerHTML = groupByTown(visibleCustomers).map((group,groupIndex)=>{
@@ -2394,6 +2563,9 @@ function renderCustomers(){
       const newBadge=c.isNew?`<span class="new-customer-badge" title="New customer — opening this card clears the sign">New</span>`:"";
       const seenAction=c.isNew?`<button class="ghost sm" data-customer-seen="${esc(c.id)}">✓ Mark as seen</button>`:"";
       const body=`<div>${address}</div>
+        ${(!/\d/.test(c.streetAddress||""))?`<div class="direct-meta"><span style="color:#ffd08a" title="No street number was given - worth checking before this goes on a run">⚠️ No street number</span></div>`:""}
+        ${c.custom?`<div class="direct-meta"><span title="Saved by hand on this phone">👤 My contact</span></div>`:""}
+        ${c.ruralOption?`<div class="direct-meta"><span title="Pickup area travel fee">🚗 ${esc(travelLabel(c.ruralOption))}</span></div>`:""}
         ${contact}
         ${last?`<div class="direct-meta"><span>Last booking: ${esc(last)}</span></div>`:""}
         ${appBadge}
@@ -2430,8 +2602,14 @@ function renderCustomers(){
     }).join("");
     return `<details class="town-group"${customerSearchText||groupIndex===0?" open":""}><summary>📍 ${esc(group.label)} (${group.rows.length})<span class="chev">›</span></summary>${cards}</details>`;
   }).join("");
-  list.querySelectorAll("[data-delete-customer]").forEach(button=>button.onclick=()=>deleteCustomer(button.dataset.deleteCustomer));
-  list.querySelectorAll("[data-edit-customer]").forEach(button=>button.onclick=()=>editCustomer(button.dataset.editCustomer));
+  list.querySelectorAll("[data-delete-customer]").forEach(button=>button.onclick=()=>{
+    const id=button.dataset.deleteCustomer;
+    id.startsWith("CONTACT-") ? deleteCustomContact(id) : deleteCustomer(id);
+  });
+  list.querySelectorAll("[data-edit-customer]").forEach(button=>button.onclick=()=>{
+    const id=button.dataset.editCustomer;
+    id.startsWith("CONTACT-") ? editCustomContact(id) : editCustomer(id);
+  });
   list.querySelectorAll("[data-customer-seen]").forEach(button=>button.onclick=()=>markCustomerSeen(button.dataset.customerSeen));
   rememberOpenCards(list,"details[data-customer-id]",customerCardsOpen,"data-customer-id");
   rememberOpenCards(list,"details[data-customer-docs]",customerDocsOpen,"data-customer-docs");
@@ -2452,6 +2630,7 @@ function renderCustomers(){
     renderDirectBookings();
   });
   restoreTownGroups(list,customerGroupOpen,"naki_customer_group_open_v1",Boolean(customerSearchText));
+  paintCustomerFillButton();
   const installedCount=customerRows.filter(c=>c.pwaInstalledAt).length;
   const installedNote=installedCount?` · 📲 ${installedCount} have the app`:"";
   customerStatus(customerSearchText
@@ -2469,8 +2648,54 @@ async function deleteCustomer(id){
     flash(`✓ ${name} deleted`);
   }catch(e){ customerStatus(e.message,true); }
 }
+// Which customers are only showing details because their jobs supplied them.
+// These are the ones worth writing back, so the record itself is right and not
+// just the screen.
+function customersMissingDetails(){
+  const byEmail=detailsByEmail();
+  return customerRows
+    .map(c=>({ saved:c, filled:customerWithJobDetails(c,byEmail) }))
+    .filter(({saved,filled})=>["firstName","lastName","phone","streetAddress","town","area","accessNotes"]
+      .some(field=>!String(saved[field]||"").trim() && String(filled[field]||"").trim()));
+}
+function paintCustomerFillButton(){
+  const button=$("#customerFillBlanks"); if(!button) return;
+  const count=customersMissingDetails().length;
+  button.style.display=count ? "inline-block" : "none";
+  button.textContent=`✎ Fill in ${count} from their jobs`;
+  button.title="Saves the name, phone and address off their jobs onto the customer record itself";
+}
+let fillBlanksBusy=false;
+async function fillCustomerBlanksFromJobs(){
+  if (fillBlanksBusy) return;
+  const pending=customersMissingDetails();
+  if (!pending.length) return;
+  if (!confirm(`Copy the details off their jobs onto ${pending.length} customer${pending.length===1?"":"s"}?\n\n`
+    + `Only blanks get filled — nothing already saved is changed.`)) return;
+  fillBlanksBusy=true;
+  let saved=0, failed=0;
+  try{
+    for (const {saved:record,filled} of pending){
+      customerStatus(`Saving ${saved+failed+1} of ${pending.length}…`);
+      const body={ firstName:filled.firstName, lastName:filled.lastName, phone:filled.phone,
+        streetAddress:filled.streetAddress, town:filled.town, area:filled.area,
+        accessNotes:filled.accessNotes||"" };
+      try{
+        const data=await ownerApi(`/owner/customers/${encodeURIComponent(record.id)}`,{method:"PUT",body:JSON.stringify(body)});
+        customerRows=customerRows.map(row=>row.id===record.id ? {...row,...data.customer} : row);
+        saved++;
+      }catch(e){ failed++; }
+    }
+  }finally{
+    fillBlanksBusy=false;
+    renderCustomers();
+    customerStatus(failed ? `Saved ${saved}, ${failed} wouldn't save.` : `✓ ${saved} customer${saved===1?"":"s"} filled in.`, Boolean(failed));
+  }
+}
 async function editCustomer(id){
-  const c=customerRows.find(row=>row.id===id); if(!c) return;
+  // Prefilled with whatever their jobs know, so one tap of Save makes it stick.
+  const record=customerRows.find(row=>row.id===id); if(!record) return;
+  const c=customerWithJobDetails(record,detailsByEmail());
   const result = await openEditForm({
     title:"✎ Edit customer",
     note:"Email can't be changed here — it's how they sign in and how bookings are matched to them.",
@@ -2482,6 +2707,7 @@ async function editCustomer(id){
       { key:"streetAddress", label:"Street address", value:c.streetAddress },
       { key:"town", label:"Town", value:c.town, half:true },
       { key:"area", label:"Area", value:c.area, half:true },
+      { key:"ruralOption", label:"Pickup area (travel fee)", type:"select", options:TRAVEL_OPTIONS, value:c.ruralOption||"" },
       { key:"accessNotes", label:"Access notes", type:"textarea", rows:2, value:c.accessNotes||"" }
     ]
   });
@@ -2497,6 +2723,72 @@ async function editCustomer(id){
     customerStatus(e.message,true);
     alert(`That didn't save.\n\n${e.message}`);
   }
+}
+/* ---------- Own contacts: people worth reaching who never booked online ---------- */
+/* Saved on this phone only — bookings come from the server, these don't. */
+const CONTACTS_LS = "naki_custom_contacts_v1";
+let customContacts = loadJSON(CONTACTS_LS, []);
+if (!Array.isArray(customContacts)) customContacts = [];
+function saveCustomContacts(){ saveJSON(CONTACTS_LS, customContacts); }
+// Same shape the server's customer rows use, so one renderer handles both.
+function customContactRows(){
+  return customContacts.map(c=>({
+    id:c.id, firstName:c.firstName||"", lastName:c.lastName||"", phone:c.phone||"", email:"",
+    streetAddress:c.streetAddress||"", town:c.town||"", area:c.area||"",
+    ruralOption:"", accessNotes:c.accessNotes||"",
+    bookings:0, lastBookingAt:"", isNew:false, pwaInstalledAt:"",
+    documents:[], sheetSyncStatus:"", source:"CONTACT", custom:true
+  }));
+}
+async function addCustomContact(){
+  const result = await openEditForm({
+    title:"➕ Add contact",
+    note:"Saved on this phone for quick call / text / navigate. Handy for regular pickups that never came through a booking.",
+    saveLabel:"Save contact",
+    fields:[
+      { key:"firstName", label:"First name", half:true },
+      { key:"lastName",  label:"Last name",  half:true },
+      { key:"phone", label:"Phone", type:"tel", inputmode:"tel",
+        validate:v=>v.trim()?"":"A phone number is the one thing worth having here." },
+      { key:"streetAddress", label:"Street address" },
+      { key:"town", label:"Town", half:true },
+      { key:"area", label:"Area or suburb", half:true },
+      { key:"accessNotes", label:"Notes (gate code, what they usually have…)", type:"textarea", rows:2 }
+    ]
+  });
+  if (!result) return;
+  customContacts.unshift({ id:`CONTACT-${uid()}`, ...result });
+  saveCustomContacts(); renderCustomers();
+  flash(`✓ ${[result.firstName,result.lastName].filter(Boolean).join(" ")||"Contact"} added to Customers`);
+}
+function editCustomContact(id){
+  const c=customContacts.find(row=>row.id===id); if(!c) return;
+  openEditForm({
+    title:"✎ Edit contact",
+    saveLabel:"Save contact",
+    fields:[
+      { key:"firstName", label:"First name", value:c.firstName||"", half:true },
+      { key:"lastName",  label:"Last name",  value:c.lastName||"",  half:true },
+      { key:"phone", label:"Phone", value:c.phone||"", type:"tel", inputmode:"tel" },
+      { key:"streetAddress", label:"Street address", value:c.streetAddress||"" },
+      { key:"town", label:"Town", value:c.town||"", half:true },
+      { key:"area", label:"Area or suburb", value:c.area||"", half:true },
+      { key:"accessNotes", label:"Notes", type:"textarea", rows:2, value:c.accessNotes||"" }
+    ]
+  }).then(result=>{
+    if (!result) return;
+    customContacts=customContacts.map(row=>row.id===id ? {...row,...result} : row);
+    saveCustomContacts(); renderCustomers();
+    flash("✓ Contact updated");
+  });
+}
+function deleteCustomContact(id){
+  const c=customContacts.find(row=>row.id===id); if(!c) return;
+  const who=[c.firstName,c.lastName].filter(Boolean).join(" ")||"this contact";
+  if (!confirm(`Delete ${who}? This cannot be undone.`)) return;
+  customContacts=customContacts.filter(row=>row.id!==id);
+  saveCustomContacts(); renderCustomers();
+  flash(`${who} deleted`);
 }
 async function loadCustomers(showLoading=false){
   if (!ownerToken){ renderCustomers(); return; }
@@ -2570,7 +2862,13 @@ async function geocode(addr){
   lastGeoMismatch = google.townMismatch;   // the pin is real, it just sits in a different town than typed
   if (google.results.length){
     const top = google.results[0];
-    const hit = { lat:+top.lat, lng:+top.lng, label:top.label || "", mismatch:Boolean(google.townMismatch) };
+    // A street-level answer ("Tawa Street, Inglewood…") for a numbered question
+    // ("2A Tawa Street") is not the address. The rough pin still gets used for
+    // the map and route order, but no label is saved - so Navigate hands Google
+    // Maps the full typed address instead of parking Woody on the wrong street.
+    const want = houseNumberOf(addr);
+    const label = want && !normKey(top.label||"").includes(want) ? "" : (top.label || "");
+    const hit = { lat:+top.lat, lng:+top.lng, label, mismatch:Boolean(google.townMismatch) };
     geocache[key] = hit; saveGeo();
     return hit;
   }
@@ -2583,12 +2881,63 @@ async function geocode(addr){
     const res = await fetch(url, { headers:{ "Accept":"application/json" } });
     const data = await res.json();
     if (data && data.length){
-      const hit = { lat:+data[0].lat, lng:+data[0].lon };
+      // Same house-number rule as the Google path: a street-level OSM answer
+      // keeps its rough pin but never gets saved as the confirmed address.
+      const row = data[0];
+      const osmLabel = String(row.display_name || "").split(",").slice(0, 4).join(",").trim();
+      const want = houseNumberOf(addr);
+      const label = want && !normKey(osmLabel).includes(want) ? "" : osmLabel;
+      const hit = { lat:+row.lat, lng:+row.lon, label };
       geocache[key] = hit; saveGeo();
       return hit;
     }
   }catch(e){ /* network/CORS — treated as a miss below */ }
+  // Last go: "Flat 1, 18 Dixon Ave" is a real address the map has never heard of,
+  // because the map only knows the street number. Drop the flat/unit part and
+  // look the street address up on its own. What the customer typed is untouched -
+  // it still shows on the card and on the paperwork.
+  const simpler = addressWithoutUnit(addr);
+  if (simpler){
+    const hit = await geocode(simpler);
+    if (hit){ geocache[key] = hit; saveGeo(); return hit; }
+  }
   return null;
+}
+// "Flat 1, 18 Dixon Ave" -> "18 Dixon Ave".  "" when there was nothing to drop,
+// which is what stops it looking the same address up twice.
+function addressWithoutUnit(addr){
+  const simpler = String(addr==null?"":addr)
+    .replace(/^\s*(?:flat|unit|apartment|apt|shop|villa|room|rm)\s*\.?\s*\d+\s*[a-z]?\s*(?:[,/\-]\s*|\s+)/i, "")
+    .replace(/^\s*rear\s*(?:of\s+)?[,\-]?\s*/i, "")
+    .replace(/^\s*\d+\s*[a-z]?\s*\/\s*(?=\d)/, "")
+    .trim();
+  return simpler && normKey(simpler) !== normKey(addr) ? simpler : "";
+}
+
+// "2A Tawa Street" -> "2a". "" when there is no house number to check against.
+// Handles flat numbers too ("18/3B Dixon Ave" -> "18/3b"), and unit-first lines
+// ("Flat 1, 18 Dixon Ave") read as no number - their street part is what counts.
+function houseNumberOf(text){
+  const m = String(text==null?"":text).trim().match(/^(?:[a-z]+\.?\s*\d+\s*[,\-]?\s*)?(\d+[a-z]?(?:\s*\/\s*\d+[a-z]?)?)\b/i);
+  return m ? normKey(m[1]) : "";
+}
+// Coordinates from anything that might get pasted: a bare "-39.45, 173.86", or
+// a Google Maps link — @lat,lng from the address bar, !3d..!4d.. from sharing,
+// or q=/ll= in old-style links. Rural customers often text their spot as a
+// Maps link, so this is the fastest rural fix there is.
+function coordsFromText(text){
+  const t = String(text||"");
+  const m = t.match(/@(-?\d{1,2}\.\d+),(-?\d{2,3}\.\d+)/)
+         || t.match(/!3d(-?\d{1,2}\.\d+)!4d(-?\d{2,3}\.\d+)/)
+         || t.match(/[?&](?:q|ll|center)=(-?\d{1,2}\.\d+),\s*(-?\d{2,3}\.\d+)/)
+         || t.match(/^\s*(-?\d{1,2}\.\d+)\s*[, ]\s*(-?\d{2,3}\.\d+)\s*$/);
+  return m ? { lat:+m[1], lng:+m[2] } : null;
+}
+// True when a confirmed address lost the number we asked for — the tell-tale of
+// a street-level match ("2A Tawa Street" answered as plain "Tawa Street").
+function labelDroppedNumber(street, label){
+  const want = houseNumberOf(street);
+  return Boolean(want) && !normKey(label||"").includes(want);
 }
 
 // Save a lookup onto a stop: coords, the address Google actually confirmed, and
@@ -2638,6 +2987,8 @@ async function addAddressLines(lines){
     for (const line of clean){
       busy(`Finding addresses ${++done} of ${clean.length}…`);
       const s = stopFromAddress(line);
+      const pasted = coordsFromText(line);   // a Maps link or coordinates skips the lookup
+      if (pasted){ s.lat=pasted.lat; s.lng=pasted.lng; state.stops.push(s); state.manual=false; save(); render(); continue; }
       const hit = await geocode(fullAddr(s));
       if (hit){ applyGeo(s, hit); state.stops.push(s); }
       else    { state.bad.push(s); }
@@ -2975,7 +3326,9 @@ const ITEM_PRICES = {
   "lawn mower":[2000,1000], "push bike":[1000,1000],
   "bbq (2-4 burners)":[2000,1000], "bbq (5 or more burners)":[3000,2000],
   "gas bottle":[1000,1000], "cast-iron bath":[3000,2000],
-  "flat-screen tv":[2000,1000], "old box tv (crt)":[4500,3500]
+  "flat-screen tv":[2000,1000], "old box tv (crt)":[4500,3500],
+  "small desktop printer":[500,500], "large scanner/printer":[1000,1000],
+  "very large standing scanner/printer":[2000,2000], "heat pump or air conditioner":[2000,1000]
 };
 // The sheet and the older Jotform forms word things differently ("Refrigerator/
 // Upright Freezer", "Washing Machine (Top Loading)"), so match on what it IS
@@ -3009,6 +3362,12 @@ function itemPrice(name){
   if (t.includes("bath")) return [3000,2000];
   if (t.includes("crt") || t.includes("box tv")) return [4500,3500];
   if (t.includes("tv") || t.includes("television")) return [2000,1000];
+  if (t.includes("printer") || t.includes("scanner")) {
+    if (t.includes("very") || t.includes("standing")) return [2000,2000];
+    if (t.includes("large")) return [1000,1000];
+    return [500,500];
+  }
+  if (t.includes("heat pump") || t.includes("air con")) return [2000,1000];
   return null;
 }
 // Travel fee from whatever the form recorded. Over 10 km is a "contact us" job,
@@ -3021,6 +3380,16 @@ function ruralFee(text){
   if (/up to 5|add \$5|\brural\b/.test(t)) return 500;
   return 0;
 }
+// The exact pickup-area strings the booking forms save, so an owner-set travel
+// fee prices identically everywhere. Values are the stored text, labels shortened.
+const TRAVEL_OPTIONS=[
+  { value:"", label:"Not set" },
+  { value:"Main town or main road - no travel fee", label:"Main town or main road - no fee" },
+  { value:"Rural: up to 5 km from a main town or road - add $5", label:"Rural up to 5 km - add $5" },
+  { value:"Outlying route, or rural 6-10 km away - add $10", label:"Outlying route / rural 6-10 km - add $10" },
+  { value:"More than 10 km from a covered town or route - contact us", label:"More than 10 km - quote needed" }
+];
+function travelLabel(text){ return TRAVEL_OPTIONS.find(o=>o.value===text)?.label || String(text||""); }
 // Returns dollars, or null when nothing on the job can be priced.
 function estimateStopPrice(s){
   let extras = 0, uplift = 0, counted = 0;
@@ -3553,9 +3922,16 @@ function renderList(){
     if (!isDone && s.lat!=null) order++;
     const num = isDone ? "✓" : (s.lat!=null ? order : "!");
     const area = s.area||"";
-    const tag = area ? `<span class="areatag" style="background:${AREA_HEX[area]}">${area}</span>` : "";
+    // Sits on the address line, not up by the name: the area is usually part of
+    // finding the place ("Flat 1"), so it belongs where the address is read.
+    // An area that isn't one of the run zones still gets a readable tag.
+    const tag = area ? `<span class="areatag" style="background:${AREA_HEX[area]||AREA_HEX[""]}">${esc(area)}</span>` : "";
     const asap = !!s.priority;
     const asapTag = asap && !isDone ? `<span class="asaptag">ASAP</span>` : "";
+    // No number on a stop means Google and LINZ can only guess at the street —
+    // say so on the card before the truck is rolling.
+    const noNumTag = s.street && !/\d/.test(s.street) && !isDone
+      ? `<span class="asaptag" style="background:var(--warn);color:#16212a" title="This address has no street number">NO NUMBER</span>` : "";
     const invoicedTag = s.unpaidSourceId ? `<span class="asaptag" style="background:#c0392b">INVOICE SENT</span>` : "";
     const apps = (s.appliances||[]).map(a=>`<span class="chip">${esc(a)}</span>`).join("");
     const callFirst = /call|text|phone|ring|txt/i.test(s.additional_info||"");
@@ -3596,9 +3972,9 @@ function renderList(){
         data-id="${s.id}" style="border-left-color:${AREA_COLORS[area]||AREA_COLORS['']}">
       <div class="num">${num}</div>
       <div class="stopbody">
-        <div class="name">${esc(fullName(s)) || esc(fullAddr(s))} ${tag}${asapTag}${invoicedTag}</div>
+        <div class="name">${esc(fullName(s)) || esc(fullAddr(s))} ${asapTag}${noNumTag}${invoicedTag}</div>
         ${phoneLine}
-        <div class="addr">${esc(fullAddr(s))} ${priceTag}</div>
+        <div class="addr">${esc(fullAddr(s))} ${tag} ${priceTag}</div>
         ${navDiffers(s)?`<div class="addr" style="color:#ffd08a">🧭 Navigates to ${esc(s.geoLabel)}</div>`:""}
         ${apps?`<div class="apps">${apps}</div>`:""}
         ${formNote}
@@ -3703,7 +4079,7 @@ window.toggleCollected = id => {
   s.collectedAt = nowCollected ? Date.now() : "";
   if (!nowCollected && s.historyStatus==="COMPLETED") s.historyStatus = "ADDED_TO_RUN";
   if (!s.invoiceStage) s.invoiceStage = nowCollected ? "after" : "before";
-  save(); render();
+  save(); render(); renderDirectBookings();
   flash(nowCollected ? "✓ Marked as picked up" : "↺ Marked as still to pick up");
 };
 // Spell the reminder out either way, so "no reminder" never looks the same as
@@ -3790,8 +4166,21 @@ function historyBookingPayload(s){
     accessNotes:s.additional_info||s.note||""
   };
 }
+// Push a pickup's state up to the customer's booking. Every failure leaves a
+// mark, so flushExternalBookingSyncs() below can try again later: a finished
+// pickup whose one and only attempt failed used to be forgotten, and the
+// booking sat in New or Scheduled forever instead of dropping into Done.
 async function syncExternalBooking(s){
-  if (!s || !s.historySyncToken || !historyBookingKey(s) || !goodEmail(s.email)) return false;
+  if (!s || !historyBookingKey(s) || !goodEmail(s.email)) return false;
+  const wanted = historyBookingStatus(s);
+  // No sync link on this pickup yet, or the last one expired. Minting a fresh
+  // one also creates the cloud booking, so it is worth doing here — but it
+  // needs the owner sign-in, and out on the road there may not be one.
+  if (!s.historySyncToken){
+    if (!ownerToken){ s.syncPending = wanted; save(); return false; }
+    await customerProfileLink(s);
+    if (!s.historySyncToken){ s.syncPending = wanted; save(); return false; }
+  }
   const controller = new AbortController();
   const timeout = setTimeout(()=>controller.abort(), 8000);
   try{
@@ -3802,12 +4191,61 @@ async function syncExternalBooking(s){
       body:JSON.stringify({ ...historyBookingPayload(s), syncToken:s.historySyncToken })
     });
     if (res.status===401) s.historySyncToken="";
-    return res.ok;
+    if (res.ok){
+      s.syncedStatus = wanted;
+      delete s.syncPending;
+      save();
+      return true;
+    }
+    s.syncPending = wanted;
+    save();
+    return false;
   }catch(e){
+    s.syncPending = wanted;
+    save();
     return false;
   }finally{
     clearTimeout(timeout);
   }
+}
+// Anything finished on this phone that the cloud has not confirmed gets pushed
+// again — that is what puts a completed pickup into Done in Bookings. Cheap when
+// there is nothing behind: the filter runs first and touches the network only if
+// it finds something.
+let externalSyncSweepBusy = false, externalSyncSweptAt = 0;
+async function flushExternalBookingSyncs(force=false){
+  if (!ownerToken || externalSyncSweepBusy) return 0;
+  if (!force && Date.now() - externalSyncSweptAt < 120000) return 0;
+  const seen = new Set();
+  const behind = allRunStates()
+    .flatMap(data => (data.stops||[]).concat(data.bad||[]))
+    .concat(runStore.shared?.unpaid||[])
+    .filter(s => {
+      const key = historyBookingKey(s);
+      if (!key || seen.has(key) || !goodEmail(s.email)) return false;
+      const wanted = historyBookingStatus(s);
+      if (s.syncedStatus === wanted) return false;
+      // Only chase what is worth having up there: a finished job, or anything an
+      // earlier attempt left marked as unsent.
+      if (wanted !== "COMPLETED" && !s.syncPending) return false;
+      seen.add(key);
+      return true;
+    });
+  if (!behind.length){ externalSyncSweptAt = Date.now(); return 0; }
+  externalSyncSweepBusy = true;
+  let fixed = 0;
+  try{
+    // A capped batch, so a phone with a long history does not fire hundreds of
+    // requests at once. The rest are picked up the next time round.
+    for (const s of behind.slice(0, 25)){
+      if (await syncExternalBooking(s)) fixed++;
+    }
+  }finally{
+    externalSyncSweepBusy = false;
+    externalSyncSweptAt = Date.now();
+    save();
+  }
+  return fixed;
 }
 async function customerProfileLink(s){
   const fallback = `${WEBSITE_URL}/account.html`;
@@ -3875,8 +4313,10 @@ function confirmationMessage(value){
   return `Hey Woody here, just confirming ${day} for whiteware collection. Welcome to leave whiteware inside your property line somewhere with $ inside if easier. I will send a reminder and rough time schedule ${when} too. Thanks :)`;
 }
 function messageMode(){ return state.messageMode==="reminder" ? "reminder" : "confirm"; }
+// Woody's own wording wins over the automatic one, in both modes. This is what
+// actually gets texted and emailed, not just what the box shows.
 function bulkMessage(){
-  if (messageMode()==="reminder") return reminderBulkMessage().trim();
+  if (messageMode()==="reminder") return (state.reminderMessage || reminderBulkMessage()).trim();
   return (state.confirmationMessage || confirmationMessage(state.confirmationDate)).trim();
 }
 // No collection day chosen yet (normal in reminder mode) used to mean sent marks
@@ -4137,10 +4577,42 @@ function esc(s){ return String(s==null?"":s).replace(/[&<>"]/g, c=>({"&":"&amp;"
 window.setConfirmationDate = value => {
   state.confirmationDate = value;
   delete state.confirmationDayText;
-  state.confirmationMessage = confirmationMessage(value);
+  // A new day means a new automatic message. Wording typed over the old one has
+  // to go with it, or the message would still be naming last week's day.
+  const rewritten = clearMessageOverrides();
   save(); render();
+  if (rewritten) flash("↻ Message rebuilt for the new day");
 };
-window.saveConfirmationMessage = value => { state.confirmationMessage = value; save(); };
+// Woody's own wording for the mode on screen, if he's typed over the automatic
+// message. Empty means the message is still being made for him.
+function messageOverride(){
+  return (messageMode()==="reminder" ? state.reminderMessage : state.confirmationMessage) || "";
+}
+function clearMessageOverrides(){
+  const had = Boolean((state.confirmationMessage||"").trim() || (state.reminderMessage||"").trim());
+  delete state.confirmationMessage;
+  delete state.reminderMessage;
+  return had;
+}
+const EDITED_MESSAGE_HINT = "Edited — your wording is what gets texted and emailed.";
+// Typed straight into the preview box. Re-rendering the whole card mid-type would
+// shut the keyboard and lose the cursor, so only the hint and the button change.
+window.saveMessageDraft = value => {
+  const text = String(value==null ? "" : value);
+  if (messageMode()==="reminder") state.reminderMessage = text; else state.confirmationMessage = text;
+  save();
+  const edited = Boolean(text.trim());
+  const resetBtn = document.getElementById("messageResetBtn");
+  if (resetBtn) resetBtn.style.display = edited ? "inline-block" : "none";
+  const hint = document.getElementById("messageHint");
+  if (hint && edited) hint.textContent = EDITED_MESSAGE_HINT;
+  fitMessagePreview();
+};
+window.resetMessageDraft = () => {
+  if (messageMode()==="reminder") delete state.reminderMessage; else delete state.confirmationMessage;
+  save(); renderContacts();
+  flash("↺ Back to the automatic message");
+};
 function updateSelectedCustomerCount(){
   const el = document.getElementById("selectedCount");
   if (!el) return;
@@ -4202,6 +4674,8 @@ function openEditForm({ title, note="", fields, saveLabel="Save" }){
       const value=f.value==null ? "" : String(f.value);
       const input=f.type==="textarea"
         ? `<textarea id="${id}" rows="${f.rows||3}" placeholder="${esc(f.placeholder||"")}">${esc(value)}</textarea>`
+        : f.type==="select"
+        ? `<select id="${id}">${(f.options||[]).map(o=>`<option value="${esc(o.value)}"${o.value===value?" selected":""}>${esc(o.label)}</option>`).join("")}</select>`
         : `<input id="${id}" type="${f.type||"text"}"${f.inputmode?` inputmode="${f.inputmode}"`:""} placeholder="${esc(f.placeholder||"")}" value="${esc(value)}" />`;
       return `<label for="${id}">${esc(f.label)}</label>${input}`;
     };
@@ -4932,20 +5406,41 @@ window.sendInvoice = async id => {
   const file = pendingInvoices[id];
   if (!s || !file){ render(); return; }
   const amt = s.invoiceAmount;
-  // Invoicing a stop that's sitting in a run means the gear is already on the
-  // truck. Re-sending from the unpaid ledger says nothing either way, so it
-  // leaves the pickup state alone.
+  // Invoicing a stop that's sitting in a run usually means the gear is already on
+  // the truck — but not always. Ask, so billing ahead of the pickup keeps the
+  // stop on today's list instead of quietly assuming it was collected.
   const fromRun = state.stops.some(x => x.id === id);
+  const collectedAlready = !fromRun || confirm(
+    `${fullName(s)||"This pickup"} is still on ${activeRunName()}.\n\nHas it been picked up yet?\n\nOK = yes, already collected\nCancel = no, still to pick up`
+  );
   const markSent = (rid, rdate, rrepeat) => {
     delete pendingInvoices[id];
     s.invoiceSent = true; s.paid = false;
-    if (fromRun){
+    if (fromRun && !collectedAlready){
+      s.invoiceStage = "before";
+    } else if (fromRun){
       if (!s.invoiceStage) s.invoiceStage = "after";
       s.collectedAt = s.collectedAt || Date.now();
     }
     if (rid){ s.reminderId = rid; s.reminderDate = rdate||""; s.reminderRepeat = Number(rrepeat)||0; }   // keep any earlier reminder on a re-send
     // Out of the run, into the unpaid ledger — Clear all won't touch it there.
     if (!s.historyStatus) s.historyStatus = s.status==="DONE" ? "COMPLETED" : "ADDED_TO_RUN";
+    if (fromRun && !collectedAlready){
+      // Keep the pickup on today's run. The unpaid ledger still gets a record,
+      // so Bookings → Owing offers 💰 Mark paid and 🧾 Send receipt as usual.
+      state.unpaid = state.unpaid || [];
+      if (!state.unpaid.some(x => x.id === s.id ||
+          (s.submission_id && x.submission_id === s.submission_id))){
+        state.unpaid.unshift({
+          ...s, id: uid(), status: "DONE", collectedAt: "", invoiceStage: "before",
+          invoicedAt: localIso(new Date()),
+          reminderId: rid||"", reminderDate: rdate||"", reminderRepeat: Number(rrepeat)||0
+        });
+      }
+      save(); render(); drawRoute();
+      syncExternalBooking(s);
+      return;
+    }
     s.status = "DONE";
     if (!s.invoicedAt) s.invoicedAt = localIso(new Date());
     state.stops = state.stops.filter(x => x.id !== id);
@@ -4979,7 +5474,8 @@ window.sendInvoice = async id => {
         markSent(out.reminderId||"", reminderDate, reminderRepeat);
         if(ownerToken) await loadDirectBookings(false);
         const repeatBit = reminderRepeat ? `, then ${repeatWord(reminderRepeat)}` : "";
-        flash("✓ Invoice emailed to " + to + (out.reminderId ? ` — reminder set for ${reminderDate}${repeatBit}` : "") + " · shown in Bookings → Owing");
+        const where = (fromRun && !collectedAlready) ? " · still on today's run" : " · shown in Bookings → Owing";
+        flash("✓ Invoice emailed to " + to + (out.reminderId ? ` — reminder set for ${reminderDate}${repeatBit}` : "") + where);
         return;
       }
     }catch(e){ busy(""); }
@@ -5029,12 +5525,13 @@ async function settleAsPaid(s){
   s.status = "DONE";
   s.historyStatus = "COMPLETED";
   s.collectedAt = s.collectedAt || Date.now();
-  save(); render();
+  save(); render(); renderDirectBookings();
   if (s.src==="direct" && s.submission_id){
     queueDirectCompletion(s.submission_id);
     await flushDirectCompletions();
   }else await syncExternalBooking(s);
   renderDirectBookings();
+  if (ownerToken) await loadDirectBookings(false);
 }
 // Take an entry off the unpaid ledger (cancels its auto-reminder too).
 window.removeUnpaid = id => {
@@ -5196,9 +5693,11 @@ window.togglePriority = id => {
 // so Google finds the exact house number (a pin from rough coords can land next door).
 function navAddress(s){
   if (!s) return "";
-  // The address Google itself confirmed (with suburb + postcode) beats our typed
-  // version — it can't be read as a different town with the same street name.
-  if (s.geoLabel) return /new zealand|\bnz\b/i.test(s.geoLabel) ? s.geoLabel : `${s.geoLabel}, New Zealand`;
+  // Google's confirmed address only wins when it kept the house number. A
+  // "2A Tawa Street" that came back as plain "Tawa Street" would send Maps to a
+  // street, not a letterbox — the full typed address is worth more then.
+  if (s.geoLabel && !labelDroppedNumber(s.street, s.geoLabel))
+    return /new zealand|\bnz\b/i.test(s.geoLabel) ? s.geoLabel : `${s.geoLabel}, New Zealand`;
   if (!s.street) return "";
   let a = [s.street, s.town].filter(Boolean).join(", ");
   if (!/taranaki|new zealand|nz/i.test(a)) a += ", Taranaki, New Zealand";
@@ -5216,12 +5715,17 @@ window.navStop = id => {
 };
 // Stops saved before this check existed carry no confirmed address, so the card
 // couldn't show where Navigate would really take Woody. Fill them in quietly.
+// Stops whose label lost the house number get re-looked-up too, so old
+// street-level answers ("Tawa Street" for "2A Tawa Street") fix themselves.
+const navRetried = new Set();   // once per stop per session — a permanently vague address must not re-lookup on every open
 async function backfillNavLabels(){
-  const pending = state.stops.filter(s => s.street && !s.geoLabel);
+  const pending = state.stops.filter(s =>
+    s.street && !navRetried.has(s.id) && (!s.geoLabel || labelDroppedNumber(s.street, s.geoLabel)));
   if (!pending.length || importBusy) return;
   let changed = false;
   for (const s of pending){
     if (importBusy) break;
+    navRetried.add(s.id);
     const hit = await geocode(fullAddr(s));
     const live = findStop(s.id); if (!live || !hit) continue;   // dropped, or a plain miss that retries next load
     applyGeo(live, hit);
@@ -5251,10 +5755,10 @@ window.retryBad = async id => {
   const inp = document.querySelector(`[data-bad="${id}"]`); const addr = inp ? inp.value.trim() : "";
   if(!addr) return;
   const s = state.bad[i];
-  // Allow pasting raw coordinates straight from Google Maps.
-  const m = addr.match(/^\s*(-?\d{1,2}\.\d+)\s*[, ]\s*(-?\d{2,3}\.\d+)\s*$/);
-  if (m){
-    s.lat = +m[1]; s.lng = +m[2];
+  // Allow pasting coordinates or a whole Google Maps link straight from the app.
+  const coords = coordsFromText(addr);
+  if (coords){
+    s.lat = coords.lat; s.lng = coords.lng;
     state.bad.splice(i,1); state.stops.push(s); save(); render(); drawRoute(); return;
   }
   if (importBusy){ alert("Please wait for the current address lookup to finish."); return; }
@@ -5270,7 +5774,7 @@ window.retryBad = async id => {
     t.street = parts[0]||t.street; t.town = parts[1]||t.town;
     applyGeo(t, hit);
     state.bad.splice(j,1); state.stops.push(t); save(); render(); drawRoute();
-  } else alert("Still couldn't find that address — add the town, or paste coordinates from Google Maps.");
+  } else alert("Still couldn't find that address — add the town, or paste a Google Maps link or coordinates.");
 };
 window.dropBad = id => {
   const i = state.bad.findIndex(s=>s.id===id); if(i<0) return;
@@ -5308,6 +5812,10 @@ $("#oneAdd").onclick = async () => {
   const s = oneDetails(stopFromAddress(v));
   if (oneAddrPicked){   // exact spot chosen from suggestions — skip the lookup
     s.lat=oneAddrPicked.lat; s.lng=oneAddrPicked.lng; s.geoLabel=oneAddrPicked.label||""; oneAddrPicked=null;
+    state.stops.push(s);
+  } else if (coordsFromText(v)){   // a Maps link or coordinates — no lookup needed
+    const c=coordsFromText(v);
+    s.lat=c.lat; s.lng=c.lng;
     state.stops.push(s);
   } else {
     importBusy=true;
@@ -6008,6 +6516,7 @@ $("#renameRun").onclick=renameActiveRun;
 $("#deleteRun").onclick=deleteActiveRun;
 applyAppView(state.appView || (state.stops.length ? "today" : "add"));
 initMap();
+dedupeUnpaidLedger();
 render();
 drawRoute();
 renderWeather();
