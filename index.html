@@ -240,7 +240,7 @@
   .today-map{order:5}.today-actions{order:10}.today-list{order:30}.today-bad{order:40}.today-unpaid{order:50}
   /* Stop count, km and the run picker only describe the run you're driving, so
      they'd just be noise sitting above the Bookings, Customers and Messages
-     lists. They stay on Today and on Add & setup, where you build that run. */
+     lists. They stay on Scheduled and on Add & setup, where you build that run. */
   body[data-view="bookings"] .stats, body[data-view="customers"] .stats, body[data-view="messages"] .stats,
   body[data-view="bookings"] .run-switcher, body[data-view="customers"] .run-switcher,
   body[data-view="messages"] .run-switcher{display:none}
@@ -248,7 +248,7 @@
   .bottom-nav{position:fixed;left:0;right:0;bottom:0;z-index:2000;background:rgba(7,29,46,.98);
     border-top:1px solid var(--line);padding:8px max(10px,env(safe-area-inset-right)) calc(8px + env(safe-area-inset-bottom)) max(10px,env(safe-area-inset-left));
     display:grid;grid-template-columns:repeat(5,1fr);gap:7px;box-shadow:0 -4px 16px rgba(0,0,0,.45)}
-  .bottom-nav button{min-height:52px;background:#10364e;border:1px solid var(--line);font-size:13px;padding:0 4px}
+  .bottom-nav button{min-height:52px;background:#10364e;border:1px solid var(--line);font-size:12px;padding:0 3px;line-height:1.15;white-space:normal}
   .bottom-nav button.on{background:var(--accent);border-color:var(--accent)}
   .booking-count{display:inline-grid;place-items:center;min-width:20px;height:20px;margin-left:4px;padding:0 5px;border-radius:999px;background:var(--accent2);color:#fff;font-size:11px;font-weight:900}
   .direct-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px}
@@ -645,7 +645,7 @@
 </div>
 
 <nav class="bottom-nav" aria-label="Main sections">
-  <button data-view-button="today">Today</button>
+  <button data-view-button="today">Scheduled</button>
   <button data-view-button="bookings">Bookings <span id="bookingCount" class="booking-count" style="display:none">0</span></button>
   <button data-view-button="customers">Customers</button>
   <button data-view-button="messages">Messages</button>
@@ -5512,7 +5512,7 @@ window.sendInvoice = async id => {
         markSent(out.reminderId||"", reminderDate, reminderRepeat);
         if(ownerToken) await loadDirectBookings(false);
         const repeatBit = reminderRepeat ? `, then ${repeatWord(reminderRepeat)}` : "";
-        const where = (fromRun && !collectedAlready) ? " · still on today's run" : " · shown in Bookings → Owing";
+        const where = (fromRun && !collectedAlready) ? " · still on the scheduled run" : " · shown in Bookings → Owing";
         flash("✓ Invoice emailed to " + to + (out.reminderId ? ` — reminder set for ${reminderDate}${repeatBit}` : "") + where);
         return;
       }
@@ -5654,7 +5654,7 @@ window.bulkSend = async () => {
   }
   const message = bulkMessage();
   if (!message) return alert(messageMode()==="reminder"
-    ? "Tap Optimise route on the Today tab first — the reminder times come from the planned route."
+    ? "Tap Optimise route on the Scheduled tab first — the reminder times come from the planned route."
     : "Choose the collection day first, then check the message preview.");
   const confirming = messageMode()==="confirm";
   if (confirming && !state.confirmationDate) return alert("Choose the collection day first.");
@@ -5775,7 +5775,7 @@ window.callStop = id => { const s=findStop(id); if(s&&s.phone) location.href="te
 window.delStop = id => {
   const s = findStop(id);
   const who = s ? (fullName(s) || fullAddr(s) || "this stop") : "this stop";
-  if (!confirm(`Remove ${who} from ${activeRunName()}?\n\nThis takes it off today's run.`)) return;
+  if (!confirm(`Remove ${who} from ${activeRunName()}?\n\nThis takes it off the scheduled run.`)) return;
   state.stops = state.stops.filter(x=>x.id!==id);
   if (Array.isArray(state.messageSelectedIds)) state.messageSelectedIds = state.messageSelectedIds.filter(x=>x!==id);
   save(); render(); drawRoute();
