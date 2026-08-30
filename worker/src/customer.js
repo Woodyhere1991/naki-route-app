@@ -1585,43 +1585,6 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
     return handleJotformSubmission(request, env, json);
   }
 
-  // Personal share links. Every customer gets one permanent link; when someone
-  // books through it the booking is tagged so Woody knows who shared it.
-  const shareResolveMatch = path.match(/^\/customer\/share\/([A-Za-z0-9]{16,})$/);
-  if (shareResolveMatch && request.method === "GET") {
-    const row = await env.CUSTOMER_DB.prepare(
-      "SELECT first_name FROM customers WHERE share_token = ?1"
-    ).bind(shareResolveMatch[1]).first();
-    if (!row || !row.first_name) return json(request, { error: "Link not found" }, 404);
-    return json(request, { ok: true, firstName: row.first_name });
-  }
-
-  if (path === "/customer/share" && request.method === "GET") {
-    const session = await sessionFor(request, env, "customer");
-    if (!session?.customer_id) return json(request, { error: "Sign in required" }, 401);
-    let row = await env.CUSTOMER_DB.prepare(
-      "SELECT share_token, first_name FROM customers WHERE id = ?1"
-    ).bind(session.customer_id).first();
-    if (!row) return json(request, { error: "Customer not found" }, 404);
-    if (!row.share_token) {
-      const token = crypto.randomUUID().replace(/-/g, "");
-      // The unique index plus this guard keeps two devices from minting twice;
-      // a lost race simply re-reads whichever token won.
-      await env.CUSTOMER_DB.prepare(
-        "UPDATE customers SET share_token = ?1 WHERE id = ?2 AND share_token IS NULL"
-      ).bind(token, session.customer_id).run();
-      row = await env.CUSTOMER_DB.prepare(
-        "SELECT share_token, first_name FROM customers WHERE id = ?1"
-      ).bind(session.customer_id).first();
-    }
-    return json(request, {
-      ok: true,
-      token: row.share_token,
-      url: `${CUSTOMER_ACCOUNT_URL}?ref=${row.share_token}`,
-      firstName: row.first_name || ""
-    });
-  }
-
   if (path === "/customer/profile-invite" && request.method === "POST") {
     // Only Woody can mint a private profile link, so nobody else can seed
     // details or pickup history against a customer's email address.
@@ -2810,11 +2773,6 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
         return json(request, { error: "Choose at least one item from the list" }, 400);
       }
       const price = calculate(items, selectedAddress.ruralOption);
-      // A booking made through someone's share link is tagged with their name,
-      // overriding the booker's own "how did you find us" answer for this job.
-      const sharer = await sharerFromToken(env, body.refToken);
-      const referralSource = sharer ? "Word of mouth" : profile.referral_source;
-      const referralDetails = sharer ? `Shared by ${sharer.name}` : profile.referral_details;
       const createdAt = now();
       const bookingId = `WEB-${createdAt}-${randomToken(6)}`;
       const additionalInfo = clean(body.additionalInfo || selectedAddress.accessNotes, 1500);
