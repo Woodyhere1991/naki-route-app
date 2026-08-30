@@ -353,6 +353,76 @@ async function hashToken(token) {
   return sha256(token);
 }
 
+export function normalizeShareToken(raw) {
+  const token = clean(raw, 80);
+  return /^[A-Za-z0-9_-]{8,80}$/.test(token) ? token : "";
+}
+
+export function shareBookingUrl(token) {
+  return `${CUSTOMER_ACCOUNT_URL}?ref=${encodeURIComponent(token)}`;
+}
+
+export function shareDisplayName(firstName) {
+  return clean(firstName, 60) || "a friend";
+}
+
+export function shareReferralLabel(firstName) {
+  return `Shared by ${shareDisplayName(firstName)}`.slice(0, 80);
+}
+
+async function ensureCustomerShareToken(env, customerId) {
+  const existing = await env.CUSTOMER_DB.prepare(
+    "SELECT token FROM customer_share_tokens WHERE customer_id = ?1"
+  ).bind(customerId).first();
+  if (existing?.token) return existing.token;
+  const token = randomToken(18);
+  try {
+    await env.CUSTOMER_DB.prepare(
+      "INSERT INTO customer_share_tokens (token, token_hash, customer_id, created_at) VALUES (?1, ?2, ?3, ?4)"
+    ).bind(token, await hashToken(token), customerId, now()).run();
+    return token;
+  } catch {
+    const again = await env.CUSTOMER_DB.prepare(
+      "SELECT token FROM customer_share_tokens WHERE customer_id = ?1"
+    ).bind(customerId).first();
+    if (again?.token) return again.token;
+    throw new Error("Could not create a share link");
+  }
+}
+
+async function lookupShareByToken(env, rawToken) {
+  const token = normalizeShareToken(rawToken);
+  if (!token) return null;
+  return env.CUSTOMER_DB.prepare(
+    `SELECT t.token, t.customer_id, c.first_name
+       FROM customer_share_tokens t
+       JOIN customers c ON c.id = t.customer_id
+      WHERE t.token = ?1`
+  ).bind(token).first();
+}
+
+async function shareReferralFromToken(env, rawToken, bookerCustomerId) {
+  const share = await lookupShareByToken(env, rawToken);
+  if (!share || share.customer_id === bookerCustomerId) return null;
+  return {
+    source: shareReferralLabel(share.first_name),
+    details: ""
+  };
+}
+
+async function applyShareReferralToCustomer(env, rawToken, customerId) {
+  const share = await shareReferralFromToken(env, rawToken, customerId);
+  if (!share) return false;
+  await env.CUSTOMER_DB.prepare(
+    `UPDATE customers SET
+      referral_source = CASE WHEN referral_source = '' THEN ?1 ELSE referral_source END,
+      referral_details = CASE WHEN referral_details = '' THEN ?2 ELSE referral_details END,
+      updated_at = ?3
+     WHERE id = ?4`
+  ).bind("Word of mouth", share.source, now(), customerId).run();
+  return true;
+}
+
 function authToken(request) {
   const header = request.headers.get("Authorization") || "";
   return header.startsWith("Bearer ") ? header.slice(7).trim() : "";
@@ -605,6 +675,9 @@ function bookingDetails(profile, items, additionalInfo, price, bookingId = "") {
   ];
   items.forEach((item, index) => lines.push(`Appliance ${index + 1}: ${item}`));
   if (additionalInfo) lines.push(`Comments or additional details: ${additionalInfo}`);
+  if (profile.referral_source) {
+    lines.push(`Found us: ${profile.referral_source}${profile.referral_details ? ` - ${profile.referral_details}` : ""}`);
+  }
   lines.push(`Estimated price: ${priceText(price)}`);
   if (bookingId) lines.push(`Booking ID: ${bookingId}`);
   return lines.join("\n");
@@ -1608,6 +1681,7 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
     if (!EMAIL_RE.test(address) || !/^\d{6}$/.test(code)) return json(request, { error: "Enter the 6-digit code" }, 400);
     const verified = await verifyCode(env, address, "customer", code);
     if (!verified) return json(request, { error: "That code is incorrect or has expired" }, 401);
+    await applyShareReferralToCustomer(env, body.refToken, verified.customerId);
     await env.CUSTOMER_DB.prepare(
       "UPDATE external_bookings SET customer_id = ?1 WHERE email = ?2 COLLATE NOCASE AND customer_id IS NULL"
     ).bind(verified.customerId, address).run();
@@ -1639,6 +1713,15 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
     return json(request, { token: verified.token });
   }
 
+  const shareLookup = path.match(/^\/customer\/share\/([^/]+)$/);
+  if (shareLookup && request.method === "GET") {
+    let rawToken = shareLookup[1];
+    try { rawToken = decodeURIComponent(rawToken); } catch { /* use the path segment as-is */ }
+    const share = await lookupShareByToken(env, rawToken);
+    if (!share) return json(request, { error: "That booking link is not valid" }, 404);
+    return json(request, { ok: true, firstName: shareDisplayName(share.first_name) });
+  }
+
   if (path === "/customer/arcade/stats" && request.method === "GET") {
     const stamp = now();
     const [members, online] = await Promise.all([
@@ -1656,6 +1739,11 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
   if (path.startsWith("/customer/")) {
     const session = await sessionFor(request, env, "customer");
     if (!session) return json(request, { error: "Please sign in again" }, 401);
+
+    if (path === "/customer/share" && request.method === "GET") {
+      const token = await ensureCustomerShareToken(env, session.customer_id);
+      return json(request, { ok: true, url: shareBookingUrl(token), token });
+    }
 
     if (path === "/customer/me" && request.method === "GET") {
       const profile = await customerProfile(env, session.customer_id);
@@ -2621,13 +2709,18 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
       const createdAt = now();
       const bookingId = `WEB-${createdAt}-${randomToken(6)}`;
       const additionalInfo = clean(body.additionalInfo || selectedAddress.accessNotes, 1500);
+      const share = await shareReferralFromToken(env, body.refToken, session.customer_id);
+      const referralSource = share ? share.source : (profile.referral_source || "");
+      const referralDetails = share ? share.details : (profile.referral_details || "");
       const pickupProfile = {
         ...profile,
         street_address: selectedAddress.streetAddress,
         town: selectedAddress.town,
         area: selectedAddress.area,
         rural_option: selectedAddress.ruralOption,
-        access_notes: selectedAddress.accessNotes
+        access_notes: selectedAddress.accessNotes,
+        referral_source: referralSource,
+        referral_details: referralDetails
       };
       await env.CUSTOMER_DB.batch([
         env.CUSTOMER_DB.prepare(
@@ -2639,7 +2732,7 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
         ).bind(
           bookingId, session.customer_id, profile.first_name, profile.last_name, profile.phone, profile.email,
           pickupProfile.street_address, pickupProfile.town, pickupProfile.area, pickupProfile.rural_option, JSON.stringify(items),
-          additionalInfo, profile.referral_source, profile.referral_details, price.cents, price.quoteRequired ? 1 : 0, createdAt
+          additionalInfo, referralSource, referralDetails, price.cents, price.quoteRequired ? 1 : 0, createdAt
         ),
         env.CUSTOMER_DB.prepare(
           "INSERT INTO booking_events (id, booking_id, event_type, detail, created_at) VALUES (?1, ?2, 'CREATED', 'Customer website', ?3)"
