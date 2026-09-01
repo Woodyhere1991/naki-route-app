@@ -562,17 +562,53 @@ function jotformName(value) {
   return { firstName: parts.shift() || "", lastName: parts.join(" ") };
 }
 
+function addressKey(value) {
+  return clean(value, 200).toLowerCase().replace(/[^a-z0-9]+/g, "");
+}
+
+function looksLikeStreetAddress(value) {
+  const text = clean(value, 200);
+  return /\d/.test(text) &&
+    /\b(street|st|road|rd|avenue|ave|drive|dr|lane|ln|place|pl|crescent|cres|way|terrace|tce)\b/i.test(text);
+}
+
+function collapseAddressLine(line1, line2) {
+  const first = clean(line1, 180).replace(/\s+/g, " ");
+  const second = clean(line2, 180).replace(/\s+/g, " ");
+  if (!second) return first;
+  if (!first) return second;
+  const firstKey = addressKey(first);
+  const secondKey = addressKey(second);
+  if (firstKey === secondKey) return first;
+  if (looksLikeStreetAddress(first) && looksLikeStreetAddress(second) &&
+      (firstKey.includes(secondKey) || secondKey.includes(firstKey))) {
+    return first.length >= second.length ? first : second;
+  }
+  return `${first}, ${second}`;
+}
+
 function jotformAddress(value) {
   if (!value || typeof value !== "object") {
-    return { streetAddress: clean(value, 180), town: "", area: "" };
+    return { streetAddress: clean(value, 180).replace(/\s+/g, " "), town: "", area: "" };
   }
   const line1 = objectPart(value, ["addr_line1", "address1", "line1"]);
   const line2 = objectPart(value, ["addr_line2", "address2", "line2"]);
-  return {
-    streetAddress: [line1, line2].filter(Boolean).join(", "),
-    town: objectPart(value, ["city", "town"]),
-    area: objectPart(value, ["state", "region"])
-  };
+  const streetAddress = collapseAddressLine(line1, line2);
+  let town = objectPart(value, ["city", "town"]).replace(/\s+/g, " ");
+  let area = objectPart(value, ["state", "region"]).replace(/\s+/g, " ");
+  const streetKey = addressKey(streetAddress);
+  // People often paste the whole address into Town as well. Keep a real town
+  // like "New Plymouth"; drop a second copy of the street line.
+  if (town && streetKey && (addressKey(town) === streetKey ||
+      (looksLikeStreetAddress(town) && (addressKey(town).includes(streetKey) || streetKey.includes(addressKey(town)))))) {
+    town = "";
+  }
+  const placeKey = addressKey([streetAddress, town].filter(Boolean).join(" "));
+  if (area && placeKey && (addressKey(area) === placeKey ||
+      (looksLikeStreetAddress(area) && (addressKey(area).includes(placeKey) || placeKey.includes(addressKey(area)))))) {
+    area = "";
+  }
+  return { streetAddress, town, area };
 }
 
 function jotformMoney(value) {
@@ -599,7 +635,7 @@ async function parseJotformRequest(request) {
   return { body, raw: { ...body, ...raw } };
 }
 
-async function handleJotformSubmission(request, env, json) {
+async function handleJotformSubmission(request, env, json, sendMail) {
   const supplied = new URL(request.url).searchParams.get("key") || "";
   if (!env.JOTFORM_WEBHOOK_SECRET || !supplied ||
       await sha256(supplied) !== await sha256(String(env.JOTFORM_WEBHOOK_SECRET))) {
@@ -625,6 +661,17 @@ async function handleJotformSubmission(request, env, json) {
   const existing = await env.CUSTOMER_DB.prepare(
     "SELECT id FROM jotform_bookings WHERE submission_id = ?1"
   ).bind(submissionId).first();
+  const itemsJson = JSON.stringify(items);
+  const phone = clean(jotformValue(raw, 39, "number"), 30);
+  const ruralOption = clean(jotformValue(raw, 37, "ifRural37"), 120);
+  const additionalInfo = clean(jotformValue(raw, 18, "additionalInformationenquires"), 1500);
+  const referralSource = clean(jotformValue(raw, formConfig.referralSourceQid, "howDidYouHear"), 80);
+  const referralDetails = clean(jotformValue(raw, formConfig.referralDetailsQid, "otherReferralDetails"), 160);
+  const totalCents = jotformMoney(jotformValue(raw, 31, "total"));
+  const quoteRequired = items.includes("Other") ? 1 : 0;
+  // Jotform's submission ID is the idempotency key. A webhook retry keeps the
+  // same ID and is updated below; a different ID is a real booking and must not
+  // be silently merged just because the email and item list happen to match.
   await env.CUSTOMER_DB.prepare(
     `INSERT INTO jotform_bookings (
       id, submission_id, form_id, customer_id, status, first_name, last_name, phone, email,
@@ -641,13 +688,10 @@ async function handleJotformSubmission(request, env, json) {
       quote_required=excluded.quote_required, updated_at=excluded.updated_at`
   ).bind(
     `JOTFORM-${submissionId}`, submissionId, formId, customerId,
-    person.firstName, person.lastName, clean(jotformValue(raw, 39, "number"), 30), address,
+    person.firstName, person.lastName, phone, address,
     location.streetAddress, location.town, location.area,
-    clean(jotformValue(raw, 37, "ifRural37"), 120), JSON.stringify(items),
-    clean(jotformValue(raw, 18, "additionalInformationenquires"), 1500),
-    clean(jotformValue(raw, formConfig.referralSourceQid, "howDidYouHear"), 80),
-    clean(jotformValue(raw, formConfig.referralDetailsQid, "otherReferralDetails"), 160),
-    jotformMoney(jotformValue(raw, 31, "total")), items.includes("Other") ? 1 : 0, createdAt
+    ruralOption, itemsJson, additionalInfo, referralSource, referralDetails,
+    totalCents, quoteRequired, createdAt
   ).run();
   const booking = await env.CUSTOMER_DB.prepare(
     "SELECT * FROM jotform_bookings WHERE submission_id = ?1"
@@ -1582,7 +1626,7 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
   if (!env.CUSTOMER_DB) return json(request, { error: "Customer accounts are not ready yet" }, 503);
 
   if (path === "/jotform/submission" && request.method === "POST") {
-    return handleJotformSubmission(request, env, json);
+    return handleJotformSubmission(request, env, json, sendMail);
   }
 
   if (path === "/customer/profile-invite" && request.method === "POST") {
@@ -3300,16 +3344,11 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
       const documents = await env.CUSTOMER_DB.prepare(
         "SELECT r2_key FROM booking_documents WHERE booking_id = ?1"
       ).bind(bookingId).all();
-      const statements = [
-        env.CUSTOMER_DB.prepare("DELETE FROM booking_documents WHERE booking_id = ?1").bind(bookingId),
-        env.CUSTOMER_DB.prepare(`DELETE FROM ${table} WHERE id = ?1`).bind(bookingId)
-      ];
-      if (!jotform && !pickupRun) {
-        statements.unshift(env.CUSTOMER_DB.prepare("DELETE FROM booking_events WHERE booking_id = ?1").bind(bookingId));
-      }
-      const results = await env.CUSTOMER_DB.batch(statements);
-      const result = results[results.length - 1];
-      if (!result.meta || !result.meta.changes) return json(request, { error: "Booking not found" }, 404);
+      await env.CUSTOMER_DB.prepare("DELETE FROM booking_documents WHERE booking_id = ?1").bind(bookingId).run();
+      await env.CUSTOMER_DB.prepare("DELETE FROM booking_events WHERE booking_id = ?1").bind(bookingId).run();
+      const result = await env.CUSTOMER_DB.prepare(`DELETE FROM ${table} WHERE id = ?1`).bind(bookingId).run();
+      const changes = Number(result?.meta?.changes || result?.meta?.rows_written || 0);
+      if (!changes) return json(request, { error: "Booking not found" }, 404);
       if (env.DOCUMENTS) {
         await Promise.all((documents.results || []).map(document =>
           document.r2_key ? env.DOCUMENTS.delete(document.r2_key).catch(() => {}) : Promise.resolve()
@@ -3462,4 +3501,4 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
 
 // Exported only for the focused permission-policy test; the Worker routes
 // above remain the public API.
-export { arcadeContactAllowed, directChatAllowed };
+export { arcadeContactAllowed, directChatAllowed, handleJotformSubmission, jotformAddress };

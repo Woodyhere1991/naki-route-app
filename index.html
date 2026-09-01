@@ -82,6 +82,11 @@
   .run-actions[hidden]{display:none}
   .run-actions button{min-height:42px;font-size:14px}
   @media(max-width:430px){
+    .topbar{gap:6px;padding-left:6px;padding-right:6px}
+    .brand-logo{flex-basis:44px;width:44px;height:44px}
+    .brand{font-size:14px;white-space:normal;overflow:visible;text-overflow:clip}
+    .brand small{font-size:8px;white-space:normal;overflow:visible;text-overflow:clip}
+    .stats{gap:6px}
     .run-controls{grid-template-columns:minmax(0,1fr) auto}
     #manageRuns{grid-column:1/-1;min-height:40px}
   }
@@ -245,10 +250,10 @@
   body[data-view="bookings"] .run-switcher, body[data-view="customers"] .run-switcher,
   body[data-view="messages"] .run-switcher{display:none}
   #bannerSave,#bannerOsrm{order:5} footer{order:100}
-  .bottom-nav{position:fixed;left:0;right:0;bottom:0;z-index:2000;background:rgba(7,29,46,.98);
-    border-top:1px solid var(--line);padding:8px max(10px,env(safe-area-inset-right)) calc(8px + env(safe-area-inset-bottom)) max(10px,env(safe-area-inset-left));
-    display:grid;grid-template-columns:repeat(5,1fr);gap:7px;box-shadow:0 -4px 16px rgba(0,0,0,.45)}
-  .bottom-nav button{min-height:52px;background:#10364e;border:1px solid var(--line);font-size:12px;padding:0 3px;line-height:1.15;white-space:normal}
+  .bottom-nav{position:fixed;left:0;right:0;bottom:0;width:100%;box-sizing:border-box;z-index:2000;background:rgba(7,29,46,.98);
+    border-top:1px solid var(--line);padding:8px max(6px,env(safe-area-inset-right)) calc(8px + env(safe-area-inset-bottom)) max(6px,env(safe-area-inset-left));
+    display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:4px;box-shadow:0 -4px 16px rgba(0,0,0,.45)}
+  .bottom-nav button{min-width:0;min-height:52px;background:#10364e;border:1px solid var(--line);font-size:clamp(9px,2.9vw,12px);padding:0 2px;line-height:1.15;white-space:normal}
   .bottom-nav button.on{background:var(--accent);border-color:var(--accent)}
   .booking-count{display:inline-grid;place-items:center;min-width:20px;height:20px;margin-left:4px;padding:0 5px;border-radius:999px;background:var(--accent2);color:#fff;font-size:11px;font-weight:900}
   .direct-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px}
@@ -367,6 +372,31 @@
     border-top:1px solid var(--line);box-shadow:0 -8px 14px var(--panel)}
   .message-actions .row{flex-wrap:nowrap}.message-actions .row .grow{flex:1 1 0;min-width:0;padding:0 7px;font-size:13px}
   .recipient-list{max-height:38vh;overflow:auto}
+  .reminder-group{padding:10px;margin:8px 0}
+  .reminder-group h3{margin:0;font-size:16px;line-height:1.25}
+  .reminder-group .times{display:flex;align-items:center;gap:6px;margin-top:8px}
+  .reminder-people{margin:8px 0 2px;border:1px solid var(--line);border-radius:12px;background:#08283d;overflow:visible}
+  .reminder-person{display:grid;grid-template-columns:22px minmax(0,1fr) auto;grid-template-areas:"check who flag";
+    gap:6px 10px;align-items:center;margin:0;padding:9px 10px;border-top:1px solid var(--line);cursor:pointer;
+    color:var(--txt);font-size:15px;position:relative;z-index:1}
+  .reminder-person:first-child{border-top:0}
+  .reminder-person.moving{grid-template-areas:"check who flag" "move move move";padding-bottom:12px}
+  .reminder-person input[type=checkbox]{grid-area:check;width:20px;height:20px;min-width:20px;min-height:20px;
+    margin:0;padding:0;display:block;accent-color:var(--good)}
+  .reminder-person .who{grid-area:who;min-width:0}
+  .reminder-person .who b{display:block;color:var(--txt);font-size:15px;line-height:1.25;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .reminder-person .who .addr{display:block;color:var(--muted);font-size:12px;font-weight:500;line-height:1.3;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .reminder-flag{grid-area:flag;flex:none;font-size:11px;font-weight:800;padding:3px 8px;border-radius:999px;
+    white-space:nowrap;line-height:1.2}
+  .reminder-flag.sent{background:#123f37;color:#c9ffe3}
+  .reminder-flag.new{background:rgba(41,182,246,.16);color:#9ad4ff}
+  .reminder-person .move-to{grid-area:move;grid-column:1/-1;min-width:0;position:relative;z-index:2}
+  .reminder-person select{width:100%;max-width:100%;min-height:42px;margin:0;padding:8px 10px;font-size:14px;
+    display:block;position:relative;z-index:2}
+  .reminder-group-actions{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+  .reminder-msg{width:100%;min-height:76px;margin-top:6px;font-size:14px}
   .view-title{font-size:19px;font-weight:800;margin:14px 2px 2px}
   .today-map details>div{padding-top:10px}
   @media(min-width:760px){.bottom-nav{left:50%;transform:translateX(-50%);max-width:760px;border-left:1px solid var(--line);border-right:1px solid var(--line)}}
@@ -750,6 +780,7 @@ let routeTiming = {};       // id -> {order, driveSec} cumulative drive time fro
 let importBusy = false;     // a sheet load is still geocoding — block overlapping loads
 let runChangeBusy = false;  // a GPS/address action must finish before changing runs
 let bulkSendBusy = false;   // one bulk send at a time — prevents accidental duplicate emails
+let reminderMoveId = "";    // which reminder group is showing the move menus
 let pendingReceipts = {};   // stop id -> built PDF File, waiting for the Send tap
 let pendingInvoices = {};   // stop id -> built invoice PDF, waiting for the Send tap
 // Same idea for an invoice raised from a booking card rather than a run stop.
@@ -1290,8 +1321,9 @@ function tidyTown(value){
   return String(value==null?"":value).replace(/[\u200B-\u200D\uFEFF]/g,"").replace(/\s+/g," ").trim();
 }
 // Suburbs and localities that are NOT pickup towns of their own, and the town
-// each one really belongs to. Bell Block, Waitara and Inglewood stay separate on
-// purpose - each has its own place on the run and its own time window.
+// each one really belongs to. Waitara and Inglewood stay towns of their own.
+// Bell Block is its own town on the bookings list, but reminder messages fold
+// it in with New Plymouth unless Woody splits that group.
 // "Westtown" and "Waiwakaio" are the usual misspellings, kept so they group too.
 const TOWN_PARTS = {
   "new plymouth": [
@@ -1511,10 +1543,10 @@ function renderDirectBookings(){
   }
   const bookingCard = b=>{
     const name=esc([b.firstName,b.lastName].filter(Boolean).join(" "));
-    const address=esc([b.streetAddress,b.town,b.area].filter(Boolean).join(", "));
+    const address=esc(bookingAddress(b));
     // Unescaped copy for the maps link - esc() is for putting text in the page,
     // and double-encoding it here would break the search.
-    const navAddress=[b.streetAddress,b.town,b.area].filter(Boolean).join(", ");
+    const navAddress=bookingAddress(b);
     const items=esc(groupItems(b.items).join(", "));
     const date=new Date(b.createdAt).toLocaleString("en-NZ",{day:"numeric",month:"short",hour:"numeric",minute:"2-digit"});
     const terminal=["COMPLETED","DECLINED","CANCELLED"].includes(b.status) && !b.invoiceOwing;
@@ -2195,8 +2227,8 @@ async function uncompleteDirectBooking(id){
   }catch(e){ directStatus(e.message,true); }
 }
 async function deleteDirectBooking(id){
-  const b=directBookingRows.find(row=>row.id===id); if(!b) return;
-  const name=[b.firstName,b.lastName].filter(Boolean).join(" ") || "this booking";
+  const b=directBookingRows.find(row=>row.id===id);
+  const name=b ? [b.firstName,b.lastName].filter(Boolean).join(" ") || "this booking" : "this booking";
   if (!confirm(`Delete ${name}? This removes the booking for good — it can't be undone.`)) return;
   const buttons=[...document.querySelectorAll("[data-delete-direct]")].filter(button=>button.dataset.deleteDirect===id);
   buttons.forEach(button=>{ button.disabled=true; button.textContent="Deleting…"; });
@@ -3009,8 +3041,32 @@ function stopFromAddress(line){
     amount:null, lat:null, lng:null, status:"NEW", _rawAddr:line.trim() };
 }
 
+function looksLikeStreetAddress(value){
+  const text=String(value||"").trim();
+  return /\d/.test(text) && /\b(street|st|road|rd|avenue|ave|drive|dr|lane|ln|place|pl|crescent|cres|way|terrace|tce)\b/i.test(text);
+}
+function uniqueAddressParts(parts){
+  const out=[], keys=[];
+  for (const part of parts){
+    const text=String(part||"").replace(/\s+/g," ").trim();
+    if (!text) continue;
+    const key=text.toLowerCase().replace(/[^a-z0-9]+/g,"");
+    if (!key) continue;
+    const dup=out.findIndex((_,i)=>{
+      if (keys[i]===key) return true;
+      const bothStreets=looksLikeStreetAddress(text)&&looksLikeStreetAddress(out[i]);
+      return bothStreets && (keys[i].includes(key) || key.includes(keys[i]));
+    });
+    if (dup>=0) continue;
+    out.push(text); keys.push(key);
+  }
+  return out;
+}
+function bookingAddress(b){
+  return uniqueAddressParts([b.streetAddress, b.town, b.area]).join(", ");
+}
 function fullAddr(s){
-  return [s.street, s.town].filter(Boolean).join(", ") || s._rawAddr || "";
+  return uniqueAddressParts([s.street, s.town]).join(", ") || s._rawAddr || "";
 }
 
 // Add a batch of address lines: geocode each (or park as "needs address").
@@ -3791,84 +3847,61 @@ function reminderTowns(){
   state.stops.filter(s=>s.status!=="DONE").forEach(push);
   return out;
 }
-// Automatic customer windows follow the planned drive, not town boundaries.
-// Three hours is broad enough to make a useful promise without creating a text
-// group for every town. An early New Plymouth stop on the way to Oakura/Okato
-// therefore stays with that first part of the run; New Plymouth stops reached
-// after returning can land in the next block with Bell Block.
-const AUTO_WINDOW_MINUTES = 180;
+// Reminder groups follow townships, not driving-time blocks. New Plymouth and
+// Bell Block share one message because they are usually the same run. Split
+// that group only when some NP stops are done on the way to Oakura/Okato and
+// the rest are done later on the way through to Bell Block.
 function reminderStopsInRouteOrder(){
   const ordered=scheduleStopsInOrder(), seen=new Set(ordered.map(s=>s.id));
   return ordered.concat(state.stops.filter(s=>s.status!=="DONE" && !seen.has(s.id)));
 }
-// ETA for every stop in route order. Real OSRM road times win. A best-effort
-// drive estimate keeps the grouping sensible while road routing is unavailable
-// or a stop has only just been added.
-function reminderRouteSchedule(stops){
-  const start=runStartMin(), service=stopServiceMin();
-  let elapsed=0, previous=startPoint();
-  return stops.map(stop=>{
-    const timing=routeTiming[stop.id];
-    let arrive;
-    if(timing){
-      arrive=stopArriveMin(timing);
-      elapsed=Math.max(elapsed,arrive-start);
-    }else{
-      if(isFinite(previous?.lat) && isFinite(previous?.lng) && isFinite(stop.lat) && isFinite(stop.lng)){
-        elapsed+=haversine(previous,stop)/45*60;
-      }
-      arrive=start+elapsed;
-    }
-    elapsed+=service;
-    if(isFinite(stop.lat) && isFinite(stop.lng)) previous=stop;
-    return {stop,arrive};
-  });
+function messageAreaKey(stop){
+  const town=townKey(stop?.town||stop?.area) || "your area";
+  if (town==="new plymouth" || town==="bell block") return "np-bell";
+  return town;
 }
-function windowForStops(stops){
-  const timed=stops.filter(s=>routeTiming[s.id]);
-  if (timed.length){
-    const arrivals=timed.map(s=>stopArriveMin(routeTiming[s.id]));
-    return { start:minToHM(Math.max(runStartMin(),Math.floor((Math.min(...arrivals)-15)/15)*15)),
-      end:minToHM(Math.ceil((Math.max(...arrivals)+stopServiceMin()+45)/15)*15) };
+function messageAreaLabel(key){
+  if (key==="np-bell") return "New Plymouth & Bell Block";
+  if (key==="your area") return "Your area";
+  return townLabel(key).replace(/^No town$/,"Your area");
+}
+function defaultTimesForArea(key){
+  if (key==="np-bell"){
+    const a=townWindow("new plymouth"), b=townWindow("bell block");
+    return { start:minToHM(Math.min(parseHM(a.start),parseHM(b.start))),
+      end:minToHM(Math.max(parseHM(a.end),parseHM(b.end))) };
   }
-  const townWindows=[...new Set(stops.map(s=>townKey(s.town||s.area)||"your area"))].map(townWindow);
-  if (!townWindows.length) return {start:"09:00",end:"12:00"};
-  return {start:minToHM(Math.min(...townWindows.map(w=>parseHM(w.start)))),end:minToHM(Math.max(...townWindows.map(w=>parseHM(w.end))))};
+  return townWindow(key);
+}
+function stopTownKey(id){
+  const stop=state.stops.find(s=>s.id===id);
+  return townKey(stop?.town||stop?.area) || "your area";
 }
 function defaultReminderWindows(){
   const ordered=reminderStopsInRouteOrder();
-  if(!ordered.length) return [];
-  // Anchor the blocks to departure, rounded down to a tidy quarter-hour. This
-  // includes the drive to stop one and makes the promises exactly three hours.
-  const anchor=Math.floor(runStartMin()/15)*15, blocks=[];
-  reminderRouteSchedule(ordered).forEach(({stop,arrive})=>{
-    const blockNumber=Math.max(0,Math.floor((arrive-anchor)/AUTO_WINDOW_MINUTES));
-    let block=blocks.find(item=>item.number===blockNumber);
-    if(!block){ block={number:blockNumber,stops:[]}; blocks.push(block); }
-    block.stops.push(stop);
+  if (!ordered.length) return [];
+  const groups=new Map();
+  ordered.forEach(stop=>{
+    const key=messageAreaKey(stop);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(stop);
   });
-  return blocks.map((block,index)=>({
-    id:`auto:${index}:${block.stops[0].id}`,
-    label:"",
-    stopIds:block.stops.map(stop=>stop.id),
-    start:minToHM(anchor+block.number*AUTO_WINDOW_MINUTES),
-    end:minToHM(anchor+(block.number+1)*AUTO_WINDOW_MINUTES)
-  }));
+  return [...groups.entries()].map(([key,stops])=>{
+    const times=defaultTimesForArea(key);
+    return { id:`area:${key}`, label:"", stopIds:stops.map(s=>s.id), start:times.start, end:times.end };
+  });
+}
+function reminderWindowsAreStale(raw){
+  if (!Array.isArray(raw) || !raw.length) return true;
+  // Driving-order 3-hour blocks mixed towns at random. Old plain town: windows
+  // are rebuilt too, so New Plymouth and Bell Block start in one group.
+  return raw.some(w=>/^auto:/.test(String(w.id||"")))
+    || raw.every(w=>/^town:/.test(String(w.id||"")) && !String(w.label||"").trim());
 }
 function reminderWindows(){
   const pending=new Set(state.stops.filter(s=>s.status!=="DONE").map(s=>s.id));
   const rawSaved=Array.isArray(state.reminderWindows) ? state.reminderWindows : [];
-  // The first version saved one plain window per town. Treat that untouched old
-  // shape as automatic so today's route immediately benefits from clustering.
-  // A named, added or mixed-town window is genuinely manual and stays untouched.
-  const oldTownOnly=rawSaved.length && rawSaved.every(w=>{
-    const key=String(w.id||"").replace(/^town:/,"");
-    return /^town:/.test(String(w.id||"")) && !String(w.label||"").trim() && (w.stopIds||[]).every(id=>{
-      const stop=state.stops.find(s=>s.id===id);
-      return !stop || (townKey(stop.town||stop.area)||"your area")===key;
-    });
-  });
-  const saved=oldTownOnly ? [] : rawSaved;
+  const saved=reminderWindowsAreStale(rawSaved) ? [] : rawSaved;
   const seen=new Set();
   const windows=saved.map((raw,i)=>{
     const ids=(raw.stopIds||[]).filter(id=>pending.has(id) && !seen.has(id));
@@ -3876,21 +3909,26 @@ function reminderWindows(){
     return { id:String(raw.id||`window:${i}`), label:String(raw.label||"").trim().slice(0,90),
       stopIds:ids, start:/^\d{2}:\d{2}$/.test(raw.start||"")?raw.start:"09:00",
       end:/^\d{2}:\d{2}$/.test(raw.end||"")?raw.end:"12:00" };
-  });
-  // A newly added pickup should never disappear from the schedule. It starts in
-  // its ordinary town window until you deliberately move it elsewhere.
-  const missing=[...pending].filter(id=>!seen.has(id));
+  }).filter(w=>w.stopIds.length || String(w.id).startsWith("window:"));
   if (!saved.length) return defaultReminderWindows();
-  missing.forEach(id=>{
-    const stop=state.stops.find(s=>s.id===id), key=townKey(stop?.town||stop?.area)||"your area";
-    let w=windows.find(x=>x.id===`town:${key}`);
-    if (!w){ const d=townWindow(key); w={id:`town:${key}`,label:"",stopIds:[],start:d.start,end:d.end}; windows.push(w); }
+  // A newly added pickup starts in its ordinary town group until it is moved.
+  [...pending].filter(id=>!seen.has(id)).forEach(id=>{
+    const stop=state.stops.find(s=>s.id===id), key=messageAreaKey(stop);
+    let w=windows.find(x=>x.id===`area:${key}`);
+    if (!w){
+      const d=defaultTimesForArea(key);
+      w={id:`area:${key}`,label:"",stopIds:[],start:d.start,end:d.end};
+      windows.push(w);
+    }
     w.stopIds.push(id);
   });
   return windows;
 }
 function reminderWindowPlaces(window){
+  if (!window) return "your area";
   if (window.label) return window.label;
+  const area=String(window.id||"").startsWith("area:") ? window.id.slice(5) : "";
+  if (area) return messageAreaLabel(area);
   const towns=[];
   window.stopIds.forEach(id=>{
     const stop=state.stops.find(s=>s.id===id);
@@ -3899,12 +3937,24 @@ function reminderWindowPlaces(window){
   });
   return towns.join(", ") || "your area";
 }
+function reminderMoveOptions(currentId, allWindows){
+  const others=allWindows.filter(w=>w.id!==currentId && (w.stopIds.length || String(w.id).startsWith("window:")));
+  return `<option value="">Move to…</option>`
+    + others.map(w=>`<option value="${esc(w.id)}">${esc(reminderWindowPlaces(w))}</option>`).join("")
+    + `<option value="new">New group</option>`;
+}
 function reminderWindowForStop(stop){
   return reminderWindows().find(w=>w.stopIds.includes(stop.id)) || null;
 }
-function reminderMessageForWindow(window){
+function reminderGroupMessage(window){
+  return String((state.reminderMessageByWindow||{})[window.id]||"").trim();
+}
+function automaticReminderMessage(window){
   const day=collectionDayLabel(state.confirmationDate), dayPart=day ? ` ${day}` : "";
   return `Hey Woody here, just a reminder for whiteware collection${dayPart}. Aiming to be in ${reminderWindowPlaces(window)} between ${fmtClockShort(parseHM(window.start))} and ${fmtClockShort(parseHM(window.end))}. Thanks :)`;
+}
+function reminderMessageForWindow(window){
+  return reminderGroupMessage(window) || automaticReminderMessage(window);
 }
 function reminderBulkMessage(){
   const windows = reminderWindows().filter(w=>w.stopIds.length);
@@ -3975,7 +4025,6 @@ function renderList(){
     const callFirst = /call|text|phone|ring|txt/i.test(s.additional_info||"");
     const formNote = s.additional_info ? `<div class="note${callFirst?' callfirst':''}">${callFirst?'📞':'📝'} ${esc(s.additional_info)}</div>` : "";
     const userNote = s.note ? `<div class="usernote">✏️ ${esc(s.note)}</div>` : "";
-    const noteBtn  = `<button class="ghost sm" onclick="editNote('${s.id}')">✏️ ${s.note?'Edit note':'Note'}</button>`;
     const editBtn  = `<button class="ghost sm" onclick="editStop('${s.id}')">✎ Edit pickup</button>`;
     // The agreed price, right on the card. Changing it lives in Edit pickup.
     // No price set? Work one out from the items and the travel fee, marked "est"
@@ -4004,8 +4053,8 @@ function renderList(){
     const doneBtn  = `<button class="${isDone?'warn':'good'} sm" onclick="toggleDone('${s.id}')">${isDone?'↺ Undo':'✓ Done'}</button>`;
     const del      = `<button class="ghost sm" title="Remove this stop" onclick="delStop('${s.id}')">✕</button>`;
     const btns = isDone
-      ? `${doneBtn}${receiptBtn}${invoiceBtn}${editBtn}${noteBtn}${emailBtn}${del}`
-      : `${navBtn}${doneBtn}${phone}${textBtn}${emailBtn}${noteBtn}${prioBtn}${editBtn}${receiptBtn}${invoiceBtn}${del}`;
+      ? `${doneBtn}${receiptBtn}${invoiceBtn}${editBtn}${emailBtn}${del}`
+      : `${navBtn}${doneBtn}${phone}${textBtn}${emailBtn}${prioBtn}${editBtn}${receiptBtn}${invoiceBtn}${del}`;
     return `<div class="stop ${isDone?'done':''} ${asap&&!isDone?'asap':''} ${s.id===nextId&&!isDone?'next':''}"
         data-id="${s.id}" style="border-left-color:${AREA_COLORS[area]||AREA_COLORS['']}">
       <div class="num">${num}</div>
@@ -4449,23 +4498,18 @@ function dedupeBy(values, keyOf){
 function selectedNumbers(){
   return dedupeBy(selectedRecipients().map(s=>(s.phone||"").trim()).filter(goodPhone), v=>v.replace(/\D/g,""));
 }
-// A confirmation is one common message. An automatic reminder, however, is
-// grouped by the pickup window so an early New Plymouth stop and a later New
-// Plymouth stop never receive each other's time promise.
-function reminderMessageBatches(recipients){
-  if ((state.reminderMessage||"").trim()) return [{ id:"edited", label:"Your edited message", recipients, message:bulkMessage() }];
-  const groups=new Map();
-  recipients.forEach(stop=>{
-    const window=reminderWindowForStop(stop);
-    const id=window?.id || "fallback";
-    if (!groups.has(id)) groups.set(id,{ id, label:window ? reminderWindowPlaces(window) : "Your area", recipients:[],
-      message:window ? reminderMessageForWindow(window) : bulkMessage() });
-    groups.get(id).recipients.push(stop);
-  });
-  return [...groups.values()];
+// Default reminder is one text that lists every town's time. Sending a single
+// group is the optional split, used for an Oakura/Okato run.
+function reminderMessageBatches(recipients, groupId){
+  if (groupId){
+    const window=reminderWindows().find(w=>w.id===groupId);
+    return [{ id:groupId, label:window ? reminderWindowPlaces(window) : "Your area", recipients,
+      message:window ? reminderMessageForWindow(window) : bulkMessage() }];
+  }
+  return [{ id:"everyone", label:"Everyone", recipients, message:bulkMessage() }];
 }
-function messageBatches(recipients){
-  return messageMode()==="reminder" ? reminderMessageBatches(recipients)
+function messageBatches(recipients, groupId){
+  return messageMode()==="reminder" ? reminderMessageBatches(recipients, groupId)
     : [{ id:"confirmation", label:"All selected customers", recipients, message:bulkMessage() }];
 }
 function batchPhoneNumbers(batch){
@@ -4516,7 +4560,12 @@ function renderContacts(){
   const wrap = $("#contactsWrap"); if (!wrap) return;
   // Mid-edit? Leave the card alone. Rebuilding it under him would shut the
   // keyboard and throw away the half-typed message.
-  if (document.activeElement && document.activeElement.id === "messagePreview") return;
+  const active = document.activeElement;
+  if (active && (active.id === "messagePreview" || active.dataset.reminderMsg)) return;
+  // Native date/time pickers fire change on every day tap or wheel tick.
+  // Rebuilding this card then destroys the input and the picker slams shut
+  // before the tick/Done button. Keep the same field on screen until blur.
+  if (messagesPickerOpen()){ pickerNeedsRedraw = true; return; }
   const pend = state.stops.filter(s => s.status!=="DONE");
   if (!pend.length){ wrap.innerHTML = `<div class="view-title">Messages</div><div class="card empty"><b>No customers yet</b><p>Add pickups first, then come back here to message them.</p><button onclick="setAppView('add')">Add pickups</button></div>`; return; }
   const selected = selectedRecipientIds();
@@ -4541,55 +4590,91 @@ function renderContacts(){
       <button class="${mode==='confirm'?'good':'ghost'} sm grow" onclick="setMessageMode('confirm')">Confirmation</button>
       <button class="${mode==='reminder'?'good':'ghost'} sm grow" onclick="setMessageMode('reminder')">Reminder + times</button>
     </div>`;
-  const windowRows = mode!=="reminder" ? "" : reminderWindows().map((w,index)=>{
+  const windows = mode!=="reminder" ? [] : reminderWindows();
+  const windowRows = mode!=="reminder" ? "" : windows.map(w=>{
     const people=w.stopIds.map(id=>state.stops.find(s=>s.id===id)).filter(Boolean);
-    const peopleRows=pend.map(s=>`<label class="missing-contact" style="display:flex;gap:7px;align-items:flex-start;cursor:pointer;margin:4px 0">
-      <input type="checkbox" ${w.stopIds.includes(s.id)?"checked":""} onchange="setReminderWindowStop('${esc(w.id)}','${esc(s.id)}',this.checked)" style="width:auto;margin-top:3px" />
-      <span>${esc(fullName(s)||fullAddr(s)||"Unnamed pickup")}<br><span class="small muted">${esc(fullAddr(s))}</span></span>
-    </label>`).join("");
-    return `<div class="card" style="padding:9px;margin:7px 0">
-      <div style="display:flex;align-items:center;gap:6px"><b style="flex:1">Time window ${index+1} · ${people.length} pickup${people.length===1?"":"s"}</b>
-        <button class="ghost sm" onclick="removeReminderWindow('${esc(w.id)}')" ${reminderWindows().length===1?"disabled":""}>Remove</button></div>
-      <label class="small muted" style="margin-top:6px">Places shown to customers (leave blank to use the selected towns)</label>
-      <input value="${esc(w.label)}" placeholder="e.g. Okato, Oakura and Ōkato" onchange="setReminderWindowLabel('${esc(w.id)}',this.value)" />
-      <div style="display:flex;align-items:center;gap:6px;margin-top:6px">
-        <input type="time" value="${esc(w.start)}" onchange="setReminderWindowTime('${esc(w.id)}','start',this.value)" style="width:auto;min-height:38px" />
+    const moving=reminderMoveId===w.id;
+    const towns=new Set(w.stopIds.map(stopTownKey));
+    const canSplitBell=towns.has("bell block") && towns.has("new plymouth");
+    const peopleRows=people.map(s=>{
+      const sent=isContacted(s);
+      const name=fullName(s) || s.street || "Unnamed pickup";
+      const addr=fullAddr(s);
+      const sub=addr && addr!==name ? addr : (s.town && !String(name).toLowerCase().includes(String(s.town).toLowerCase()) ? s.town : "");
+      const mover=moving ? `<span class="move-to"><select aria-label="Move ${esc(name)}" onchange="moveReminderStop('${esc(s.id)}',this.value)">${reminderMoveOptions(w.id, windows)}</select></span>` : "";
+      return `<label class="reminder-person${moving?" moving":""}">
+        <input type="checkbox" data-recipient="${s.id}" ${selected.has(s.id)?"checked":""} onchange="setRecipientSelected('${s.id}',this.checked)" />
+        <span class="who"><b>${esc(name)}</b>${sub?`<span class="addr">${esc(sub)}</span>`:""}</span>
+        <span class="reminder-flag ${sent?"sent":"new"}">${sent?"Sent":"New"}</span>
+        ${mover}
+      </label>`;
+    }).join("");
+    const editedGroup=Boolean(reminderGroupMessage(w));
+    return `<div class="card reminder-group">
+      <div style="display:flex;align-items:center;gap:6px"><h3 style="flex:1">${esc(reminderWindowPlaces(w))} · ${people.length}</h3>
+        <button class="ghost sm" onclick="removeReminderWindow('${esc(w.id)}')">Remove</button></div>
+      <div class="times">
+        <input type="time" data-window-id="${esc(w.id)}" data-field="start" value="${esc(w.start)}" oninput="setReminderWindowTime(this.dataset.windowId,'start',this.value)" onchange="setReminderWindowTime(this.dataset.windowId,'start',this.value)" onblur="finishDateTimePicker(this)" style="width:auto;min-height:38px" />
         <span class="muted">to</span>
-        <input type="time" value="${esc(w.end)}" onchange="setReminderWindowTime('${esc(w.id)}','end',this.value)" style="width:auto;min-height:38px" />
+        <input type="time" data-window-id="${esc(w.id)}" data-field="end" value="${esc(w.end)}" oninput="setReminderWindowTime(this.dataset.windowId,'end',this.value)" onchange="setReminderWindowTime(this.dataset.windowId,'end',this.value)" onblur="finishDateTimePicker(this)" style="width:auto;min-height:38px" />
       </div>
-      <details style="margin-top:7px"><summary class="small muted">Pickups in this window <span class="chev">›</span></summary><div style="padding-top:5px">${peopleRows}</div></details>
+      <details style="margin-top:7px"${moving?" open":""}><summary class="small muted">Who is in this group <span class="chev">›</span></summary>
+        <label class="small muted" style="margin-top:6px">Name on the message (blank uses the town names)</label>
+        <input value="${esc(w.label)}" placeholder="${esc(reminderWindowPlaces({ ...w, label:"" }))}" onchange="setReminderWindowLabel('${esc(w.id)}',this.value)" />
+        <div class="reminder-people">${peopleRows || `<p class="small muted">No pickups in this group. Remove it, or move people in.</p>`}</div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px">
+          <button class="ghost sm" onclick="selectGroupRecipients('${esc(w.id)}','all')">Select all</button>
+          <button class="ghost sm" onclick="selectGroupRecipients('${esc(w.id)}','new')">Select new</button>
+          <button class="ghost sm" onclick="selectGroupRecipients('${esc(w.id)}','none')">Unselect</button>
+        </div>
+        <details style="margin-top:7px"><summary class="small muted">Separate message if you send this group on its own <span class="chev">›</span></summary>
+          <textarea class="reminder-msg" data-reminder-msg="1" data-window-id="${esc(w.id)}" oninput="saveReminderGroupMessage(this.dataset.windowId,this.value)">${esc(reminderMessageForWindow(w))}</textarea>
+          ${editedGroup ? `<button class="ghost sm" style="margin-top:4px" onclick="resetReminderGroupMessage('${esc(w.id)}')">↺ Automatic message</button>` : ""}
+        </details>
+      </details>
+      <div class="reminder-group-actions">
+        <button class="ghost sm" onclick="bulkSend('${esc(w.id)}')" ${bulkSendBusy?"disabled":""}>Send this group only</button>
+        <button class="${moving?"good":"ghost"} sm" onclick="toggleReminderMove('${esc(w.id)}')">${moving?"Done moving":"Move people"}</button>
+        ${canSplitBell ? `<button class="ghost sm" onclick="splitReminderTown('${esc(w.id)}','bell block')">Split Bell Block off</button>` : ""}
+      </div>
     </div>`;
   }).join("");
-  const reminderControls = mode!=="reminder" ? "" : `<label style="margin-top:10px">Smart time windows</label>
-    <p class="small muted" style="margin:0 0 2px">Stops are grouped into 3-hour blocks in driving order, using road travel time plus about ${stopServiceMin()} minutes at each pickup. Your start and finish help decide the route order. You can still move individual people.</p>
+  const reminderControls = mode!=="reminder" ? "" : `<label style="margin-top:10px">Town times</label>
+    <p class="small muted" style="margin:0 0 2px">One message lists every town's time. New Plymouth and Bell Block start together. Split a group only for an Oakura or Okato run, when some New Plymouth stops are earlier than the rest.</p>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin:6px 0"><button class="ghost sm" onclick="selectRecipients('all')">Select all</button><button class="ghost sm" onclick="selectRecipients('new')">Select new only</button><button class="ghost sm" onclick="selectRecipients('none')">Unselect all</button></div>
     ${windowRows || `<p class="small muted">No pickups yet.</p>`}
-    <div style="display:flex;gap:6px;margin-top:5px"><button class="ghost sm" onclick="addReminderWindow()">＋ Add time window</button><button class="ghost sm" onclick="resetReminderWindows()">Auto-organise from route</button></div>`;
+    <div style="display:flex;gap:6px;margin-top:5px"><button class="ghost sm" onclick="addReminderWindow()">＋ New group</button><button class="ghost sm" onclick="resetReminderWindows()">Reset to towns</button></div>`;
   const previewPlaceholder = mode==="reminder"
-    ? "Add pickups first — each place gets a time window"
+    ? "Add pickups first — each town gets a time in the message"
     : "Choose a collection day above";
   const previewHint = mode==="reminder"
-    ? `The preview shows the full route. When you send, each customer receives only the time window you put them in. Type in the box to word it yourself.`
+    ? `Everyone gets this one text. Change the times above and it updates. Tap Send this group only if you need a separate Oakura/Okato message.`
     : `Choose the day and the message is made automatically — or type in the box to word it yourself.`;
   const edited = Boolean(messageOverride().trim());
-  const preview = `${modeToggle}<label style="margin-top:10px">Collection day</label>
-    <div class="date-field-shell"><input type="date" value="${esc(state.confirmationDate||"")}" onchange="setConfirmationDate(this.value)" /></div>
-    ${reminderControls}
-    <label style="margin-top:10px">Message</label>
+  const confirmMessage = `<label style="margin-top:10px">Message</label>
     <textarea id="messagePreview" placeholder="${previewPlaceholder}" oninput="saveMessageDraft(this.value)">${esc(bulkMessage())}</textarea>
     <div style="display:flex;gap:6px;margin-top:6px">
       <button class="ghost sm" onclick="copyText('messagePreview',this)">Copy message</button>
       <button class="ghost sm" id="messageResetBtn" onclick="resetMessageDraft()" style="display:${edited?"inline-block":"none"}">↺ Use the automatic message</button>
     </div>
-    <p class="small muted" id="messageHint">${edited ? EDITED_MESSAGE_HINT : previewHint}</p>
-    <label style="margin-top:10px">Select customers</label>
+    <p class="small muted" id="messageHint">${edited ? EDITED_MESSAGE_HINT : previewHint}</p>`
+    + (mode==="confirm" ? `<label style="margin-top:10px">Select customers</label>
     <p class="small muted">The same selected customers are used for both text and email.</p>
     <div style="display:flex;gap:6px;margin:6px 0"><button class="ghost sm" onclick="selectRecipients('all')">Select all</button><button class="ghost sm" onclick="selectRecipients('new')">Select new only</button><button class="ghost sm" onclick="selectRecipients('none')">Unselect all</button></div>
-    <div class="recipient-list">${recipientRows}</div>
+    <div class="recipient-list">${recipientRows}</div>` : "");
+  const preview = `${modeToggle}<label style="margin-top:10px">Collection day</label>
+    <div class="date-field-shell"><input type="date" value="${esc(state.confirmationDate||"")}" oninput="setConfirmationDate(this.value)" onchange="setConfirmationDate(this.value)" onblur="finishDateTimePicker(this)" /></div>
+    ${reminderControls}
+    ${confirmMessage}
     <button class="ghost sm" style="margin-top:6px" onclick="clearMessageMarks()">Clear sent marks for this day</button>`;
+  const sendLabel = "📣 Text &amp; email everyone";
+  const sendHint = mode==="reminder"
+    ? "One text to everyone, with each town's time on its own line. In Messages, tap <b>To</b> then <b>Paste</b>."
+    : "Shows you exactly what it's about to do, then does the lot. In Messages, tap <b>To</b> then <b>Paste</b>.";
   const actions = `<div class="message-actions"><b id="selectedCount">${selCount} selected customer${selCount!==1?'s':''}</b>
-    <div class="row" style="margin-top:6px"><button id="bulkSendButton" class="good grow" onclick="bulkSend()" ${bulkSendBusy?'disabled aria-busy="true"':''}>${bulkSendBusy?'Sending… please wait':'📣 Text &amp; email everyone'}</button></div>
+    <div class="row" style="margin-top:6px"><button id="bulkSendButton" class="good grow" onclick="bulkSend()" ${bulkSendBusy?'disabled aria-busy="true"':''}>${bulkSendBusy?'Sending… please wait':sendLabel}</button></div>
     <div id="bulkSendStatus" class="small" aria-live="polite" style="margin-top:6px;${bulkSendBusy?'color:var(--warn)':''}">${bulkSendBusy?'<span class="spinner"></span> Sending now — please do not press it again.':''}</div>
-    <p class="small muted" style="margin:6px 0 0">For different time windows, it prepares one text group at a time so the right people get the right promise. In Messages, tap <b>To</b> then <b>Paste</b>.</p>
+    <p class="small muted" style="margin:6px 0 0">${sendHint}</p>
     ${preparedTextBatchControls()}</div>`;
   wrap.innerHTML = `<div class="card"><details open>
     <summary>Bulk message<span class="se-sum">${missing.length?` · ${missing.length} missing contact${missing.length!==1?'s':''}`:""}</span><span class="chev">›</span></summary>
@@ -4599,6 +4684,35 @@ function renderContacts(){
   </details></div>`;
   fitMessagePreview();
 }
+function messagesPickerOpen(){
+  const el = document.activeElement;
+  return !!(el && el.closest && el.closest("#contactsWrap") && (el.type==="date" || el.type==="time"));
+}
+let pickerNeedsRedraw = false;
+function refreshMessagePreviewInPlace(){
+  const ta = document.getElementById("messagePreview");
+  if (!ta || messageOverride().trim()) return;
+  ta.value = bulkMessage();
+  fitMessagePreview();
+}
+// Tick/Done closed the native picker. Safe to rebuild the Messages card now.
+window.finishDateTimePicker = (el) => {
+  if (el && el.type === "date") setConfirmationDate(el.value);
+  else if (el && el.type === "time") setReminderWindowTime(el.dataset.windowId, el.dataset.field, el.value);
+  if (!pickerNeedsRedraw) return;
+  pickerNeedsRedraw = false;
+  let note = "";
+  if (el && el.type === "date") {
+    // A new day means a new automatic message. Wording typed over the old one has
+    // to go with it, or the message would still be naming last week's day.
+    if (clearMessageOverrides()) note = "↻ Message rebuilt for the new day";
+  } else if (messageMode()==="reminder") {
+    rebuildReminderAfterTimeChange(el && el.dataset.windowId);
+  }
+  save();
+  renderContacts();
+  if (note) flash(note);
+};
 // Grow the preview box to show the whole message (the reminder is one line per town).
 // Only when the Messages panel is actually visible — a hidden box measures 0.
 function fitMessagePreview(){
@@ -4613,13 +4727,15 @@ function esc(s){ return String(s==null?"":s).replace(/[&<>"]/g, c=>({"&":"&amp;"
 
 /* ---------- Per-stop actions (exposed for inline onclick) ---------- */
 window.setConfirmationDate = value => {
+  value = String(value || "");
+  if (value === (state.confirmationDate || "")) return;
   state.confirmationDate = value;
   delete state.confirmationDayText;
-  // A new day means a new automatic message. Wording typed over the old one has
-  // to go with it, or the message would still be naming last week's day.
-  const rewritten = clearMessageOverrides();
-  save(); render();
-  if (rewritten) flash("↻ Message rebuilt for the new day");
+  save();
+  refreshMessagePreviewInPlace();
+  pickerNeedsRedraw = true;
+  // Do not render here. Native pickers fire this on every day/month tap, and
+  // rebuilding the card closes the calendar before tick/Done.
 };
 // Woody's own wording for the mode on screen, if he's typed over the automatic
 // message. Empty means the message is still being made for him.
@@ -4627,9 +4743,11 @@ function messageOverride(){
   return (messageMode()==="reminder" ? state.reminderMessage : state.confirmationMessage) || "";
 }
 function clearMessageOverrides(){
-  const had = Boolean((state.confirmationMessage||"").trim() || (state.reminderMessage||"").trim());
+  const had = Boolean((state.confirmationMessage||"").trim() || (state.reminderMessage||"").trim()
+    || Object.values(state.reminderMessageByWindow||{}).some(v=>String(v||"").trim()));
   delete state.confirmationMessage;
   delete state.reminderMessage;
+  state.reminderMessageByWindow = {};
   return had;
 }
 const EDITED_MESSAGE_HINT = "Edited — your wording is what gets texted and emailed.";
@@ -4689,13 +4807,6 @@ window.toggleDone = id => {
   s.collectedAt = completed ? Date.now() : "";
   save(); render(); drawRoute();
   syncExternalBooking(s);
-};
-// Type a free note against a pickup (access instructions, "gate round back", etc.).
-window.editNote = id => {
-  const s = findStop(id); if(!s) return;
-  const v = prompt("Note for this pickup:", s.note||"");
-  if (v===null) return;                       // cancelled
-  s.note = v.trim(); save(); render();
 };
 // One tidy popup for editing details, instead of a chain of one-line prompts.
 // Resolves with {key:value} of trimmed values, or null if it was cancelled.
@@ -4825,7 +4936,7 @@ function openGmail(fields){
   }, 1400);
 }
 window.textStop = id => { const s=findStop(id); if(s&&s.phone) location.href="sms:"+s.phone.replace(/\s+/g,""); };
-window.setMessageMode = m => { state.messageMode = m==="reminder" ? "reminder" : "confirm"; save(); renderContacts(); };
+window.setMessageMode = m => { reminderMoveId=""; state.messageMode = m==="reminder" ? "reminder" : "confirm"; save(); renderContacts(); };
 function saveReminderWindows(windows){
   state.reminderWindows=windows.map(w=>({
     id:w.id, label:String(w.label||"").trim().slice(0,90), stopIds:[...new Set(w.stopIds)], start:w.start, end:w.end
@@ -4841,45 +4952,128 @@ function editableReminderWindows(){
 window.setReminderWindowTime = (id, field, value) => {
   if (!/^\d{1,2}:\d{2}$/.test(value||"")) return;
   const windows=editableReminderWindows(), window=windows.find(w=>w.id===id); if (!window) return;
-  window[field]=value; saveReminderWindows(windows);
+  if (window[field]===value) return;
+  window[field]=value;
+  state.reminderWindows=windows.map(w=>({
+    id:w.id, label:String(w.label||"").trim().slice(0,90), stopIds:[...new Set(w.stopIds)], start:w.start, end:w.end
+  }));
+  save();
+  refreshMessagePreviewInPlace();
+  pickerNeedsRedraw = true;
+  // Do not render here. The time wheels fire this when you lift your finger,
+  // and rebuilding the card closes the picker before tick/Done.
 };
 window.setReminderWindowLabel = (id, value) => {
   const windows=editableReminderWindows(), window=windows.find(w=>w.id===id); if (!window) return;
   window.label=String(value||""); saveReminderWindows(windows);
 };
-window.setReminderWindowStop = (id, stopId, checked) => {
+window.saveReminderGroupMessage = (id, value) => {
+  const w=reminderWindows().find(x=>x.id===id); if (!w) return;
+  const by=state.reminderMessageByWindow=state.reminderMessageByWindow||{};
+  const text=String(value||"");
+  if (text.trim()===automaticReminderMessage(w).trim()) delete by[id];
+  else by[id]=text;
+  save();
+};
+window.resetReminderGroupMessage = id => {
+  if (state.reminderMessageByWindow) delete state.reminderMessageByWindow[id];
+  save(); renderContacts();
+};
+window.toggleReminderMove = id => {
+  reminderMoveId = reminderMoveId===id ? "" : id;
+  renderContacts();
+};
+window.selectGroupRecipients = (id, mode) => {
+  const w=reminderWindows().find(x=>x.id===id); if (!w) return;
+  const ids=new Set(w.stopIds);
+  const selected=selectedRecipientIds();
+  state.stops.filter(s=>s.status!=="DONE" && ids.has(s.id)).forEach(s=>{
+    if (mode==="all" || (mode==="new" && !isContacted(s))) selected.add(s.id);
+    else selected.delete(s.id);
+  });
+  state.messageSelectedIds=[...selected];
+  state.messageSelectionDay=messageBucket();
+  save(); renderContacts();
+};
+window.moveReminderStop = (stopId, dest) => {
+  if (!dest) return;
   const windows=editableReminderWindows();
-  // One pickup has one promise. Moving it to a second window automatically
-  // removes it from the old one, so nobody gets contradictory times.
-  windows.forEach(w=>{ w.stopIds=w.stopIds.filter(x=>x!==stopId); });
-  if (checked){ const window=windows.find(w=>w.id===id); if (window) window.stopIds.push(stopId); }
-  saveReminderWindows(windows);
+  const from=windows.find(w=>w.stopIds.includes(stopId)); if (!from) return;
+  from.stopIds=from.stopIds.filter(id=>id!==stopId);
+  if (dest==="new"){
+    const created={id:`window:${uid()}`,label:"",stopIds:[stopId],start:from.start,end:from.end};
+    windows.push(created);
+    reminderMoveId=created.id;
+  } else {
+    const to=windows.find(w=>w.id===dest);
+    if (to) to.stopIds.push(stopId);
+    else from.stopIds.push(stopId);
+  }
+  const kept=windows.filter(w=>w.stopIds.length || String(w.id).startsWith("window:"));
+  saveReminderWindows(kept.length ? kept : defaultReminderWindows());
+};
+window.splitReminderTown = (id, town) => {
+  const windows=editableReminderWindows();
+  const from=windows.find(w=>w.id===id); if (!from) return;
+  const moving=from.stopIds.filter(stopId=>stopTownKey(stopId)===town);
+  if (!moving.length) return;
+  from.stopIds=from.stopIds.filter(stopId=>stopTownKey(stopId)!==town);
+  let dest=windows.find(w=>w!==from && (w.id===`area:${town}` || (!w.label && w.stopIds.length && w.stopIds.every(stopId=>stopTownKey(stopId)===town))));
+  if (!dest){
+    const times=defaultTimesForArea(town);
+    dest={id:`area:${town}`,label:"",stopIds:[],start:times.start,end:times.end};
+    windows.push(dest);
+  }
+  dest.stopIds.push(...moving);
+  saveReminderWindows(windows.filter(w=>w.stopIds.length || String(w.id).startsWith("window:")));
 };
 window.addReminderWindow = () => {
   const windows=editableReminderWindows();
   const first=windows[0] || { start:"09:00", end:"12:00" };
-  windows.push({id:`window:${uid()}`,label:"",stopIds:[],start:first.start,end:first.end});
-  // Keep empty windows while it is being set up; otherwise it would vanish
-  // before the user can tick its first pickup.
+  const created={id:`window:${uid()}`,label:"",stopIds:[],start:first.start,end:first.end};
+  windows.push(created);
+  reminderMoveId=created.id;
   state.reminderWindows=windows;
-  rebuildReminderAfterTimeChange(); save(); renderContacts();
+  save(); renderContacts();
 };
 window.removeReminderWindow = id => {
   const windows=editableReminderWindows();
-  if (windows.length<=1) return;
-  state.reminderWindows=windows.filter(w=>w.id!==id);
-  rebuildReminderAfterTimeChange(); save(); renderContacts();
+  const doomed=windows.find(w=>w.id===id); if (!doomed) return;
+  const rest=windows.filter(w=>w.id!==id);
+  if (doomed.stopIds.length){
+    const home=rest.find(w=>w.stopIds.length) || rest[0];
+    if (!home){
+      if (!confirm("Remove this group? Everyone goes back to town groups.")) return;
+      reminderMoveId="";
+      delete state.reminderWindows;
+      rebuildReminderAfterTimeChange(); save(); renderContacts();
+      return;
+    }
+    if (!confirm(`Remove ${reminderWindowPlaces(doomed)}?\n\n${doomed.stopIds.length} pickup${doomed.stopIds.length===1?"":"s"} will move into ${reminderWindowPlaces(home)}.`)) return;
+    home.stopIds.push(...doomed.stopIds);
+  }
+  if (reminderMoveId===id) reminderMoveId="";
+  saveReminderWindows(rest.filter(w=>w.stopIds.length || String(w.id).startsWith("window:")));
 };
 window.resetReminderWindows = () => {
+  reminderMoveId="";
   delete state.reminderWindows;
   rebuildReminderAfterTimeChange(); save(); renderContacts();
 };
 // Changing a time has to change the message too, so a typed-over reminder is
 // rebuilt rather than left quietly naming the old times.
-function rebuildReminderAfterTimeChange(){
-  if (!(state.reminderMessage||"").trim()) return;
+function rebuildReminderAfterTimeChange(windowId){
+  let had=Boolean((state.reminderMessage||"").trim());
   delete state.reminderMessage;
-  flash("↻ Message rebuilt with the new times");
+  const by=state.reminderMessageByWindow;
+  if (by){
+    if (windowId){
+      if (by[windowId]){ had=true; delete by[windowId]; }
+    } else if (Object.keys(by).length){
+      had=true; state.reminderMessageByWindow={};
+    }
+  }
+  if (had) flash("↻ Message rebuilt with the new times");
 }
 window.setTownWindow = (key, field, value) => {
   if (!/^\d{1,2}:\d{2}$/.test(value||"")) return;
@@ -5641,33 +5835,36 @@ function showBulkSendResult(message, hasProblem=false){
    The clipboard write has to start first and synchronously - a phone only lets a
    page write to the clipboard while it is still handling the tap, so it cannot
    wait behind a network call. */
-window.bulkSend = async () => {
+window.bulkSend = async (groupId) => {
   if (bulkSendBusy) return;
-  const recipients = selectedRecipients();
-  if (!recipients.length) return alert("Select at least one customer first.");
-  const batches = messageBatches(recipients);
+  groupId = String(groupId||"");
+  const group = groupId ? reminderWindows().find(w=>w.id===groupId) : null;
+  if (groupId && !group) return alert("That group is gone.");
+  const recipients = selectedRecipients().filter(s=>!group || group.stopIds.includes(s.id));
+  if (!recipients.length) return alert(group
+    ? "Tick at least one person in this group first."
+    : "Select at least one customer first.");
+  const batches = messageBatches(recipients, groupId);
   const phoneBatches = batches.filter(batch=>batchPhoneNumbers(batch).length);
   const nums = phoneBatches.flatMap(batch=>batchPhoneNumbers(batch)).map(n=>n.replace(/[^\d+]/g,""));
   const mailable = recipients.filter(s => goodEmail(s.email));
   if (!nums.length && !mailable.length){
     return alert("None of the selected customers have a phone number or an email address.");
   }
-  const message = bulkMessage();
-  if (!message) return alert(messageMode()==="reminder"
-    ? "Tap Optimise route on the Scheduled tab first — the reminder times come from the planned route."
-    : "Choose the collection day first, then check the message preview.");
+  const message = group ? reminderMessageForWindow(group) : bulkMessage();
+  if (messageMode()==="reminder" && !reminderWindows().some(w=>w.stopIds.length)) return alert("Add pickups first.");
+  if (messageMode()!=="reminder" && !message) return alert("Choose the collection day first, then check the message preview.");
   const confirming = messageMode()==="confirm";
   if (confirming && !state.confirmationDate) return alert("Choose the collection day first.");
-  // Spell out everything that is about to happen, because most of it cannot be
-  // taken back once it has gone.
   const day = collectionDayLabel(state.confirmationDate) || "the chosen day";
+  const who = group ? reminderWindowPlaces(group) : "";
   const lines = [];
-  if (phoneBatches.length>1) lines.push(`Prepare ${phoneBatches.length} separate text groups so each window gets its own time`);
+  if (phoneBatches.length>1) lines.push(`Prepare ${phoneBatches.length} separate text groups, one per town`);
   else if (nums.length) lines.push(`Copy ${nums.length} number${nums.length!==1?"s":""} and open Messages`);
   if (mailable.length) lines.push(`Email the same message to ${mailable.length} of them`);
   if (confirming) lines.push(`Save ${day} to their online accounts`);
   lines.push(`Mark ${recipients.length} customer${recipients.length!==1?"s":""} as messaged`);
-  if (!confirm(`${confirming?"Send the confirmation":"Send the reminder"} to ${recipients.length} customer${recipients.length!==1?"s":""}?\n\n`
+  if (!confirm(`${confirming?"Send the confirmation":(who ? `Send the ${who} reminder` : "Send the reminder")} to ${recipients.length} customer${recipients.length!==1?"s":""}?\n\n`
     + lines.map(line => `• ${line}`).join("\n"))) return;
   bulkSendBusy = true;
   setBulkSendBusy(true, recipients.length);
