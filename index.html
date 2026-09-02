@@ -752,7 +752,7 @@
 const NP = { lat: -39.0556, lng: 174.0752 };          // New Plymouth default centre
 const LS = "naki_route_v1";                            // old single-run key (kept as a safety backup)
 const RUNS_LS = "naki_pickup_runs_v1";                 // named runs + shared unpaid ledger
-const GEO = "naki_geocache_v3";                        // address -> {lat,lng,label} cache (v2 dropped: street-level matches were saved with labels that lost the house number)
+const GEO = "naki_geocache_v4";                        // address -> {lat,lng,label}; v4 drops unit-number guesses such as 1/34 -> 34A
 const UA  = "NakiPickupRun/1.0 (whiteware pickup route planner; nakiwreckremoval@gmail.com)";
 const API = "https://naki-route-api.nakiwreckremoval.workers.dev/v2";
 const OWNER_TOKEN_KEY = "naki_owner_token_v1";
@@ -1546,7 +1546,7 @@ function renderDirectBookings(){
     const address=esc(bookingAddress(b));
     // Unescaped copy for the maps link - esc() is for putting text in the page,
     // and double-encoding it here would break the search.
-    const navAddress=bookingAddress(b);
+    const navAddress=bookingNavAddress(b);
     const items=esc(groupItems(b.items).join(", "));
     const date=new Date(b.createdAt).toLocaleString("en-NZ",{day:"numeric",month:"short",hour:"numeric",minute:"2-digit"});
     const terminal=["COMPLETED","DECLINED","CANCELLED"].includes(b.status) && !b.invoiceOwing;
@@ -2619,7 +2619,7 @@ function renderCustomers(){
           ${c.phone?`<a class="ghost sm" href="sms:${esc(String(c.phone).replace(/[^\d+]/g,""))}">💬 Text</a>`:""}
           ${c.phone?`<a class="ghost sm" href="tel:${esc(String(c.phone).replace(/[^\d+]/g,""))}">📞 Call</a>`:""}
           ${c.email?`<a class="ghost sm" href="mailto:${encodeURIComponent(c.email)}">✉️ Email</a>`:""}
-          ${address?`<a class="ghost sm" target="_blank" rel="noopener" href="https://www.google.com/maps/search/?api=1&amp;query=${encodeURIComponent([c.streetAddress,c.town,c.area].filter(Boolean).join(", "))}">🧭 Navigate</a>`:""}
+          ${address?`<a class="ghost sm" target="_blank" rel="noopener" href="https://www.google.com/maps/search/?api=1&amp;query=${encodeURIComponent(safeMapsAddress(c.streetAddress,c.town,c.area))}">🧭 Navigate</a>`:""}
           ${c.bookings ? `<button class="ghost sm" data-customer-bookings="${esc(c.email)}">📋 Their bookings</button>` : ""}
           ${seenAction}
           <button class="ghost sm" title="Edit this customer's details" data-edit-customer="${esc(c.id)}">✎ Edit</button>
@@ -2921,7 +2921,8 @@ async function geocode(addr){
   lastGeoMismatch = false;
   const key = normKey(addr);
   if (!key) return null;
-  if (geocache[key]) return geocache[key];                 // cache hit — never re-fetch
+  if (geocache[key] && !labelDroppedNumber(addr, geocache[key].label)) return geocache[key];
+  if (geocache[key]) delete geocache[key];                 // discard an old wrong-number guess
   const knownKey = Object.keys(KNOWN_ADDRESSES).find(k => key.includes(k));
   if (knownKey){
     const hit = KNOWN_ADDRESSES[knownKey];
@@ -2937,7 +2938,7 @@ async function geocode(addr){
     // the map and route order, but no label is saved - so Navigate hands Google
     // Maps the full typed address instead of parking Woody on the wrong street.
     const want = houseNumberOf(addr);
-    const label = want && !normKey(top.label||"").includes(want) ? "" : (top.label || "");
+    const label = want && houseNumberOf(top.label) !== want ? "" : (top.label || "");
     const hit = { lat:+top.lat, lng:+top.lng, label, mismatch:Boolean(google.townMismatch) };
     geocache[key] = hit; saveGeo();
     return hit;
@@ -2956,7 +2957,7 @@ async function geocode(addr){
       const row = data[0];
       const osmLabel = String(row.display_name || "").split(",").slice(0, 4).join(",").trim();
       const want = houseNumberOf(addr);
-      const label = want && !normKey(osmLabel).includes(want) ? "" : osmLabel;
+      const label = want && houseNumberOf(osmLabel) !== want ? "" : osmLabel;
       const hit = { lat:+row.lat, lng:+row.lon, label };
       geocache[key] = hit; saveGeo();
       return hit;
@@ -2984,11 +2985,15 @@ function addressWithoutUnit(addr){
   return simpler && normKey(simpler) !== normKey(addr) ? simpler : "";
 }
 
-// "2A Tawa Street" -> "2a". "" when there is no house number to check against.
-// Handles flat numbers too ("18/3B Dixon Ave" -> "18/3b"), and unit-first lines
-// ("Flat 1, 18 Dixon Ave") read as no number - their street part is what counts.
+// The physical street number, not the unit: "1/34 Waimea Street" -> "34".
+// This prevents Google treating the unit 1 as house 1 or changing it to 34A.
 function houseNumberOf(text){
-  const m = String(text==null?"":text).trim().match(/^(?:[a-z]+\.?\s*\d+\s*[,\-]?\s*)?(\d+[a-z]?(?:\s*\/\s*\d+[a-z]?)?)\b/i);
+  const value=String(text==null?"":text).trim();
+  let m=value.match(/^(?:(?:flat|unit|apartment|apt|shop|villa|room|rm)\s*\.?\s*)?\d+[a-z]?\s*\/\s*(\d+[a-z]?)(?=\b|[\s,])/i);
+  if (m) return normKey(m[1]);
+  m=value.match(/^(?:flat|unit|apartment|apt|shop|villa|room|rm)\s*\.?\s*\d+[a-z]?\s*[,\-]\s*(\d+[a-z]?)(?=\b|[\s,])/i);
+  if (m) return normKey(m[1]);
+  m=value.match(/^(\d+[a-z]?)(?=\b|[\s,])/i);
   return m ? normKey(m[1]) : "";
 }
 // Coordinates from anything that might get pasted: a bare "-39.45, 173.86", or
@@ -3007,7 +3012,7 @@ function coordsFromText(text){
 // a street-level match ("2A Tawa Street" answered as plain "Tawa Street").
 function labelDroppedNumber(street, label){
   const want = houseNumberOf(street);
-  return Boolean(want) && !normKey(label||"").includes(want);
+  return Boolean(want) && houseNumberOf(label) !== want;
 }
 
 // Save a lookup onto a stop: coords, the address Google actually confirmed, and
@@ -3064,6 +3069,15 @@ function uniqueAddressParts(parts){
 }
 function bookingAddress(b){
   return uniqueAddressParts([b.streetAddress, b.town, b.area]).join(", ");
+}
+function safeMapsAddress(street,town,area){
+  const physical=addressWithoutUnit(street) || String(street||"").trim();
+  let address=uniqueAddressParts([physical,town,area]).join(", ");
+  if (address && !/taranaki|new zealand|\bnz\b/i.test(address)) address += ", Taranaki, New Zealand";
+  return address;
+}
+function bookingNavAddress(b){
+  return safeMapsAddress(b.streetAddress,b.town,b.area);
 }
 function fullAddr(s){
   return uniqueAddressParts([s.street, s.town]).join(", ") || s._rawAddr || "";
@@ -5928,15 +5942,21 @@ window.togglePriority = id => {
 // so Google finds the exact house number (a pin from rough coords can land next door).
 function navAddress(s){
   if (!s) return "";
+  const physical=addressWithoutUnit(s.street);
+  if (physical){
+    // Keep the unit on the pickup card, but send Maps the registered physical
+    // street number. Google misreads slash units such as 1/34.
+    if (s.geoLabel && !labelDroppedNumber(physical, s.geoLabel))
+      return /new zealand|\bnz\b/i.test(s.geoLabel) ? s.geoLabel : `${s.geoLabel}, New Zealand`;
+    return safeMapsAddress(physical,s.town,"");
+  }
   // Google's confirmed address only wins when it kept the house number. A
   // "2A Tawa Street" that came back as plain "Tawa Street" would send Maps to a
   // street, not a letterbox — the full typed address is worth more then.
   if (s.geoLabel && !labelDroppedNumber(s.street, s.geoLabel))
     return /new zealand|\bnz\b/i.test(s.geoLabel) ? s.geoLabel : `${s.geoLabel}, New Zealand`;
   if (!s.street) return "";
-  let a = [s.street, s.town].filter(Boolean).join(", ");
-  if (!/taranaki|new zealand|nz/i.test(a)) a += ", Taranaki, New Zealand";
-  return a;
+  return safeMapsAddress(s.street,s.town,"");
 }
 function mapsDirUrl(s){
   const addr = navAddress(s);

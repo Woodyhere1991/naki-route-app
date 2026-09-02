@@ -398,11 +398,43 @@ function labelInTown(label, town) {
   return looseKey(label).includes(looseKey(town));
 }
 
-// "2A Tawa Street" -> "2a". Lets the OSM fallback rank letterbox-level answers
-// above street-level ones for the same query.
+// Split the unit from the physical street number. In NZ, "1/34" means unit 1
+// at street number 34; treating the first 1 as the street number is how map
+// searches end up at a completely different property.
+function addressNumberParts(text) {
+  const value = String(text || "").trim();
+  let match = value.match(/^(?:(?:flat|unit|apartment|apt|shop|villa|room|rm)\s*\.?\s*)?(\d+[a-z]?)\s*\/\s*(\d+)([a-z]?)(?=\b|[\s,])/i);
+  if (match) return {
+    unit: match[1].toLowerCase(), number: match[2], suffix: match[3].toLowerCase(),
+    house: `${match[2]}${match[3]}`.toLowerCase(), consumed: match[0].length
+  };
+  match = value.match(/^(?:flat|unit|apartment|apt|shop|villa|room|rm)\s*\.?\s*(\d+[a-z]?)\s*[,\-]\s*(\d+)([a-z]?)(?=\b|[\s,])/i);
+  if (match) return {
+    unit: match[1].toLowerCase(), number: match[2], suffix: match[3].toLowerCase(),
+    house: `${match[2]}${match[3]}`.toLowerCase(), consumed: match[0].length
+  };
+  match = value.match(/^(\d+)([a-z]?)(?=\b|[\s,])/i);
+  return match ? {
+    unit: "", number: match[1], suffix: match[2].toLowerCase(),
+    house: `${match[1]}${match[2]}`.toLowerCase(), consumed: match[0].length
+  } : null;
+}
+
 function houseNumberOf(text) {
-  const match = String(text || "").trim().match(/^(\d+[a-z]?(?:\s*\/\s*\d+[a-z]?)?)\b/i);
-  return match ? match[1].toLowerCase() : "";
+  return addressNumberParts(text)?.house || "";
+}
+
+function physicalAddressQuery(text) {
+  const value = String(text || "").trim();
+  const parts = addressNumberParts(value);
+  return parts?.unit ? `${parts.house}${value.slice(parts.consumed)}`.trim() : value;
+}
+
+function addressMatchScore(wanted, candidate) {
+  const want = addressNumberParts(wanted), got = addressNumberParts(candidate);
+  if (!want || !got || want.house !== got.house) return 0;
+  if (want.unit && got.unit === want.unit) return 3;
+  return 2;
 }
 
 /* ---------- LINZ NZ Addresses (authoritative, incl. rural rapid numbers) ---------- */
@@ -416,20 +448,21 @@ const LINZ_ADDRESSES_LAYER = "data.linz.govt.nz:layer-123113";
 // are a preference, not a rule — customers write their postal town while LINZ
 // knows the locality ("Mimi") — and a written unit letter ("2A") sometimes turns
 // out to be a plain "2" in the register, so both get relaxed step by step.
-function linzCqlFor(q, includeTown, dropSuffix) {
+function linzCqlFor(q, includeTown, dropSuffix, dropUnit = false) {
   const cleaned = String(q || "").replace(/\b(?:rd|rural delivery)\s*\d+\b/gi, " ")
     .replace(/\s+/g, " ").trim();
   const parts = cleaned.split(",").map(part => part.trim());
   const streetPart = parts[0] || "";
   const esc = s => String(s).replace(/'/g, "''");
   const conds = ["address_lifecycle='Current'"];
-  const numMatch = streetPart.match(/^(\d+)([a-zA-Z]?)\b/);
-  if (numMatch) {
-    conds.push(`address_number=${numMatch[1]}`);
-    const roadWords = streetPart.slice(numMatch[0].length).trim().replace(/['"]/g, "");
+  const numberParts = addressNumberParts(streetPart);
+  if (numberParts) {
+    conds.push(`address_number=${numberParts.number}`);
+    const roadWords = streetPart.slice(numberParts.consumed).trim().replace(/['"]/g, "");
     const words = roadWords.split(/\s+/).filter(Boolean).slice(0, 2);
     if (words.length) conds.push(`full_road_name_ascii ILIKE '${esc(words.join(" "))}%'`);
-    if (numMatch[2] && !dropSuffix) conds.push(`lower(full_address_number) LIKE '${esc(numMatch[1])}${esc(numMatch[2].toLowerCase())}%'`);
+    if (numberParts.suffix && !dropSuffix) conds.push(`lower(address_number_suffix)='${esc(numberParts.suffix)}'`);
+    if (numberParts.unit && !dropUnit) conds.push(`lower(unit_value)='${esc(numberParts.unit)}'`);
   } else {
     const words = streetPart.replace(/['"]/g, "").split(/\s+/).filter(Boolean).slice(0, 3);
     if (!words.length) return "";
@@ -446,12 +479,14 @@ async function linzAddressResults(env, q, limit) {
   // Most precise first; each step relaxes one guess. A hit at any step wins.
   // Town relaxes AFTER the unit letter: a written "2A" that's really "2" on the
   // right road beats an actual 2A on the other side of the country.
-  const attempts = [
-    linzCqlFor(q, true, false),
-    linzCqlFor(q, true, true),
-    linzCqlFor(q, false, false),
-    linzCqlFor(q, false, true)
-  ];
+  const attempts = [...new Set([
+    linzCqlFor(q, true, false, false),
+    linzCqlFor(q, false, false, false),
+    linzCqlFor(q, true, false, true),
+    linzCqlFor(q, false, false, true),
+    linzCqlFor(q, true, true, true),
+    linzCqlFor(q, false, true, true)
+  ])];
   for (const cql of attempts) {
     if (!cql) continue;
     const params = new URLSearchParams({
@@ -476,7 +511,7 @@ async function linzAddressResults(env, q, limit) {
     if (rows.length) {
       // Exact letterbox matches float above same-road neighbours.
       const wantHouse = houseNumberOf(q);
-      if (wantHouse) rows.sort((a, b) => Number(b.house === wantHouse) - Number(a.house === wantHouse));
+      if (wantHouse) rows.sort((a, b) => addressMatchScore(q, b.house) - addressMatchScore(q, a.house));
       return rows.map(({ label, lat, lng }) => ({ label, lat, lng }));
     }
   }
@@ -503,21 +538,28 @@ async function handleAddress(request, env) {
   const q = (url.searchParams.get("q") || "").trim().slice(0, 180);
   const limit = Math.max(1, Math.min(6, number(url.searchParams.get("limit"), 6)));
   if (q.length < 3) return json(request, { results: [] });
-  const key = cacheRequest(request, "address-v7", [q.toLowerCase(), String(limit)]);
+  const key = cacheRequest(request, "address-v8", [q.toLowerCase(), String(limit)]);
   return cached(request, key, 2592000, async () => {
-    const address = /new zealand|\bnz\b/i.test(q) ? q : `${q}, Taranaki, New Zealand`;
+    const physicalQuery = physicalAddressQuery(q);
+    const address = /new zealand|\bnz\b/i.test(physicalQuery) ? physicalQuery : `${physicalQuery}, Taranaki, New Zealand`;
     const town = townFromQuery(q);
-    const street = String(q).split(",")[0].trim();
+    const street = String(physicalQuery).split(",")[0].trim();
     if (env.GOOGLE_API_KEY) {
       try {
         let results = await googleGeocode(env, address, "country:NZ", limit);
+        // A numbered request only accepts the same physical street number.
+        // In particular, 1/34 may not silently become 34A.
+        if (houseNumberOf(physicalQuery)) {
+          results = results.filter(result => addressMatchScore(physicalQuery, result.label) > 0);
+        }
         const townChecked = Boolean(town);
         if (town && results.length && !results.some(result => labelInTown(result.label, town))) {
           // Wrong town: ask again, this time forcing Google to stay inside it.
           // Only a real letterbox counts — an interpolated guess in the right town
           // is worse than an exact match in the neighbouring one.
           const strict = await googleGeocode(env, `${street}, New Zealand`, `country:NZ|locality:${town}`, limit);
-          const inTown = strict.filter(result => labelInTown(result.label, town) && result.exact);
+          const inTown = strict.filter(result => labelInTown(result.label, town) && result.exact &&
+            (!houseNumberOf(physicalQuery) || addressMatchScore(physicalQuery, result.label) > 0));
           if (inTown.length) results = inTown;
         }
         if (results.length) {
@@ -555,9 +597,9 @@ async function handleAddress(request, env) {
         // A whole-address miss shouldn't become a dead end: retry with just the
         // road so the run at least gets a pin on the right road, and the app's
         // house-number check keeps it honest about how precise that is.
-        if (!results.length && /^\s*\d/.test(q)) {
-          const roadOnly = q.replace(/^\s*\d+[a-z]?(?:\s*\/\s*\d+[a-z]?)?\s*/i, "").trim();
-          if (roadOnly && roadOnly !== q) {
+        if (!results.length && /^\s*\d/.test(physicalQuery)) {
+          const roadOnly = physicalQuery.replace(/^\s*\d+[a-z]?\s*/i, "").trim();
+          if (roadOnly && roadOnly !== physicalQuery) {
             const retryParams = new URLSearchParams({ format: "json", addressdetails: "1", countrycodes: "nz", limit: String(limit), q: roadOnly });
             const retry = await fetch(`https://nominatim.openstreetmap.org/search?${retryParams}`, {
               headers: { "Accept": "application/json", "User-Agent": "NakiPickupRun/1.0 (nakiwreckremoval@gmail.com)" }
@@ -569,10 +611,10 @@ async function handleAddress(request, env) {
         }
         // "58A Argyle Street" deserves the answer with "58A" in it, not the bare
         // street OSM falls back to — numbered candidates float to the top.
-        const house = houseNumberOf(q);
+        const house = houseNumberOf(physicalQuery);
         if (house) {
           results.sort((a, b) =>
-            Number(looseKey(b.label).includes(house)) - Number(looseKey(a.label).includes(house)));
+            addressMatchScore(physicalQuery, b.label) - addressMatchScore(physicalQuery, a.label));
         }
         return json(request, { results, source: "OpenStreetMap fallback" }, 200, "public, max-age=2592000");
       }
@@ -965,3 +1007,5 @@ export default {
     }
   }
 };
+
+export { addressMatchScore, houseNumberOf, linzCqlFor, physicalAddressQuery };
