@@ -498,7 +498,7 @@ async function linzAddressResults(env, q, limit) {
     const response = await fetch(`https://data.linz.govt.nz/services;key=${env.LINZ_API_KEY}/wfs?${params}`);
     if (!response.ok) continue;
     const payload = await response.json();
-    const rows = ((payload || {}).features || []).map(feature => {
+    let rows = ((payload || {}).features || []).map(feature => {
       const props = feature.properties || {};
       const coords = (feature.geometry || {}).coordinates || [];
       return {
@@ -509,6 +509,12 @@ async function linzAddressResults(env, q, limit) {
       };
     }).filter(row => row.label && Number.isFinite(row.lat) && Number.isFinite(row.lng));
     if (rows.length) {
+      // Once a slash unit falls back to its physical street number, do not also
+      // offer neighbouring suffixes (1/34 must never offer 34A).
+      if (addressNumberParts(q)?.unit) {
+        rows = rows.filter(row => addressMatchScore(q, row.house) > 0);
+        if (!rows.length) continue;
+      }
       // Exact letterbox matches float above same-road neighbours.
       const wantHouse = houseNumberOf(q);
       if (wantHouse) rows.sort((a, b) => addressMatchScore(q, b.house) - addressMatchScore(q, a.house));
