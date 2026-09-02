@@ -403,21 +403,25 @@ function labelInTown(label, town) {
 // searches end up at a completely different property.
 function addressNumberParts(text) {
   const value = String(text || "").trim();
-  let match = value.match(/^(?:(?:flat|unit|apartment|apt|shop|villa|room|rm)\s*\.?\s*)?(\d+[a-z]?)\s*\/\s*(\d+)([a-z]?)(?=\b|[\s,])/i);
+  const build = (unit, number, suffix, highNumber, highSuffix, consumed) => ({
+    unit: String(unit || "").toLowerCase(), number,
+    suffix: String(suffix || "").toLowerCase(),
+    highNumber: String(highNumber || ""), highSuffix: String(highSuffix || "").toLowerCase(),
+    house: `${number}${suffix || ""}${highNumber ? `-${highNumber}${highSuffix || ""}` : ""}`.toLowerCase(),
+    consumed
+  });
+  let match = value.match(/^(?:(?:flat|unit|apartment|apt|shop|villa|room|rm|u)\s*\.?\s*|#\s*)?(\d+[a-z]?)\s*\/\s*(\d+)([a-z]?)(?:\s*-\s*(\d+)([a-z]?))?(?=\b|[\s,])/i);
   if (match) return {
-    unit: match[1].toLowerCase(), number: match[2], suffix: match[3].toLowerCase(),
-    house: `${match[2]}${match[3]}`.toLowerCase(), consumed: match[0].length
+    ...build(match[1], match[2], match[3], match[4], match[5], match[0].length)
   };
-  match = value.match(/^(?:flat|unit|apartment|apt|shop|villa|room|rm)\s*\.?\s*(\d+[a-z]?)\s*[,\-]\s*(\d+)([a-z]?)(?=\b|[\s,])/i);
+  match = value.match(/^(?:flat|unit|apartment|apt|shop|villa|room|rm|u)\s*\.?\s*(\d+[a-z]?)\s*(?:[,\-]\s*|at\s+|\s+)(\d+)([a-z]?)(?:\s*-\s*(\d+)([a-z]?))?(?=\b|[\s,])/i);
   if (match) return {
-    unit: match[1].toLowerCase(), number: match[2], suffix: match[3].toLowerCase(),
-    house: `${match[2]}${match[3]}`.toLowerCase(), consumed: match[0].length
+    ...build(match[1], match[2], match[3], match[4], match[5], match[0].length)
   };
+  match = value.match(/^(\d+)([a-z]?)\s*-\s*(\d+)([a-z]?)(?=\b|[\s,])/i);
+  if (match) return build("", match[1], match[2], match[3], match[4], match[0].length);
   match = value.match(/^(\d+)([a-z]?)(?=\b|[\s,])/i);
-  return match ? {
-    unit: "", number: match[1], suffix: match[2].toLowerCase(),
-    house: `${match[1]}${match[2]}`.toLowerCase(), consumed: match[0].length
-  } : null;
+  return match ? build("", match[1], match[2], "", "", match[0].length) : null;
 }
 
 function houseNumberOf(text) {
@@ -434,6 +438,7 @@ function addressMatchScore(wanted, candidate) {
   const want = addressNumberParts(wanted), got = addressNumberParts(candidate);
   if (!want || !got || want.house !== got.house) return 0;
   if (want.unit && got.unit === want.unit) return 3;
+  if (want.unit && got.unit) return 1;
   return 2;
 }
 
@@ -462,6 +467,13 @@ function linzCqlFor(q, includeTown, dropSuffix, dropUnit = false) {
     const words = roadWords.split(/\s+/).filter(Boolean).slice(0, 2);
     if (words.length) conds.push(`full_road_name_ascii ILIKE '${esc(words.join(" "))}%'`);
     if (numberParts.suffix && !dropSuffix) conds.push(`lower(address_number_suffix)='${esc(numberParts.suffix)}'`);
+    if (numberParts.highNumber) {
+      conds.push(`address_number_high=${numberParts.highNumber}`);
+      if (numberParts.highSuffix && !dropSuffix) {
+        const rangePattern = numberParts.unit ? `%/${numberParts.house}` : numberParts.house;
+        conds.push(`lower(full_address_number) LIKE '${esc(rangePattern)}'`);
+      }
+    }
     if (numberParts.unit && !dropUnit) conds.push(`lower(unit_value)='${esc(numberParts.unit)}'`);
   } else {
     const words = streetPart.replace(/['"]/g, "").split(/\s+/).filter(Boolean).slice(0, 3);
@@ -512,7 +524,10 @@ async function linzAddressResults(env, q, limit) {
       // Once a slash unit falls back to its physical street number, do not also
       // offer neighbouring suffixes (1/34 must never offer 34A).
       if (addressNumberParts(q)?.unit) {
-        rows = rows.filter(row => addressMatchScore(q, row.house) > 0);
+        const exactUnit = rows.filter(row => addressMatchScore(q, row.house) === 3);
+        const physicalBase = rows.filter(row =>
+          addressMatchScore(q, row.house) === 2 && !addressNumberParts(row.house)?.unit);
+        rows = exactUnit.length ? exactUnit : physicalBase;
         if (!rows.length) continue;
       }
       // Exact letterbox matches float above same-road neighbours.
@@ -544,7 +559,7 @@ async function handleAddress(request, env) {
   const q = (url.searchParams.get("q") || "").trim().slice(0, 180);
   const limit = Math.max(1, Math.min(6, number(url.searchParams.get("limit"), 6)));
   if (q.length < 3) return json(request, { results: [] });
-  const key = cacheRequest(request, "address-v9", [q.toLowerCase(), String(limit)]);
+  const key = cacheRequest(request, "address-v10", [q.toLowerCase(), String(limit)]);
   return cached(request, key, 2592000, async () => {
     const physicalQuery = physicalAddressQuery(q);
     const address = /new zealand|\bnz\b/i.test(physicalQuery) ? physicalQuery : `${physicalQuery}, Taranaki, New Zealand`;
@@ -1014,4 +1029,4 @@ export default {
   }
 };
 
-export { addressMatchScore, houseNumberOf, linzCqlFor, physicalAddressQuery };
+export { addressMatchScore, houseNumberOf, linzAddressResults, linzCqlFor, physicalAddressQuery };

@@ -752,7 +752,7 @@
 const NP = { lat: -39.0556, lng: 174.0752 };          // New Plymouth default centre
 const LS = "naki_route_v1";                            // old single-run key (kept as a safety backup)
 const RUNS_LS = "naki_pickup_runs_v1";                 // named runs + shared unpaid ledger
-const GEO = "naki_geocache_v4";                        // address -> {lat,lng,label}; v4 drops unit-number guesses such as 1/34 -> 34A
+const GEO = "naki_geocache_v5";                        // address -> {lat,lng,label}; v5 refreshes corrected units, suffixes and ranges
 const UA  = "NakiPickupRun/1.0 (whiteware pickup route planner; nakiwreckremoval@gmail.com)";
 const API = "https://naki-route-api.nakiwreckremoval.workers.dev/v2";
 const OWNER_TOKEN_KEY = "naki_owner_token_v1";
@@ -2978,9 +2978,9 @@ async function geocode(addr){
 // which is what stops it looking the same address up twice.
 function addressWithoutUnit(addr){
   const simpler = String(addr==null?"":addr)
-    .replace(/^\s*(?:flat|unit|apartment|apt|shop|villa|room|rm)\s*\.?\s*\d+\s*[a-z]?\s*(?:[,/\-]\s*|\s+)/i, "")
+    .replace(/^\s*(?:(?:flat|unit|apartment|apt|shop|villa|room|rm|u)\s*\.?\s*|#\s*)\d+\s*[a-z]?\s*(?:[,/\-]\s*|at\s+|\s+)/i, "")
     .replace(/^\s*rear\s*(?:of\s+)?[,\-]?\s*/i, "")
-    .replace(/^\s*\d+\s*[a-z]?\s*\/\s*(?=\d)/, "")
+    .replace(/^\s*\d+\s*[a-z]?\s*\/\s*(?=\d)/i, "")
     .trim();
   return simpler && normKey(simpler) !== normKey(addr) ? simpler : "";
 }
@@ -2989,10 +2989,12 @@ function addressWithoutUnit(addr){
 // This prevents Google treating the unit 1 as house 1 or changing it to 34A.
 function houseNumberOf(text){
   const value=String(text==null?"":text).trim();
-  let m=value.match(/^(?:(?:flat|unit|apartment|apt|shop|villa|room|rm)\s*\.?\s*)?\d+[a-z]?\s*\/\s*(\d+[a-z]?)(?=\b|[\s,])/i);
-  if (m) return normKey(m[1]);
-  m=value.match(/^(?:flat|unit|apartment|apt|shop|villa|room|rm)\s*\.?\s*\d+[a-z]?\s*[,\-]\s*(\d+[a-z]?)(?=\b|[\s,])/i);
-  if (m) return normKey(m[1]);
+  let m=value.match(/^(?:(?:flat|unit|apartment|apt|shop|villa|room|rm|u)\s*\.?\s*|#\s*)?\d+[a-z]?\s*\/\s*(\d+[a-z]?(?:\s*-\s*\d+[a-z]?)?)(?=\b|[\s,])/i);
+  if (m) return normKey(m[1]).replace(/\s+/g,"");
+  m=value.match(/^(?:flat|unit|apartment|apt|shop|villa|room|rm|u)\s*\.?\s*\d+[a-z]?\s*(?:[,\-]\s*|at\s+|\s+)(\d+[a-z]?(?:\s*-\s*\d+[a-z]?)?)(?=\b|[\s,])/i);
+  if (m) return normKey(m[1]).replace(/\s+/g,"");
+  m=value.match(/^(\d+[a-z]?\s*-\s*\d+[a-z]?)(?=\b|[\s,])/i);
+  if (m) return normKey(m[1]).replace(/\s+/g,"");
   m=value.match(/^(\d+[a-z]?)(?=\b|[\s,])/i);
   return m ? normKey(m[1]) : "";
 }
@@ -4034,6 +4036,8 @@ function renderList(){
     // say so on the card before the truck is rolling.
     const noNumTag = s.street && !/\d/.test(s.street) && !isDone
       ? `<span class="asaptag" style="background:var(--warn);color:#16212a" title="This address has no street number">NO NUMBER</span>` : "";
+    const unconfirmedAddress = !isDone && s.street && /\d/.test(s.street) && !s.geoLabel
+      ? `<div class="addr" style="color:#ffd08a">⚠️ Exact map pin not confirmed — check the address before driving</div>` : "";
     const invoicedTag = s.unpaidSourceId ? `<span class="asaptag" style="background:#c0392b">INVOICE SENT</span>` : "";
     const apps = (s.appliances||[]).map(a=>`<span class="chip">${esc(a)}</span>`).join("");
     const callFirst = /call|text|phone|ring|txt/i.test(s.additional_info||"");
@@ -4077,6 +4081,7 @@ function renderList(){
         ${phoneLine}
         <div class="addr">${esc(fullAddr(s))} ${tag} ${priceTag}</div>
         ${navDiffers(s)?`<div class="addr" style="color:#ffd08a">🧭 Navigates to ${esc(s.geoLabel)}</div>`:""}
+        ${unconfirmedAddress}
         ${apps?`<div class="apps">${apps}</div>`:""}
         ${formNote}
         ${userNote}
@@ -5960,7 +5965,11 @@ function navAddress(s){
 }
 function mapsDirUrl(s){
   const addr = navAddress(s);
-  const dest = addr ? encodeURIComponent(addr)
+  const physical=addressWithoutUnit(s?.street);
+  const confirmedUnitPoint=physical && s?.geoLabel && !labelDroppedNumber(physical,s.geoLabel)
+    && isFinite(s?.lat) && isFinite(s?.lng);
+  // Coordinates avoid Google reinterpreting a valid NZ slash-unit address.
+  const dest = confirmedUnitPoint ? `${s.lat},${s.lng}` : addr ? encodeURIComponent(addr)
                     : (isFinite(s.lat) && isFinite(s.lng) ? `${s.lat},${s.lng}` : "");
   return dest ? `https://www.google.com/maps/dir/?api=1&travelmode=driving&dir_action=navigate&destination=${dest}` : "";
 }
