@@ -544,7 +544,7 @@ async function handleAddress(request, env) {
   const q = (url.searchParams.get("q") || "").trim().slice(0, 180);
   const limit = Math.max(1, Math.min(6, number(url.searchParams.get("limit"), 6)));
   if (q.length < 3) return json(request, { results: [] });
-  const key = cacheRequest(request, "address-v8", [q.toLowerCase(), String(limit)]);
+  const key = cacheRequest(request, "address-v9", [q.toLowerCase(), String(limit)]);
   return cached(request, key, 2592000, async () => {
     const physicalQuery = physicalAddressQuery(q);
     const address = /new zealand|\bnz\b/i.test(physicalQuery) ? physicalQuery : `${physicalQuery}, Taranaki, New Zealand`;
