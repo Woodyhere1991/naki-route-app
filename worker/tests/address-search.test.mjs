@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   addressMatchScore,
   houseNumberOf,
+  linzAddressResults,
   linzCqlFor,
   physicalAddressQuery
 } from "../src/index.js";
@@ -59,4 +60,35 @@ test("LINZ lookup keeps registered address ranges exact", () => {
   assert.match(letteredRange, /address_number_high=7/);
   assert.match(letteredRange, /lower\(address_number_suffix\)='a'/);
   assert.match(letteredRange, /lower\(full_address_number\) LIKE '1a-7a'/);
+});
+
+test("LINZ results never include a neighbouring unit or letter suffix", async () => {
+  const originalFetch = globalThis.fetch;
+  const feature = (fullAddressNumber, fullAddress, offset) => ({
+    properties: { full_address_number: fullAddressNumber, full_address: fullAddress },
+    geometry: { coordinates: [174.05 + offset, -39.08 - offset] }
+  });
+  globalThis.fetch = async () => new Response(JSON.stringify({ features: [
+    feature("10A", "10A Test Street, New Plymouth", 0),
+    feature("1/10A", "1/10A Test Street, New Plymouth", 0.001),
+    feature("2/10A", "2/10A Test Street, New Plymouth", 0.002),
+    feature("34", "34 Test Street, New Plymouth", 0.003),
+    feature("34A", "34A Test Street, New Plymouth", 0.004)
+  ] }));
+  try {
+    assert.deepEqual(
+      (await linzAddressResults({ LINZ_API_KEY: "test" }, "1/10A Test Street, New Plymouth", 6)).map(row => row.label),
+      ["1/10A Test Street, New Plymouth"]
+    );
+    assert.deepEqual(
+      (await linzAddressResults({ LINZ_API_KEY: "test" }, "9/10A Test Street, New Plymouth", 6)).map(row => row.label),
+      ["10A Test Street, New Plymouth"]
+    );
+    assert.deepEqual(
+      (await linzAddressResults({ LINZ_API_KEY: "test" }, "34 Test Street, New Plymouth", 6)).map(row => row.label),
+      ["34 Test Street, New Plymouth"]
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });

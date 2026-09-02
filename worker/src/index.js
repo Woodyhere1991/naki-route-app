@@ -513,21 +513,28 @@ async function linzAddressResults(env, q, limit) {
     let rows = ((payload || {}).features || []).map(feature => {
       const props = feature.properties || {};
       const coords = (feature.geometry || {}).coordinates || [];
+      const numberText = String(props.full_address_number || props.full_address || "");
       return {
         label: String(props.full_address || ""),
         lat: number(coords[1], NaN),
         lng: number(coords[0], NaN),
-        house: houseNumberOf(String(props.full_address_number || props.full_address || ""))
+        numberText,
+        house: houseNumberOf(numberText)
       };
     }).filter(row => row.label && Number.isFinite(row.lat) && Number.isFinite(row.lng));
     if (rows.length) {
       // Once a slash unit falls back to its physical street number, do not also
       // offer neighbouring suffixes (1/34 must never offer 34A).
-      if (addressNumberParts(q)?.unit) {
-        const exactUnit = rows.filter(row => addressMatchScore(q, row.house) === 3);
+      const wantedNumber = addressNumberParts(q);
+      if (wantedNumber?.unit) {
+        const exactUnit = rows.filter(row => addressMatchScore(q, row.numberText) === 3);
         const physicalBase = rows.filter(row =>
-          addressMatchScore(q, row.house) === 2 && !addressNumberParts(row.house)?.unit);
+          addressMatchScore(q, row.numberText) === 2 && !addressNumberParts(row.numberText)?.unit);
         rows = exactUnit.length ? exactUnit : physicalBase;
+        if (!rows.length) continue;
+      } else if (wantedNumber) {
+        // A typed 34 only gets 34, never 34A; a typed 34A only gets 34A.
+        rows = rows.filter(row => addressMatchScore(q, row.numberText) === 2);
         if (!rows.length) continue;
       }
       // Exact letterbox matches float above same-road neighbours.
@@ -559,7 +566,7 @@ async function handleAddress(request, env) {
   const q = (url.searchParams.get("q") || "").trim().slice(0, 180);
   const limit = Math.max(1, Math.min(6, number(url.searchParams.get("limit"), 6)));
   if (q.length < 3) return json(request, { results: [] });
-  const key = cacheRequest(request, "address-v10", [q.toLowerCase(), String(limit)]);
+  const key = cacheRequest(request, "address-v11", [q.toLowerCase(), String(limit)]);
   return cached(request, key, 2592000, async () => {
     const physicalQuery = physicalAddressQuery(q);
     const address = /new zealand|\bnz\b/i.test(physicalQuery) ? physicalQuery : `${physicalQuery}, Taranaki, New Zealand`;
