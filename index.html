@@ -1609,9 +1609,11 @@ function renderDirectBookings(){
             : `<button class="ghost sm" onclick="openRunForUnpaid('${linkedUnpaidRun.id}')">📍 Go to run</button>`)
         : isCollected(unpaid) ? ""
         : `<button class="good sm" onclick="addUnpaidToRun('${unpaid.id}')">↩ Add to active run</button>`;
-    const unpaidMoneyActions=unpaid ? `<button class="good sm" onclick="markPaid('${unpaid.id}')">💰 Mark paid</button>
-      <button class="ghost sm" onclick="receiptStop('${unpaid.id}')">🧾 Send receipt</button>
-      <button class="ghost sm" onclick="invoiceStop('${unpaid.id}')">📄 Invoice again</button>` : "";
+    const unpaidMoneyActions=!unpaid ? "" : unpaid.paid
+      ? `<button class="ghost sm" onclick="receiptStop('${unpaid.id}')">🧾 Send receipt again</button>`
+      : `<button class="good sm" onclick="receiptStop('${unpaid.id}')">🧾 Send receipt</button>
+      <button class="ghost sm" title="Only if no receipt is needed — sending a receipt marks it paid on its own" onclick="markPaid('${unpaid.id}')">💰 Mark paid</button>
+      <button class="ghost sm" onclick="invoiceStop('${unpaid.id}')">📄 Invoice again</button>`;
     // The stop in the ledger knows best; a booking billed straight off its card
     // has no stop, so fall back to what was saved when the invoice went out.
     const owingFacts = unpaid || bookingInvoiceFacts(b);
@@ -5422,12 +5424,12 @@ window.sendReceipt = async id => {
     s.status = "DONE";
     s.historyStatus = "COMPLETED";
     s.collectedAt = s.collectedAt || Date.now();
-    // A receipt only goes out once the money is in, so an invoiced pickup settles
-    // itself here — no second tap on 💰 Paid, and no reminder chasing a paid job.
-    if (s.invoiceSent && !s.paid){
+    // A receipt means the money is in, so sending one always settles the pickup —
+    // no second tap on Mark paid, and no reminder chasing a paid job.
+    if (!s.paid){
       s.paid = true;
-      await cancelReminderFor(s);
     }
+    await cancelReminderFor(s);
     save(); render(); drawRoute();
     if (s.src==="direct" && s.submission_id){
       queueDirectCompletion(s.submission_id);
@@ -5466,9 +5468,8 @@ window.sendReceipt = async id => {
       const out = await res.json().catch(()=>({}));
       busy("");
       if (res.ok && out.ok){
-        const wasInvoiced = s.invoiceSent;
         await done();
-        flash("✓ Receipt emailed to " + to + (wasInvoiced ? " · marked paid and completed" : " · booking marked completed"));
+        flash("✓ Receipt emailed to " + to + " · marked paid and completed");
         return;
       }
     }catch(e){ busy(""); }
@@ -5480,7 +5481,7 @@ window.sendReceipt = async id => {
     try{
       await navigator.share({ files:[file], title:"Naki Whiteware Removal receipt" });
       await done();
-      if (goodEmail(s.email)) flash("✓ Their email is copied — paste it into To.");
+      flash("✓ Receipt sent · marked paid and completed.");
       return;
     }catch(e){ if (e && e.name==="AbortError") return; /* keep the Send button */ }
   }
@@ -5490,7 +5491,7 @@ window.sendReceipt = async id => {
   setTimeout(()=>URL.revokeObjectURL(blobUrl), 60000);
   if (goodEmail(s.email)) openGmail({ to:s.email.trim(), subject:"Receipt - Whiteware collection" });
   await done();
-  flash("✓ PDF opened — attach it to the email.");
+  flash("✓ Receipt done · marked paid and completed.");
 };
 
 /* ---------- Invoices (unpaid pickups) ---------- */
@@ -5761,13 +5762,14 @@ async function cancelReminderFor(s){
   }catch(e){ /* reminder email says "ignore if you've paid" — safe if this misses */ }
   s.reminderId = "";
 }
-// Paid up: cancel any waiting auto-reminder and move the card to Completed.
+// Paid up without a receipt: cancel any waiting auto-reminder and move the card
+// to Completed. Sending a receipt already does this on its own.
 window.markPaid = async id => {
   const s = findStop(id); if(!s) return;
   if (!confirm(`Mark ${fullName(s)||"this pickup"} as paid?`)) return;
   await cancelReminderFor(s);
   await settleAsPaid(s);
-  flash("✓ Paid — send the receipt to finish the job.");
+  flash("✓ Marked paid.");
 };
 // Paid means the job is finished, so push it up as COMPLETED — that's what moves
 // it out of Owing and down into Done in Bookings.
