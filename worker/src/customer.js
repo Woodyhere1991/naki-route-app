@@ -2027,7 +2027,7 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
         id: row.id,
         fromId: row.sender_id,
         from: arcadeDisplayName(row),
-        game: row.game === "squad" ? "squad" : "wio",
+        game: row.game === "invade" ? "invade" : row.game === "squad" ? "squad" : "wio",
         room: row.room,
         at: Number(row.created_at || 0),
         expiresAt: Number(row.expires_at || 0)
@@ -2174,11 +2174,14 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
       const recipient = clean(body.customerId, 80);
       const game = clean(body.game || "wio", 20).toLowerCase();
       const inApp = body.inApp === true;
-      if (game !== "wio" && game !== "squad") {
+      if (game !== "wio" && game !== "squad" && game !== "invade") {
         return json(request, { error: "Choose a multiplayer game" }, 400);
       }
-      const requestedRoom = clean(body.room, 24);
-      const room = game === "squad"
+      const requestedRoom = clean(body.room, game === "invade" ? 64 : 24);
+      if (game === "invade" && (!inApp || !/^[a-f0-9]{32}$/.test(requestedRoom))) {
+        return json(request, { error: "Create a Microwave Invasion room before inviting a friend" }, 400);
+      }
+      const room = game === "invade" ? requestedRoom : game === "squad"
         ? (requestedRoom.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 5)
             || randomToken(5).toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 5))
         : (requestedRoom.toLowerCase().replace(/[^a-z0-9_-]/g, "").slice(0, 24)
@@ -2228,7 +2231,7 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
           `INSERT INTO arcade_lobby_invites
             (id, sender_id, recipient_id, game, room, created_at, expires_at)
            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)`
-        ).bind(randomToken(12), me, recipient, game, room, stamp, stamp + LOBBY_INVITE_TTL_MS)
+        ).bind(randomToken(12), me, recipient, game, room, stamp, stamp + (game === "invade" ? 6 * 60 * 60 * 1000 : LOBBY_INVITE_TTL_MS))
         ,
         ...(inApp ? [] : [env.CUSTOMER_DB.prepare(
           `INSERT INTO arcade_invite_sends (id, sender_id, recipient_id, created_at)
@@ -2250,7 +2253,7 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
     // behind doesn't point a friend at a room nobody is in.
     const inviteCancelRoom = path.match(/^\/customer\/arcade\/invites\/room\/([^/]+)$/);
     if (inviteCancelRoom && request.method === "DELETE") {
-      const room = clean(decodeURIComponent(inviteCancelRoom[1]), 24);
+      const room = clean(decodeURIComponent(inviteCancelRoom[1]), 32);
       if (room) {
         await env.CUSTOMER_DB.prepare(
           "DELETE FROM arcade_lobby_invites WHERE sender_id = ?1 AND room = ?2"
