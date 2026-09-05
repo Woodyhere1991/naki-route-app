@@ -578,9 +578,9 @@
       <button class="ghost sm" id="customerFillBlanks" style="display:none"></button>
     </div>
     <div id="customerStatus" class="small muted"></div>
-    <p id="customerPageHint" class="small muted" hidden>More customers are available. Search all records above, or load more below.</p>
+    <p class="small muted">App installs are recorded when opened from the home screen. Later removals and browser shortcuts cannot be confirmed.</p>
     <div id="customerList"></div>
-    <button class="ghost" id="customerLoadMore" hidden>Load more customers</button>
+
     <!-- Occasional reading, not the reason you opened this page: it sits under the list. -->
     <details class="card" id="insightsCard" style="display:none">
       <summary><b>📊 Where customers come from</b><span class="chev">›</span></summary>
@@ -2310,7 +2310,7 @@ $("#customersRefresh").onclick=()=>loadCustomers(true);
 $("#addContactBtn").onclick=()=>addCustomContact();
 $("#customerFillBlanks").onclick=()=>fillCustomerBlanksFromJobs();
 $("#bookingSearch").addEventListener("input",event=>{ bookingSearchText=event.target.value.trim().toLowerCase(); renderDirectBookings(); queueOwnerSearch("bookings"); });
-$("#customerSearch").addEventListener("input",event=>{ customerSearchText=event.target.value.trim().toLowerCase(); renderCustomers(); queueOwnerSearch("customers"); });
+$("#customerSearch").addEventListener("input",event=>{ customerSearchText=event.target.value.trim().toLowerCase(); renderCustomers(); });
 // Tapping List also shuts every card that was opened one at a time. Without
 // this, coming back from Full left a screen of open cards to close by hand -
 // so List doubles as "collapse the lot".
@@ -2606,7 +2606,7 @@ function renderCustomers(){
   const visibleCustomers=filledCustomers.filter(c=>matchesSearch(c,customerSearchText));
   if (!visibleCustomers.length){
     list.innerHTML='<div class="card"><b>Nothing matches that search.</b></div>';
-    customerStatus(`0 of ${allCustomers.length} customers.`);
+    customerStatus(customerDirectorySummary(customerRows,customContactRows(),0,customerSearchText));
     return;
   }
   list.innerHTML = groupByTown(visibleCustomers).map((group,groupIndex)=>{
@@ -2622,10 +2622,9 @@ function renderCustomers(){
       </div>` : "";
       const bookingCount=`${c.bookings} booking${c.bookings===1?"":"s"}`;
       // The account site tells us the moment it catches itself running from the
-      // home screen, not the moment someone taps "Add". Good enough to answer
-      // "who's actually saved this" without needing anything from the phone itself.
+      // home screen. This is historical evidence, not proof it is still installed.
       const installedOn=c.pwaInstalledAt ? new Date(c.pwaInstalledAt).toLocaleDateString("en-NZ",{day:"numeric",month:"short",year:"numeric"}) : "";
-      const appBadge=installedOn?`<div class="direct-meta"><span title="First seen running as an installed app">📲 App saved to phone · ${esc(installedOn)}</span></div>`:"";
+      const appBadge=installedOn?`<div class="direct-meta"><span title="Recorded running from the home screen; later removal cannot be detected">📲 App install recorded · ${esc(installedOn)}</span></div>`:"";
       const newBadge=c.isNew?`<span class="new-customer-badge" title="New customer — opening this card clears the sign">New</span>`:"";
       const seenAction=c.isNew?`<button class="ghost sm" data-customer-seen="${esc(c.id)}">✓ Mark as seen</button>`:"";
       const body=`<div>${address}</div>
@@ -2697,11 +2696,7 @@ function renderCustomers(){
   });
   restoreTownGroups(list,customerGroupOpen,"naki_customer_group_open_v1",Boolean(customerSearchText));
   paintCustomerFillButton();
-  const installedCount=customerRows.filter(c=>c.pwaInstalledAt).length;
-  const installedNote=installedCount?` · 📲 ${installedCount} have the app`:"";
-  customerStatus(customerSearchText
-    ? `${visibleCustomers.length} of ${customerRows.length} customers match.`
-    : `${customerRows.length} customer${customerRows.length===1?"":"s"}.${installedNote}`);
+  customerStatus(customerDirectorySummary(customerRows,customContactRows(),visibleCustomers.length,customerSearchText));
 }
 async function deleteCustomer(id){
   const c=customerRows.find(row=>row.id===id); if(!c) return;
@@ -2882,18 +2877,20 @@ function deleteCustomContact(id){
   saveCustomContacts(); renderCustomers();
   flash(`${who} deleted`);
 }
-async function loadCustomers(showLoading=false,more=false){
+async function loadCustomers(showLoading=false){
+  const session=ownerToken;
   if (!ownerToken){ renderCustomers(); return; }
   if (showLoading) customerStatus("Loading customers…");
   try{
-    const data=await loadOwnerCollection("customers",customerSearchText,more);
+    const data=await loadCompleteCustomers();
+    if(ownerToken!==session) return;
     const nextRows=Array.isArray(data.customers) ? data.customers : [];
     if (!showLoading && JSON.stringify(nextRows)===JSON.stringify(customerRows)) return;
     customerRows=nextRows;
     renderCustomers();
     $("#insightsCard").style.display="";
     if ($("#insightsCard").open) loadInsights();
-  }catch(e){ customerStatus(e.message,true); }
+  }catch(e){ if(ownerToken===session) customerStatus(e.message+" Showing the last successfully loaded list, if available.",true); }
 }
 let ownerRefreshBusy=false, ownerBookingsAt=0,ownerCustomersAt=0;
 async function refreshOwnerData(){

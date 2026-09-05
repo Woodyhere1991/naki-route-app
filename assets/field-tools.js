@@ -175,7 +175,6 @@ async function loadRunWeather(force=false) {
 
 function fieldBoot() {
   document.getElementById('bookingLoadMore').onclick=()=>loadDirectBookings(true,true);
-  document.getElementById('customerLoadMore').onclick=()=>loadCustomers(true,true);
   document.getElementById('fieldSave')?.addEventListener('click',()=>{if(!ownerToken)setAppView('bookings');else retryFieldSync();});
   window.addEventListener('online',()=>{retryFieldSync();refreshOwnerData();refreshWeather(true);});
   window.addEventListener('offline',()=>{paintCloudState('Saved on phone · offline, waiting to sync',true);renderWeather();});
@@ -213,4 +212,36 @@ async function loadOwnerCollection(kind,search,more=false) {
     if(hint)hint.hidden=!page.hasMore;
     return {...data,[kind]:page.rows};
   } finally {button.disabled=false;}
+}
+
+// Customer totals and local word-by-word search need the complete directory.
+// Publish only after every page succeeds; coalesce refreshes for the same login.
+let completeCustomersRequest=null;
+function loadCompleteCustomers() {
+  const session=ownerToken;
+  if(completeCustomersRequest?.session===session) return completeCustomersRequest.promise;
+  const pending={session};
+  pending.promise=(async()=>{
+    const rows=new Map();let offset=0;
+    for(;;){
+      const data=await ownerApi('/owner/customers?offset='+offset);
+      if(ownerToken!==session) throw Error('Owner sign-in changed.');
+      if(!Array.isArray(data.customers)) throw Error('Could not verify the customer list. Please refresh.');
+      for(const row of data.customers) rows.set(row.id,row);
+      if(!data.hasMore) return {customers:[...rows.values()]};
+      const next=Number(data.nextOffset);
+      if(!Number.isInteger(next)||next<=offset||next>100000) throw Error('Could not load all customers. Please refresh.');
+      offset=next;
+    }
+  })().finally(()=>{if(completeCustomersRequest===pending)completeCustomersRequest=null;});
+  completeCustomersRequest=pending;
+  return pending.promise;
+}
+function customerDirectorySummary(customers,contacts,visibleCount,search) {
+  const total=customers.length+contacts.length;
+  const installed=customers.filter(c=>c.pwaInstalledAt).length;
+  const count=search
+    ? visibleCount+' of '+total+' customers and contacts match'
+    : customers.length+' customer'+(customers.length===1?'':'s')+(contacts.length?' + '+contacts.length+' saved contact'+(contacts.length===1?'':'s'):'');
+  return count+' · 📲 '+installed+' recorded app install'+(installed===1?'':'s');
 }
