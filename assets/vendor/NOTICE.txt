@@ -1,0 +1,9 @@
+Bundled third-party files (unmodified pinned releases)
+
+Leaflet 1.9.4 - BSD-2-Clause - https://github.com/Leaflet/Leaflet/tree/v1.9.4
+leaflet-rotate 0.2.8 - GPL-3.0 - https://github.com/Raruto/leaflet-rotate/tree/v0.2.8
+SortableJS 1.15.2 - MIT - https://github.com/SortableJS/Sortable/tree/1.15.2
+jsPDF 2.5.2 - MIT - https://github.com/parallax/jsPDF/tree/v2.5.2
+
+License texts are included beside the libraries. leaflet-rotate-src.js is the
+unminified distribution source; upstream source is linked above.

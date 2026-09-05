@@ -444,9 +444,10 @@ async function sharerFromToken(env, refToken) {
   return name ? { name } : null;
 }
 
-async function sessionFor(request, env, role) {
+export async function sessionFor(request, env, role) {
   const token = authToken(request);
   if (!token) return null;
+  if (!env.CUSTOMER_DB) return null;
   const tokenHash = await hashToken(token);
   const row = await env.CUSTOMER_DB.prepare(
     "SELECT token_hash, customer_id, role, email, expires_at FROM sessions WHERE token_hash = ?1 AND role = ?2 AND expires_at > ?3"
@@ -2934,7 +2935,12 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
       const record = JSON.stringify({ savedAt, runCount: Number(parsed.runCount) || 0, data: parsed.data });
       // Roll the current copy back one slot before overwriting it.
       const existing = await env.REMINDERS.get(key);
-      if (existing) await env.REMINDERS.put(`${key}:prev`, existing);
+      if (existing) {
+        await env.REMINDERS.put(`${key}:prev`, existing);
+        const day = new Date(JSON.parse(existing).savedAt).toISOString().slice(0,10);
+        const dailyKey = `${key}:day:${day}`;
+        if (!await env.REMINDERS.get(dailyKey)) await env.REMINDERS.put(dailyKey,existing,{expirationTtl:8*86400});
+      }
       await env.REMINDERS.put(key, record);
       return json(request, { ok: true, savedAt });
     }
@@ -2976,9 +2982,7 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
     }
 
     if (path === "/owner/customers" && request.method === "GET") {
-      const [rows, documentRows] = await Promise.all([
-        env.CUSTOMER_DB.prepare(
-        `SELECT c.*,
+      const {rows,documentRows,pagination}=await ownerListPage(request,env,`SELECT c.*,
            ((SELECT COUNT(*) FROM bookings b WHERE b.customer_id = c.id) +
             (SELECT COUNT(*) FROM external_bookings e WHERE e.customer_id = c.id OR e.email = c.email COLLATE NOCASE) +
             (SELECT COUNT(*) FROM jotform_bookings j WHERE j.customer_id = c.id OR j.email = c.email COLLATE NOCASE)) AS booking_count,
@@ -2987,17 +2991,7 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
              COALESCE((SELECT MAX(created_at) FROM external_bookings e WHERE e.customer_id = c.id OR e.email = c.email COLLATE NOCASE), 0),
              COALESCE((SELECT MAX(created_at) FROM jotform_bookings j WHERE j.customer_id = c.id OR j.email = c.email COLLATE NOCASE), 0)
            ) AS last_booking_at
-         FROM customers c ORDER BY (last_booking_at IS NULL), last_booking_at DESC, c.created_at DESC LIMIT 500`
-        ).all(),
-        /* Paperwork is filed against the customer's email, so the same invoice or
-           receipt shows on the Customers tab as well as on its booking - one place
-           to look up "what have I sent this person" without opening every job. */
-        env.CUSTOMER_DB.prepare(
-          `SELECT id, booking_id, email, kind, amount_cents, reference, created_at,
-             items_json, address, filename, r2_key
-           FROM booking_documents ORDER BY created_at DESC LIMIT 2000`
-        ).all()
-      ]);
+         FROM customers c WHERE (?1='' OR LOWER(COALESCE(first_name,'')||' '||COALESCE(last_name,'')||' '||COALESCE(street_address,'')||' '||COALESCE(town,'')||' '||COALESCE(email,'')||' '||COALESCE(phone,'')) LIKE ?2) ORDER BY (last_booking_at IS NULL), last_booking_at DESC, c.created_at DESC LIMIT 101 OFFSET ?3`,"customers");
       const documentsByEmail = new Map();
       for (const documentRow of (documentRows.results || [])) {
         const key = String(documentRow.email || "").trim().toLowerCase();
@@ -3017,7 +3011,7 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
         pwaInstalledAt: row.pwa_installed_at ? new Date(row.pwa_installed_at).toISOString() : "",
         pwaLastSeenAt: row.pwa_last_seen_at ? new Date(row.pwa_last_seen_at).toISOString() : ""
       }));
-      return json(request, { customers });
+      return json(request, { customers, ...pagination });
     }
 
     const customerSeenMatch = path.match(/^\/owner\/customers\/([^/]+)\/seen$/);
@@ -3120,7 +3114,8 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
       const pickupDate = clean(body.pickupDate, 10);
       const pickupWindow = clean(body.pickupWindow, 80);
       const customerNote = clean(body.customerNote, 500);
-      const recipients = Array.isArray(body.recipients) ? body.recipients.slice(0, 200) : [];
+      if (Array.isArray(body.recipients) && body.recipients.length>200) return json(request,{error:"Please send at most 200 confirmations at once. None were sent."},400);
+      const recipients = Array.isArray(body.recipients) ? body.recipients : [];
       // Opt-in, never assumed. This endpoint is also used by the "email everyone"
       // button (which already sends its own message) and by the backfill that
       // repairs dates on old confirmations - emailing from either would double up
@@ -3136,6 +3131,7 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
       const matched = [];
       const unmatched = [];
       let emailed = 0;
+      const emailedTo=[], emailFailed=[];
       for (const recipient of recipients) {
         const target = await bulkBookingTarget(env, recipient || {});
         if (!target) {
@@ -3162,7 +3158,7 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
         // The bulk text Woody sends is the primary notice; this email rides
         // alongside it as a backup record with the account link on it. A failed
         // send here must never undo the date that's already saved and texted.
-        if (notifyCustomer && EMAIL_RE.test(target.row.email || "")) {
+        if (notifyCustomer && !recipient.skipEmail && EMAIL_RE.test(target.row.email || "")) {
           // Same greeting swap the "Email everyone" button does, so a message
           // that opens "Hey Woody here" lands as "Hi Jane, Woody here".
           const firstName = clean(target.row.first_name, 60);
@@ -3176,12 +3172,13 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
               subject: `Whiteware pickup confirmed - ${pickupDateText(pickupDate)}`,
               text: pickupConfirmationText(target.row, pickupDate, pickupWindow, finalNote, greeted)
             });
-            if (sent) emailed++;
-          } catch { /* the text already reached them; an email hiccup isn't fatal */ }
+            if (sent) { emailed++; emailedTo.push(target.row.email.toLowerCase()); }
+            else emailFailed.push(target.row.email.toLowerCase());
+          } catch { emailFailed.push(target.row.email.toLowerCase()); }
         }
         matched.push(target.row.id);
       }
-      return json(request, { ok: true, updated: matched.length, emailed, matched, unmatched });
+      return json(request, { ok: true, updated: matched.length, emailed, emailedTo, emailFailed, matched, unmatched });
     }
 
     const ownerPdfMatch = path.match(/^\/owner\/documents\/([^/]+)\/pdf$/);
@@ -3199,9 +3196,7 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
     }
 
     if (path === "/owner/bookings" && request.method === "GET") {
-      const [rows, documentRows] = await Promise.all([
-        env.CUSTOMER_DB.prepare(
-        `SELECT * FROM (
+      const {rows,documentRows,pagination}=await ownerListPage(request,env,`SELECT * FROM (
           SELECT id, status, first_name, last_name, phone, email, street_address, town, area,
             rural_option, items_json, additional_info, referral_source, referral_details,
             total_cents, quote_required, quote_cents, quote_note, quoted_at, photo_count,
@@ -3226,14 +3221,7 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
             pickup_date, pickup_window, customer_note, cancellation_reason, cancelled_at, created_at,
             0 AS email_failed
           FROM external_bookings
-        ) ORDER BY CASE status WHEN 'NEW' THEN 0 ELSE 1 END, created_at DESC LIMIT 300`
-        ).all(),
-        env.CUSTOMER_DB.prepare(
-          `SELECT id, booking_id, email, kind, amount_cents, reference, created_at,
-             items_json, address, filename, r2_key
-           FROM booking_documents ORDER BY created_at DESC LIMIT 1000`
-        ).all()
-      ]);
+        ) WHERE (?1='' OR LOWER(COALESCE(first_name,'')||' '||COALESCE(last_name,'')||' '||COALESCE(street_address,'')||' '||COALESCE(town,'')||' '||COALESCE(email,'')||' '||COALESCE(phone,'')) LIKE ?2) ORDER BY CASE status WHEN 'NEW' THEN 0 WHEN 'CONFIRMED' THEN 1 WHEN 'ADDED_TO_RUN' THEN 1 WHEN 'CONTACTED' THEN 2 ELSE 3 END, CASE WHEN status IN ('CONFIRMED','ADDED_TO_RUN') THEN COALESCE(NULLIF(pickup_date,''),'9999') ELSE '9999' END, created_at DESC, id LIMIT 301 OFFSET ?3`,"bookings");
       const documentsByBooking = new Map();
       for (const document of (documentRows.results || []).map(bookingDocumentFrom)) {
         // A receipt that never got matched to a booking has no id to file it
@@ -3261,7 +3249,7 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
         };
       });
       return json(request, {
-        bookings
+        bookings, ...pagination
       });
     }
 
@@ -3505,3 +3493,23 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
 // Exported only for the focused permission-policy test; the Worker routes
 // above remain the public API.
 export { arcadeContactAllowed, directChatAllowed, handleJotformSubmission, jotformAddress };
+
+async function ownerListPage(request, env, query, kind) {
+  const url=new URL(request.url), search=clean(url.searchParams.get("q"),120).toLowerCase();
+  const offset=Math.max(0,Math.min(100000,parseInt(url.searchParams.get("offset"),10)||0));
+  const rows=await env.CUSTOMER_DB.prepare(query).bind(search,`%${search}%`,offset).all();
+  const pageSize=kind==="bookings"?300:100;
+  const hasMore=(rows.results||[]).length>pageSize;rows.results=(rows.results||[]).slice(0,pageSize);
+  const keys=[...new Set(rows.results.flatMap(r=>kind==="customers"?[r.email]:[r.id,r.external_key]).filter(Boolean))];
+  let documentRows={results:[]};
+  if(keys.length){
+    const field=kind==="customers"?"email":"booking_id";
+    for(let start=0;start<keys.length;start+=80){
+    const chunk=keys.slice(start,start+80);
+    const part=await env.CUSTOMER_DB.prepare(`SELECT id,booking_id,email,kind,amount_cents,reference,created_at,items_json,address,filename,r2_key FROM booking_documents WHERE ${field} COLLATE NOCASE IN (${chunk.map((_,i)=>`?${i+1}`).join(",")}) ORDER BY created_at DESC`).bind(...chunk).all();
+    documentRows.results.push(...part.results);
+    }
+    documentRows.results.sort((a,b)=>Number(b.created_at)-Number(a.created_at));
+  }
+  return {rows,documentRows,pagination:{hasMore,pageSize,nextOffset:offset+rows.results.length}};
+}

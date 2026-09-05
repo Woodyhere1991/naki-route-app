@@ -15,15 +15,8 @@
 <meta name="theme-color" content="#061d2e" />
 <meta name="apple-mobile-web-app-title" content="Pickup Run" />
 
-<!-- Leaflet map (free OSM tiles) -->
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<!-- Two-finger map rotation (Leaflet has none of its own) -->
-<script src="https://unpkg.com/leaflet-rotate@0.2.8/dist/leaflet-rotate-src.js"></script>
-<!-- Tap-and-hold drag to reorder stops -->
-<script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
-<!-- PDF receipts -->
-<script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.2/dist/jspdf.umd.min.js"></script>
+<link rel="stylesheet" href="/assets/vendor/leaflet.css" />
+<script src="/assets/field-tools.js"></script>
 
 <style>
   :root{
@@ -242,7 +235,7 @@
   body[data-view="add"] .view-add,
   body[data-view="customers"] .view-customers,
   body[data-view="bookings"] .view-bookings{display:block}
-  .today-map{order:5}.today-actions{order:10}.today-list{order:30}.today-bad{order:40}.today-unpaid{order:50}
+  .today-map{order:40}.today-actions{order:35}.today-list{order:20}.today-bad{order:40}.today-unpaid{order:50}
   /* Stop count, km and the run picker only describe the run you're driving, so
      they'd just be noise sitting above the Bookings, Customers and Messages
      lists. They stay on Scheduled and on Add & setup, where you build that run. */
@@ -400,6 +393,20 @@
   .view-title{font-size:19px;font-weight:800;margin:14px 2px 2px}
   .today-map details>div{padding-top:10px}
   @media(min-width:760px){.bottom-nav{left:50%;transform:translateX(-50%);max-width:760px;border-left:1px solid var(--line);border-right:1px solid var(--line)}}
+
+  .field-save{display:block;width:100%;min-height:32px;border:0;border-radius:0;background:#08283d;color:var(--muted);font-size:12px;padding:5px 10px}
+  .field-save.pending{color:var(--warn)}
+  .today-weather{order:15}.gms-panel.view-today{order:45}
+  .weather-hours{display:flex;gap:8px;overflow-x:auto;padding:8px 0}.weather-hours>.weather-day{flex:0 0 108px}
+  .weather-town>.weather-day{max-width:100%;margin-bottom:8px}.weather-town summary{min-height:44px;align-content:center}
+  .stop-more{margin-top:8px}.stop-more>summary{min-height:44px;font-size:14px;color:var(--muted)}
+  .next-label{font-size:12px;font-weight:800;color:var(--warn);margin-bottom:8px}
+  .stopbtns.primary-actions{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}.primary-actions button{padding:8px 2px;min-height:50px;font-size:13px}.stopbtns.primary-actions .nav-action{grid-column:auto}
+  body[data-view="today"] .run-label,body[data-view="today"] #newRun{display:none}
+  body[data-view="today"] .run-controls{display:grid;grid-template-columns:minmax(0,1fr) auto}
+  body[data-view="today"] #manageRuns{grid-column:auto;width:auto}
+  .field-route-actions summary{min-height:44px}.field-route-actions>div{padding-top:10px}
+  a{color:#82d9ef}
 </style>
 </head>
 <body>
@@ -424,10 +431,13 @@
       </div>
       <div id="runActions" class="run-actions" hidden>
         <button id="renameRun" class="ghost">Rename this run</button>
+        <button id="clearAll" class="ghost">Clear stops from this run</button>
         <button id="deleteRun" class="bad">Delete this run</button>
       </div>
     </div>
   </section>
+<button class="field-save" id="fieldSave" title="Tap to retry saving">Checking saved copy…</button>
+<div id="busy" class="small muted" role="status" style="padding:0 10px"></div>
 </header>
 
 <div class="wrap">
@@ -504,14 +514,13 @@
   </div>
 
   <!-- ACTIONS -->
-  <div class="card view-panel view-today today-actions">
+  <details class="card view-panel view-today today-actions field-route-actions"><summary>Route options</summary><div>
     <button id="optimise" style="width:100%">Optimise route</button>
     <div class="row" style="margin-top:10px">
       <button id="optimiseHere" class="ghost grow">Optimise from where I am</button>
-      <button id="clearAll" class="ghost grow">Clear all</button>
+
     </div>
-    <div id="busy" class="small muted" style="margin-top:8px"></div>
-  </div>
+  </div></details>
 
   <!-- BULK MESSAGE CONTACTS -->
   <div id="contactsWrap" class="view-panel view-messages"></div>
@@ -548,7 +557,9 @@
     <div class="stage-tabs" id="bookingStageTabs" style="display:none"></div>
     <div class="filter-chip" id="bookingFilterChip" style="display:none"></div>
     <div id="directBookingStatus" class="small muted"></div>
+    <p id="bookingPageHint" class="small muted" hidden>Counts cover loaded bookings. Search all records above, or load more below.</p>
     <div id="directBookingList"></div>
+    <button class="ghost" id="bookingLoadMore" hidden>Load more bookings</button>
   </section>
 
   <!-- CUSTOMER PROFILES -->
@@ -567,7 +578,9 @@
       <button class="ghost sm" id="customerFillBlanks" style="display:none"></button>
     </div>
     <div id="customerStatus" class="small muted"></div>
+    <p id="customerPageHint" class="small muted" hidden>More customers are available. Search all records above, or load more below.</p>
     <div id="customerList"></div>
+    <button class="ghost" id="customerLoadMore" hidden>Load more customers</button>
     <!-- Occasional reading, not the reason you opened this page: it sits under the list. -->
     <details class="card" id="insightsCard" style="display:none">
       <summary><b>📊 Where customers come from</b><span class="chev">›</span></summary>
@@ -576,7 +589,7 @@
   </section>
 
   <!-- WEATHER -->
-  <div class="card view-panel view-add">
+  <div class="card view-panel view-add view-today today-weather">
     <details id="weatherPanel">
       <summary class="live-head"><span id="weatherSummary">Weather forecast — load pickups to see towns</span><span class="chev">›</span></summary>
       <div class="live-body">
@@ -590,7 +603,7 @@
   </div>
 
   <!-- GMS HOURS -->
-  <div class="card gms-panel view-panel view-add" id="gmsCard" data-level="ok">
+  <div class="card gms-panel view-panel view-add view-today" id="gmsCard" data-level="ok">
     <details id="gmsPanel">
       <summary class="live-head"><span id="gmsSummary">GMS New Plymouth hours — checking…</span><span class="chev">›</span></summary>
       <div class="live-body">
@@ -614,7 +627,7 @@
              its own, so only Restore earns a place on screen; the rest are still
              here, one tap further in. -->
         <p class="small muted" style="margin:0 0 10px">
-          Your runs save to your account on their own and follow you to any phone you sign in on.
+          Your phone saves your work here first, then keeps an account backup when you are signed in and connected. Restore that copy if you replace your phone.
         </p>
         <div id="cloudBackup" class="confirmed-day" style="margin:0 0 10px">
           <span id="cloudBackupState">Checking your saved copy…</span>
@@ -671,7 +684,7 @@
   <!-- NEEDS ADDRESS -->
   <div id="badWrap" class="view-panel view-today today-bad"></div>
 
-  <footer>Only pickups you load • No login • Your runs are saved on this phone</footer>
+  <footer>Saved on this phone · Sign in for account backup and email</footer>
 </div>
 
 <nav class="bottom-nav" aria-label="Main sections">
@@ -824,11 +837,11 @@ function loadJSON(k, d){ try{ return JSON.parse(localStorage.getItem(k)) || d; }
 // saved off-switch would silently turn itself on again.
 function loadBool(k, d){ const raw=localStorage.getItem(k); return raw===null ? d : raw==="true"; }
 function saveJSON(k, v){
-  try{ localStorage.setItem(k, JSON.stringify(v)); }
+  try{ localStorage.setItem(k, JSON.stringify(v)); return true; }
   catch(e){
     // Storage full: prune the geocode cache once and retry, else warn loudly.
-    try{ localStorage.removeItem(GEO); geocache = {}; localStorage.setItem(k, JSON.stringify(v)); }
-    catch(e2){ setBanner("#bannerSave","⚠ Couldn't save to this phone — storage may be full. Finish or Clear stops, or free up space."); }
+    try{ localStorage.removeItem(GEO); geocache = {}; localStorage.setItem(k, JSON.stringify(v)); return true; }
+    catch(e2){ fieldLocalSaveFailed=true; setBanner("#bannerSave","⚠ Couldn't save to this phone — storage may be full. Keep this screen open and export a backup before freeing space."); return false; }
   }
 }
 function newRunId(){ return "r" + Date.now().toString(36) + Math.random().toString(36).slice(2,8); }
@@ -910,7 +923,9 @@ function save(){
     run.updatedAt = Date.now();
   }
   runStore.shared.unpaid = Array.isArray(state.unpaid) ? state.unpaid : [];
-  saveJSON(RUNS_LS, runStore);
+  if (!saveJSON(RUNS_LS, runStore)) { paintCloudState("Changes not saved on this phone — export a backup now",true); return; }
+  fieldLocalSaveFailed=false;
+  setBanner("#bannerSave","");
   // Also keep an off-phone copy, so a wiped phone isn't the end of the runs.
   if (typeof scheduleCloudBackup === "function") scheduleCloudBackup();
 }
@@ -1115,7 +1130,8 @@ function applyAppView(view){
   document.body.dataset.view = view;
   document.querySelectorAll("[data-view-button]").forEach(btn=>btn.classList.toggle("on", btn.dataset.viewButton===view));
   if (view==="today" && map) setTimeout(()=>map.invalidateSize(), 80);
-  if (view==="messages") setTimeout(fitMessagePreview, 0);   // panel just became visible
+  if (view==="messages") setTimeout(fitMessagePreview, 0);
+  if (view==="today" || view==="add") refreshWeather(false);   // panel just became visible
   if (view==="bookings") loadDirectBookings(true);
   if (view==="customers") loadCustomers(true);
 }
@@ -1158,12 +1174,12 @@ const $ = sel => document.querySelector(sel);
 const uid = () => "s" + Date.now().toString(36) + Math.random().toString(36).slice(2,6);
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 function normKey(a){ return (a||"").toLowerCase().replace(/\s+/g," ").trim(); }
-function busy(msg){ const el=$("#busy"); el.style.color=""; el.innerHTML = msg ? '<span class="spinner"></span> ' + msg : ""; }
+function busy(msg){ const el=$("#busy"); el.style.color=""; el.innerHTML = msg ? '<span class="spinner"></span> ' + esc(msg) : ""; }
 let flashTimer = 0;
 function flash(msg){                       // brief green confirmation in the actions area
   const el = $("#busy"); if(!el) return;
   clearTimeout(flashTimer);
-  el.style.color = "var(--good)"; el.innerHTML = msg;
+  el.style.color = "var(--good)"; el.textContent = msg;
   flashTimer = setTimeout(()=>{ el.textContent=""; el.style.color=""; }, 6000);
 }
 
@@ -1171,7 +1187,8 @@ function flash(msg){                       // brief green confirmation in the ac
 async function ownerApi(path, options={}){
   const headers = { "Content-Type":"application/json", ...(options.headers||{}) };
   if (ownerToken) headers.Authorization = `Bearer ${ownerToken}`;
-  const res = await fetch(`${API}${path}`, { ...options, headers });
+  const requestFetch=path==="/owner/bookings/bulk-confirm"?ownerActionFetch:boundedFetch;
+  const res = await requestFetch(`${API}${path}`, { ...options, headers });
   let data = {}; try { data = await res.json(); } catch(e) {}
   if (!res.ok){
     if (res.status===401){
@@ -1617,13 +1634,13 @@ function renderDirectBookings(){
     // The stop in the ledger knows best; a booking billed straight off its card
     // has no stop, so fall back to what was saved when the invoice went out.
     const owingFacts = unpaid || bookingInvoiceFacts(b);
-    const stageTap = unpaid ? "" : `toggleBookingCollected('${esc(b.id)}')`;
+    const stageTap = unpaid ? "" : `toggleBookingCollected('${esc(jsString(b.id))}')`;
     const stageLine = `<div class="small" style="margin:4px 0">${invoiceStageTag(owingFacts, stageTap)} ${reminderLine(owingFacts)}</div>`;
     // Chasing the money is a button like any other - not buried in the red box on
     // some cards and missing on others. Needs an email, because a reminder is one.
     const remindAction=(b.invoiceOwing && goodEmail(b.email))
       ? `<button class="ghost sm" title="Set, change or stop the automatic payment reminder"
-           onclick="editReminder('${unpaid?"stop":"booking"}','${esc(unpaid?unpaid.id:b.id)}')">⏰ ${owingFacts.reminderDate?"Change reminder":"Set reminder"}</button>`
+           onclick="editReminder('${unpaid?"stop":"booking"}','${esc(jsString(unpaid?unpaid.id:b.id))}')">⏰ ${owingFacts.reminderDate?"Change reminder":"Set reminder"}</button>`
       : "";
     // The red box states the position and nothing else. Every card's buttons live
     // in the same row underneath, so no two owing cards are laid out differently.
@@ -1814,6 +1831,7 @@ async function invoiceDirectBooking(id, askAmount){
   const b=directBookingRows.find(row=>row.id===id); if(!b) return;
   const who=[b.firstName,b.lastName].filter(Boolean).join(" ")||"this customer";
   if (!goodEmail(b.email)) return directStatus("That booking has no valid email to send an invoice to.",true);
+  try { await ensurePdf(); } catch(e) {}
   if (!window.jspdf) return directStatus("The PDF maker didn't load — check your connection and try again.",true);
   // Already built and not yet sent? Go straight back to the preview.
   if (pendingBookingInvoices[id] && !askAmount) return openBookingInvoicePreview(id);
@@ -1879,7 +1897,7 @@ async function sendBookingInvoice(id){
   const reminderDate=picked.date, reminderRepeat=picked.repeat;
   directStatus("Emailing the invoice…");
   try{
-    const res=await fetch(`${API}/send-invoice`,{
+    const res=await ownerActionFetch(`${API}/send-invoice`,{
       method:"POST",
       headers:{ "Content-Type":"application/json" },
       body:JSON.stringify({
@@ -2067,18 +2085,20 @@ function backfillMissingUnpaid(rows){
   if (repaired.length) save();
   return repaired;
 }
-async function loadDirectBookings(showLoading=false){
+async function loadDirectBookings(showLoading=false,more=false){
   if (!ownerToken){ renderDirectBookings(); return; }
   if (showLoading) directStatus("Loading bookings…");
   try{
     // Finished pickups the cloud was never told about go up FIRST, so the list
     // that comes back already has them sitting under Done.
     const repushed=await flushExternalBookingSyncs();
-    const data=await ownerApi("/owner/bookings");
-    directBookingRows=Array.isArray(data.bookings) ? data.bookings : [];
+    const data=await loadOwnerCollection("bookings",bookingSearchText,more);
+    await flushDirectCompletions();
+    const nextRows=Array.isArray(data.bookings) ? data.bookings : [];
+    if (!showLoading && !repushed && JSON.stringify(nextRows)===JSON.stringify(directBookingRows)) return;
+    directBookingRows=nextRows;
     const repaired=backfillMissingUnpaid(directBookingRows);
     if (dedupeUnpaidLedger()) render();
-    await flushDirectCompletions();
     const { changes, removals }=syncBookingChangesIntoRuns(directBookingRows);
     renderDirectBookings();
     // Customers borrow their details from these jobs, so redraw them too rather
@@ -2289,8 +2309,8 @@ $("#directRefresh").onclick=()=>loadDirectBookings(true);
 $("#customersRefresh").onclick=()=>loadCustomers(true);
 $("#addContactBtn").onclick=()=>addCustomContact();
 $("#customerFillBlanks").onclick=()=>fillCustomerBlanksFromJobs();
-$("#bookingSearch").addEventListener("input",event=>{ bookingSearchText=event.target.value.trim().toLowerCase(); renderDirectBookings(); });
-$("#customerSearch").addEventListener("input",event=>{ customerSearchText=event.target.value.trim().toLowerCase(); renderCustomers(); });
+$("#bookingSearch").addEventListener("input",event=>{ bookingSearchText=event.target.value.trim().toLowerCase(); renderDirectBookings(); queueOwnerSearch("bookings"); });
+$("#customerSearch").addEventListener("input",event=>{ customerSearchText=event.target.value.trim().toLowerCase(); renderCustomers(); queueOwnerSearch("customers"); });
 // Tapping List also shuts every card that was opened one at a time. Without
 // this, coming back from Full left a screen of open cards to close by hand -
 // so List doubles as "collapse the lot".
@@ -2862,27 +2882,29 @@ function deleteCustomContact(id){
   saveCustomContacts(); renderCustomers();
   flash(`${who} deleted`);
 }
-async function loadCustomers(showLoading=false){
+async function loadCustomers(showLoading=false,more=false){
   if (!ownerToken){ renderCustomers(); return; }
   if (showLoading) customerStatus("Loading customers…");
   try{
-    const data=await ownerApi("/owner/customers");
-    customerRows=Array.isArray(data.customers) ? data.customers : [];
+    const data=await loadOwnerCollection("customers",customerSearchText,more);
+    const nextRows=Array.isArray(data.customers) ? data.customers : [];
+    if (!showLoading && JSON.stringify(nextRows)===JSON.stringify(customerRows)) return;
+    customerRows=nextRows;
     renderCustomers();
-    loadInsights();
+    $("#insightsCard").style.display="";
+    if ($("#insightsCard").open) loadInsights();
   }catch(e){ customerStatus(e.message,true); }
 }
-let ownerRefreshBusy=false;
+let ownerRefreshBusy=false, ownerBookingsAt=0,ownerCustomersAt=0;
 async function refreshOwnerData(){
-  if (!ownerToken || document.visibilityState==="hidden" || ownerRefreshBusy) return;
+  if (!ownerToken || document.visibilityState==="hidden" || navigator.onLine===false || ownerRefreshBusy) return;
   const focused=document.activeElement;
-  if (focused && $("#directBookingList")?.contains(focused)) return;
+  if (focused && (focused.matches("input,textarea,select") || focused.closest("[role=dialog]"))) return;
+  const view=document.body.dataset.view, now=Date.now(),tasks=[];
+  if(now-ownerBookingsAt>(view==="bookings"?30000:120000)){ownerBookingsAt=now;tasks.push(loadDirectBookings(false));}
+  if(view==="customers"&&now-ownerCustomersAt>120000){ownerCustomersAt=now;tasks.push(loadCustomers(false));}
   ownerRefreshBusy=true;
-  try{
-    await Promise.all([loadDirectBookings(false),loadCustomers(false)]);
-  }finally{
-    ownerRefreshBusy=false;
-  }
+  try{await Promise.all(tasks);}finally{ownerRefreshBusy=false;}
 }
 function setFileStatus(msg){ const el=$("#fileStatus"); if(el) el.innerHTML = msg; }
 
@@ -3689,6 +3711,7 @@ async function optimise(){
 
 /* ---------- Map drawing + OSRM road line (best-effort) ---------- */
 function initMap(){
+  if(map || !window.L) return;
   // rotate/touchRotate come from the leaflet-rotate plugin: twist two fingers to
   // turn the map, and tap the compass to snap back to north.
   map = L.map("map", {
@@ -3716,12 +3739,13 @@ function pinIcon(label, area, isStart){
     iconSize:[30,30], iconAnchor:[15,28] });
 }
 async function drawRoute(){
-  if (!map) return;
   const drawVersion=++routeDrawVersion;
-  markerLayer.clearLayers(); routeLayer.clearLayers();
+  markerLayer?.clearLayers(); routeLayer?.clearLayers();
   const pts = routeStops();
   const start = startPoint();
   const bounds = [];
+  // The route timing also works when the map has not been opened.
+  if(map){
   // Start marker.
   L.marker([start.lat,start.lng], { icon: pinIcon("S","",true) })
     .bindPopup("Start").addTo(markerLayer);
@@ -3729,7 +3753,7 @@ async function drawRoute(){
   // Numbered stop markers.
   pts.forEach((s,i)=>{
     L.marker([s.lat,s.lng], { icon: pinIcon(i+1, s.area, false) })
-      .bindPopup(`<b>${i+1}. ${fullName(s)||fullAddr(s)}</b><br>${fullAddr(s)}`)
+      .bindPopup(`<b>${i+1}. ${esc(fullName(s)||fullAddr(s))}</b><br>${esc(fullAddr(s))}`)
       .addTo(markerLayer);
     bounds.push([s.lat,s.lng]);
   });
@@ -3742,22 +3766,22 @@ async function drawRoute(){
   // Only auto-fit while you haven't taken hold of the map. This is what used to
   // yank the view back mid-run every time the data refreshed.
   if (bounds.length && !mapUserMoved) mapMove(()=>map.fitBounds(bounds, { padding:[30,30], maxZoom:13 }));
+  }
   if (!pts.length){ updateStats(0); routeTiming = {}; onTimingChanged(); return; }
 
   // Try OSRM for a real road line + distance; fall back to straight lines.
   const seq = [start, ...pts];
-  if (end) seq.push(end);
+  if (endPoint()) seq.push(endPoint());
   const coords = seq.map(p=>`${p.lng},${p.lat}`).join(";");
   setBanner("#bannerOsrm","");
   let drewRoad = false;
   try{
     const url = `https://router.project-osrm.org/route/v1/driving/${coords}?overview=full&geometries=geojson`;
-    const res = await fetch(url);
-    const data = await res.json();
+    const data = await fetchRouteData(url);
     if (drawVersion!==routeDrawVersion) return;
     if (data && data.routes && data.routes[0]){
       const r = data.routes[0];
-      L.geoJSON({ type:"Feature", geometry:r.geometry },
+      if(map) L.geoJSON({ type:"Feature", geometry:r.geometry },
         { style:{ color:"#2f80ff", weight:5, opacity:.85 } }).addTo(routeLayer);
       updateStats(r.distance/1000, r.duration/60);
       setRouteTiming(pts, r.legs);
@@ -3767,7 +3791,7 @@ async function drawRoute(){
   if (drawVersion!==routeDrawVersion) return;
   if (!drewRoad){
     // Straight-line fallback + great-circle distance estimate.
-    L.polyline(seq.map(p=>[p.lat,p.lng]),
+    if(map) L.polyline(seq.map(p=>[p.lat,p.lng]),
       { color:"#2f80ff", weight:4, opacity:.6, dashArray:"6 8" }).addTo(routeLayer);
     let km=0; for (let i=0;i<seq.length-1;i++) km += haversine(seq[i],seq[i+1]);
     updateStats(km, null);
@@ -4013,7 +4037,7 @@ function renderList(){
   if (!state.stops.length){
     wrap.innerHTML = `<div class="card empty">
       <b>No stops yet</b>
-      <p>Add pickups above — type one, paste a list, load a file, or pull from your Google Sheet. Then tap <b>Optimise route</b> and drive.</p>
+      <p>Open <b>Add &amp; setup</b> to type a pickup or load your Google Sheet. Route options will help plan the drive.</p>
     </div>`;
     return;
   }
@@ -4072,13 +4096,12 @@ function renderList(){
     const navBtn   = (!isDone && s.lat!=null) ? `<button class="sm nav-action" onclick="navStop('${s.id}')">🧭 Navigate</button>` : "";
     const doneBtn  = `<button class="${isDone?'warn':'good'} sm" onclick="toggleDone('${s.id}')">${isDone?'↺ Undo':'✓ Done'}</button>`;
     const del      = `<button class="ghost sm" title="Remove this stop" onclick="delStop('${s.id}')">✕</button>`;
-    const btns = isDone
-      ? `${doneBtn}${receiptBtn}${invoiceBtn}${editBtn}${emailBtn}${del}`
-      : `${navBtn}${doneBtn}${phone}${textBtn}${emailBtn}${prioBtn}${editBtn}${receiptBtn}${invoiceBtn}${del}`;
+    const btns = `<div class="stopbtns primary-actions">${isDone?doneBtn+receiptBtn:navBtn+doneBtn+phone}</div><details class="stop-more"><summary>More actions</summary><div class="stopbtns">${isDone?invoiceBtn+editBtn+emailBtn+del:textBtn+emailBtn+prioBtn+editBtn+receiptBtn+invoiceBtn+del}</div></details>`;
     return `<div class="stop ${isDone?'done':''} ${asap&&!isDone?'asap':''} ${s.id===nextId&&!isDone?'next':''}"
         data-id="${s.id}" style="border-left-color:${AREA_COLORS[area]||AREA_COLORS['']}">
       <div class="num">${num}</div>
       <div class="stopbody">
+        ${s.id===nextId&&!isDone?'<div class="next-label">NEXT PICKUP</div>':""}
         <div class="name">${esc(fullName(s)) || esc(fullAddr(s))} ${asapTag}${noNumTag}${invoicedTag}</div>
         ${phoneLine}
         <div class="addr">${esc(fullAddr(s))} ${tag} ${priceTag}</div>
@@ -4087,7 +4110,7 @@ function renderList(){
         ${apps?`<div class="apps">${apps}</div>`:""}
         ${formNote}
         ${userNote}
-        <div class="stopbtns">${btns}</div>
+        ${btns}
       </div>
     </div>`;
   };
@@ -4446,6 +4469,8 @@ function markFor(s){
 }
 function isContacted(stop){
   const mark = markFor(typeof stop === "string" ? findStop(stop) : stop);
+  const s=typeof stop==="string"?findStop(stop):stop;
+  if(mark.deliveryVersion===2) return !mark.emailFailed && (goodPhone(s?.phone)?Boolean(mark.textConfirmed):Boolean(mark.email));
   return !!(mark.contacted || mark.email || mark.text); // also keeps your existing marks
 }
 function selectedRecipientIds(){
@@ -4477,19 +4502,31 @@ function bulkBookingRecipient(s){
 async function publishBulkPickupDate(recipients,pickupDate=state.confirmationDate||"",notify=false,message=""){
   if (!pickupDate || !recipients.length) return {ok:true,updated:0,unmatched:[]};
   if (!ownerToken) throw new Error("Sign in on the Bookings tab once, then tap this button again so the dates can be saved to customer accounts.");
-  const data=await ownerApi("/owner/bookings/bulk-confirm",{
+  const data={ok:true,updated:0,emailed:0,emailedTo:[],emailFailed:[],unmatched:[]};
+  for(let offset=0;offset<recipients.length;offset+=40){
+  const chunk=recipients.slice(offset,offset+40);
+  const part=await ownerApi("/owner/bookings/bulk-confirm",{
     method:"POST",
     // The email opens with the very message being texted, so both read the same.
-    body:JSON.stringify({pickupDate,notifyCustomer:notify,message,recipients:recipients.map(bulkBookingRecipient)})
+    body:JSON.stringify({pickupDate,notifyCustomer:notify,message,recipients:chunk.map(s=>({...bulkBookingRecipient(s),skipEmail:Boolean(markFor(s).email&&markFor(s).emailMessage===message&&!markFor(s).emailFailed)}))})
   });
-  const unmatched=new Set(data.unmatched||[]);
-  recipients.forEach(s=>{
+  data.updated+=Number(part.updated||0);data.emailed+=Number(part.emailed||0);
+  for(const key of ['emailedTo','emailFailed','unmatched'])data[key].push(...(part[key]||[]));
+  if(notify){
+    const accepted=new Set(part.emailedTo||[]),failed=new Set(part.emailFailed||[]);
+    recordMessageDelivery(chunk.filter(s=>accepted.has(s.email?.trim().toLowerCase())),{email:true,emailFailed:false,emailMessage:message});
+    recordMessageDelivery(chunk.filter(s=>failed.has(s.email?.trim().toLowerCase())),{emailFailed:true});
+  }
+  const unmatched=new Set(part.unmatched||[]);
+  chunk.forEach(s=>{
     const recipient=bulkBookingRecipient(s);
     if (unmatched.has(recipient.bookingId || recipient.email)) return;
     s.historyStatus="CONFIRMED";
     s.confirmedPickupDate=pickupDate;
     syncExternalBooking(s);
   });
+  save();
+  }
   return data;
 }
 // pickupDate is only the date that was actually saved to accounts, so it stays
@@ -4500,7 +4537,7 @@ function markRecipientsSentLocally(recipients,pickupDate=state.confirmationDate|
   recipients.forEach(s=>{
     const key=messageMarkKey(s);
     const mark=bucket[key]=bucket[key]||{};
-    mark.contacted=true;
+    mark.deliveryVersion=2;
     mark.stopId=s.id;
     if (datesSaved && s.confirmedPickupDate===pickupDate) mark.bookingDateSynced=true;
   });
@@ -4537,44 +4574,54 @@ function batchPhoneNumbers(batch){
   return dedupeBy(batch.recipients.map(s=>(s.phone||"").trim()).filter(goodPhone), v=>v.replace(/\D/g,""));
 }
 async function sendReminderEmailBatch(batch){
-  const messages=batch.recipients.filter(s=>goodEmail(s.email)).map(s=>{
-    const first=(s.first_name||"").trim();
-    return { to:s.email.trim(), name:fullName(s), body:first ? batch.message.replace(/^Hey /, `Hi ${first}, `) : batch.message };
-  });
-  if (!messages.length) return { sent:0, problem:"" };
-  try{
-    const res=await fetch(`${API}/send-bulk`, { method:"POST", headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({subject:"Whiteware collection reminder",messages}) });
-    const out=await res.json().catch(()=>({}));
-    if (!res.ok || !out.ok) return {sent:0,problem:"the reminder emails could not be sent"};
-    return {sent:Number(out.sent||0),problem:(out.failed||[]).length ? `couldn't email ${out.failed.join(", ")}` : ""};
-  }catch(e){ return {sent:0,problem:"the reminder emails could not be sent"}; }
+  const recipients=batch.recipients.filter(s=>goodEmail(s.email));
+  const pending=recipients.filter(s=>!markFor(s).email || markFor(s).emailMessage!==batch.message || markFor(s).emailFailed);
+  const messages=dedupeBy(pending.map(s=>({to:s.email.trim(),name:fullName(s),body:(s.first_name||"").trim()?batch.message.replace(/^Hey /,`Hi ${s.first_name.trim()}, `):batch.message})),m=>m.to.toLowerCase());
+  let sent=0; const failed=[];
+  for(let i=0;i<messages.length;i+=40){
+    const chunk=messages.slice(i,i+40);
+    try{
+      const res=await ownerActionFetch(`${API}/send-bulk`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({subject:messageMode()==="confirm"?"Whiteware collection confirmation":"Whiteware collection reminder",messages:chunk})});
+      const out=await res.json(); const accepted=new Set(out.sentTo||[]);
+      sent+=Number(out.sent||0);
+      recordMessageDelivery(recipients.filter(s=>accepted.has(s.email.trim().toLowerCase())),{email:true,emailFailed:false,emailMessage:batch.message});
+      const rejected=chunk.filter(m=>!accepted.has(m.to.toLowerCase())).map(m=>m.to.toLowerCase());
+      failed.push(...rejected);
+      recordMessageDelivery(recipients.filter(s=>rejected.includes(s.email.trim().toLowerCase())),{emailFailed:true});
+    }catch(e){
+      const remaining=messages.slice(i).map(m=>m.to.toLowerCase());failed.push(...remaining);
+      recordMessageDelivery(recipients.filter(s=>remaining.includes(s.email.trim().toLowerCase())),{emailFailed:true});break;
+    }
+  }
+  return {sent,problem:failed.length?`${failed.length} email${failed.length===1?"":"s"} need retry. Successful emails will be skipped when you retry.`:""};
 }
 let pendingTextBatches=[];
 function preparedTextBatchControls(){
-  if (!pendingTextBatches.length) return "";
+  pendingTextBatches=(state.pendingTextGroups||[]).map(b=>({...b,recipients:b.stopIds.map(findStop).filter(Boolean)}));
+  if (!pendingTextBatches.length) return preparedTextConfirmation();
   const rows=pendingTextBatches.map((batch,index)=>{
     const phones=batchPhoneNumbers(batch);
     return `<button class="ghost sm" style="margin:5px 5px 0 0" onclick="openPreparedTextBatch(${index},this)">📣 Text &amp; email group ${index+1} · ${phones.length} · ${esc(batch.label)}</button>`;
   }).join("");
   return `<div class="card" style="margin-top:10px;padding:9px"><b>Text groups ready</b>
-    <p class="small muted" style="margin:4px 0">Open one group, paste the copied numbers into To, send it, then return here for the next group.</p>${rows}</div>`;
+    <p class="small muted" style="margin:4px 0">Open one group, paste the copied numbers into To, send it, then return here for the next group.</p>${rows}${preparedTextConfirmation()}</div>`;
 }
 window.openPreparedTextBatch = async (index, button) => {
+  if(bulkSendBusy)return;
   const batch=pendingTextBatches[index]; if (!batch) return;
-  const phones=batchPhoneNumbers(batch);
-  if (!phones.length) return alert("No valid mobile numbers in this group.");
-  if (button){ button.disabled=true; button.setAttribute("aria-busy","true"); button.textContent="Sending email…"; }
-  const emailResult=await sendReminderEmailBatch(batch);
-  const phoneList=phones.map(n=>n.replace(/[^\d+]/g,"")).join("\n");
-  let copied=copyPlainText(phoneList);
-  if (!copied && navigator.clipboard?.writeText){
-    try{ await navigator.clipboard.writeText(phoneList); copied=true; }catch(e){}
-  }
-  if (!copied){ if(button){button.disabled=false;button.removeAttribute("aria-busy");button.textContent=`📣 Text & email group ${index+1}`;} return alert("Couldn't copy the numbers. Please try again."); }
-  if (button) button.textContent=`✓ Email sent · Text group ${index+1} copied`;
-  showBulkSendResult(`${emailResult.problem?"⚠ "+emailResult.problem+" — ":"✓ "}Text group ${index+1} copied — paste the ${phones.length} number${phones.length===1?"":"s"} into To.` ,Boolean(emailResult.problem));
-  location.href="sms:"+(/iPad|iPhone|iPod/.test(navigator.userAgent) ? "&body=" : "?body=")+encodeURIComponent(batch.message);
+  const phones=batchPhoneNumbers(batch); if(!phones.length)return;
+  bulkSendBusy=true;
+  try {
+    const phoneList=phones.map(n=>n.replace(/[^\d+]/g,"")).join("\n");
+    let copied=copyPlainText(phoneList);
+    if(!copied&&navigator.clipboard?.writeText){try{await navigator.clipboard.writeText(phoneList);copied=true;}catch{}}
+    if(!copied)return alert("Couldn't copy the numbers. Please try again.");
+    if(button){button.disabled=true;button.textContent="Preparing…";}
+    const emailResult=await sendReminderEmailBatch(batch);
+    recordMessageDelivery(batch.recipients.filter(s=>goodPhone(s.phone)),{textPrepared:true});
+    showBulkSendResult(`${emailResult.problem?emailResult.problem+" · ":""}Text group ${index+1} ready — paste the copied numbers into To.`,Boolean(emailResult.problem));
+    location.href="sms:"+(/iPad|iPhone|iPod/.test(navigator.userAgent)?"&body=":"?body=")+encodeURIComponent(batch.message);
+  } finally {bulkSendBusy=false;renderContacts();}
 };
 
 function renderContacts(){
@@ -4622,18 +4669,18 @@ function renderContacts(){
       const name=fullName(s) || s.street || "Unnamed pickup";
       const addr=fullAddr(s);
       const sub=addr && addr!==name ? addr : (s.town && !String(name).toLowerCase().includes(String(s.town).toLowerCase()) ? s.town : "");
-      const mover=moving ? `<span class="move-to"><select aria-label="Move ${esc(name)}" onchange="moveReminderStop('${esc(s.id)}',this.value)">${reminderMoveOptions(w.id, windows)}</select></span>` : "";
+      const mover=moving ? `<span class="move-to"><select aria-label="Move ${esc(name)}" onchange="moveReminderStop('${esc(jsString(s.id))}',this.value)">${reminderMoveOptions(w.id, windows)}</select></span>` : "";
       return `<label class="reminder-person${moving?" moving":""}">
         <input type="checkbox" data-recipient="${s.id}" ${selected.has(s.id)?"checked":""} onchange="setRecipientSelected('${s.id}',this.checked)" />
         <span class="who"><b>${esc(name)}</b>${sub?`<span class="addr">${esc(sub)}</span>`:""}</span>
-        <span class="reminder-flag ${sent?"sent":"new"}">${sent?"Sent":"New"}</span>
+        <span class="reminder-flag ${sent?"sent":"new"}">${esc(messageDeliveryLabel(s))}</span>
         ${mover}
       </label>`;
     }).join("");
     const editedGroup=Boolean(reminderGroupMessage(w));
     return `<div class="card reminder-group">
       <div style="display:flex;align-items:center;gap:6px"><h3 style="flex:1">${esc(reminderWindowPlaces(w))} · ${people.length}</h3>
-        <button class="ghost sm" onclick="removeReminderWindow('${esc(w.id)}')">Remove</button></div>
+        <button class="ghost sm" onclick="removeReminderWindow('${esc(jsString(w.id))}')">Remove</button></div>
       <div class="times">
         <input type="time" data-window-id="${esc(w.id)}" data-field="start" value="${esc(w.start)}" oninput="setReminderWindowTime(this.dataset.windowId,'start',this.value)" onchange="setReminderWindowTime(this.dataset.windowId,'start',this.value)" onblur="finishDateTimePicker(this)" style="width:auto;min-height:38px" />
         <span class="muted">to</span>
@@ -4641,22 +4688,22 @@ function renderContacts(){
       </div>
       <details style="margin-top:7px"${moving?" open":""}><summary class="small muted">Who is in this group <span class="chev">›</span></summary>
         <label class="small muted" style="margin-top:6px">Name on the message (blank uses the town names)</label>
-        <input value="${esc(w.label)}" placeholder="${esc(reminderWindowPlaces({ ...w, label:"" }))}" onchange="setReminderWindowLabel('${esc(w.id)}',this.value)" />
+        <input value="${esc(w.label)}" placeholder="${esc(reminderWindowPlaces({ ...w, label:"" }))}" onchange="setReminderWindowLabel('${esc(jsString(w.id))}',this.value)" />
         <div class="reminder-people">${peopleRows || `<p class="small muted">No pickups in this group. Remove it, or move people in.</p>`}</div>
         <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px">
-          <button class="ghost sm" onclick="selectGroupRecipients('${esc(w.id)}','all')">Select all</button>
-          <button class="ghost sm" onclick="selectGroupRecipients('${esc(w.id)}','new')">Select new</button>
-          <button class="ghost sm" onclick="selectGroupRecipients('${esc(w.id)}','none')">Unselect</button>
+          <button class="ghost sm" onclick="selectGroupRecipients('${esc(jsString(w.id))}','all')">Select all</button>
+          <button class="ghost sm" onclick="selectGroupRecipients('${esc(jsString(w.id))}','new')">Select new</button>
+          <button class="ghost sm" onclick="selectGroupRecipients('${esc(jsString(w.id))}','none')">Unselect</button>
         </div>
         <details style="margin-top:7px"><summary class="small muted">Separate message if you send this group on its own <span class="chev">›</span></summary>
           <textarea class="reminder-msg" data-reminder-msg="1" data-window-id="${esc(w.id)}" oninput="saveReminderGroupMessage(this.dataset.windowId,this.value)">${esc(reminderMessageForWindow(w))}</textarea>
-          ${editedGroup ? `<button class="ghost sm" style="margin-top:4px" onclick="resetReminderGroupMessage('${esc(w.id)}')">↺ Automatic message</button>` : ""}
+          ${editedGroup ? `<button class="ghost sm" style="margin-top:4px" onclick="resetReminderGroupMessage('${esc(jsString(w.id))}')">↺ Automatic message</button>` : ""}
         </details>
       </details>
       <div class="reminder-group-actions">
-        <button class="ghost sm" onclick="bulkSend('${esc(w.id)}')" ${bulkSendBusy?"disabled":""}>Send this group only</button>
-        <button class="${moving?"good":"ghost"} sm" onclick="toggleReminderMove('${esc(w.id)}')">${moving?"Done moving":"Move people"}</button>
-        ${canSplitBell ? `<button class="ghost sm" onclick="splitReminderTown('${esc(w.id)}','bell block')">Split Bell Block off</button>` : ""}
+        <button class="ghost sm" onclick="bulkSend('${esc(jsString(w.id))}')" ${bulkSendBusy?"disabled":""}>Send this group only</button>
+        <button class="${moving?"good":"ghost"} sm" onclick="toggleReminderMove('${esc(jsString(w.id))}')">${moving?"Done moving":"Move people"}</button>
+        ${canSplitBell ? `<button class="ghost sm" onclick="splitReminderTown('${esc(jsString(w.id))}','bell block')">Split Bell Block off</button>` : ""}
       </div>
     </div>`;
   }).join("");
@@ -4744,6 +4791,7 @@ function fitMessagePreview(){
   ta.style.height = Math.min(ta.scrollHeight + 4, 420) + "px";
 }
 
+function jsString(value){return String(value??"").replace(/\\/g,"\\\\").replace(/'/g,"\\'").replace(/\r/g,"\\r").replace(/\n/g,"\\n").replace(/\u2028/g,"\\u2028").replace(/\u2029/g,"\\u2029");}
 function esc(s){ return String(s==null?"":s).replace(/[&<>"]/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
 
 /* ---------- Per-stop actions (exposed for inline onclick) ---------- */
@@ -5137,7 +5185,7 @@ async function loadReceiptLogo(){
   }catch(e){ receiptLogo = false; }     // no logo — the receipt still works
   return receiptLogo;
 }
-loadReceiptLogo();   // warm it up at boot so the first Receipt tap is instant
+// Logo and PDF library are loaded when a receipt or invoice is requested.
 // "Fridge, Fridge, Washing machine" reads as three different jobs. Roll the
 // repeats up into "Fridge x2" — shorter to read and shorter on the page.
 function groupItems(list){
@@ -5358,6 +5406,7 @@ async function buildInvoicePdf(s, amt){
 window.receiptStop = async (id, askAmount) => {
   const s = findStop(id); if(!s) return;
   if (pendingReceipts[id]) return openReceiptPreview(id);   // already built — just preview
+  try { await ensurePdf(); } catch(e) {}
   if (!window.jspdf){ alert("The PDF maker didn't load — check your connection and try again."); return; }
   // The price on the card loads straight in — no typing. Only ask when there
   // isn't one and none can be worked out. Wrong figure? "Change amount" on the
@@ -5445,7 +5494,7 @@ window.sendReceipt = async id => {
     const to = s.email.trim();
     busy("Emailing the receipt…");
     try{
-      const res = await fetch(`${API}/send-receipt`, {
+      const res = await ownerActionFetch(`${API}/send-receipt`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -5472,7 +5521,7 @@ window.sendReceipt = async id => {
         flash("✓ Receipt emailed to " + to + " · marked paid and completed");
         return;
       }
-    }catch(e){ busy(""); }
+    }catch(e){ busy(""); alert(e.message||"Email could not be confirmed. Check Sent mail before retrying."); return; }
     flash("Couldn't email it right now — sharing instead.");
   }
   // No email (or the send failed): hand the PDF to the share sheet / a download.
@@ -5500,6 +5549,7 @@ window.sendReceipt = async id => {
 window.invoiceStop = async (id, askAmount) => {
   const s = findStop(id); if(!s) return;
   if (pendingInvoices[id]) return openInvoicePreview(id);
+  try { await ensurePdf(); } catch(e) {}
   if (!window.jspdf){ alert("The PDF maker didn't load — check your connection and try again."); return; }
   // The price on the card loads straight in — worked out from the items if it
   // was never set. Only ask when even that comes up blank.
@@ -5628,7 +5678,7 @@ window.editReminder = async (kind, id) => {
     if (current.id){
       busy("Turning the reminder off…");
       try{
-        await fetch(`${API}/cancel-reminder`, { method:"POST", headers:{ "Content-Type":"application/json" }, body: JSON.stringify({ id: current.id }) });
+        await ownerActionFetch(`${API}/cancel-reminder`, { method:"POST", headers:{ "Content-Type":"application/json" }, body: JSON.stringify({ id: current.id }) });
       }catch(e){ busy(""); return alert("Couldn't reach the reminder service — try again when you're back online."); }
       busy("");
     }
@@ -5638,7 +5688,7 @@ window.editReminder = async (kind, id) => {
   }
   busy("Saving the reminder…");
   try{
-    const res = await fetch(`${API}/set-reminder`, {
+    const res = await ownerActionFetch(`${API}/set-reminder`, {
       method:"POST", headers:{ "Content-Type":"application/json" },
       body: JSON.stringify({ id: current.id, to, name: who, amount, date: picked.date, repeatDays: picked.repeat })
     });
@@ -5710,7 +5760,7 @@ window.sendInvoice = async id => {
     const reminderRepeat = picked.repeat;
     busy("Emailing the invoice…");
     try{
-      const res = await fetch(`${API}/send-invoice`, {
+      const res = await ownerActionFetch(`${API}/send-invoice`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ to, name: fullName(s), filename: file.name,
@@ -5730,7 +5780,7 @@ window.sendInvoice = async id => {
         flash("✓ Invoice emailed to " + to + (out.reminderId ? ` — reminder set for ${reminderDate}${repeatBit}` : "") + where);
         return;
       }
-    }catch(e){ busy(""); }
+    }catch(e){ busy(""); alert(e.message||"Email could not be confirmed. Check Sent mail before retrying."); return; }
     flash("Couldn't email it right now — sharing instead.");
   }
   // No email (or send failed): share sheet / download. No auto-reminder this way.
@@ -5753,14 +5803,9 @@ window.sendInvoice = async id => {
 // Stop a waiting "you still owe us" email once the money has landed.
 async function cancelReminderFor(s){
   if (!s || !s.reminderId) return;
-  try{
-    await fetch(`${API}/cancel-reminder`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id: s.reminderId })
-    });
-  }catch(e){ /* reminder email says "ignore if you've paid" — safe if this misses */ }
-  s.reminderId = "";
+  queueReminderCancellation(s.reminderId);
+  s.reminderId=""; save();
+  await flushReminderCancellations();
 }
 // Paid up without a receipt: cancel any waiting auto-reminder and move the card
 // to Completed. Sending a receipt already does this on its own.
@@ -5787,20 +5832,12 @@ async function settleAsPaid(s){
   if (ownerToken) await loadDirectBookings(false);
 }
 // Take an entry off the unpaid ledger (cancels its auto-reminder too).
-window.removeUnpaid = id => {
+window.removeUnpaid = async id => {
   const list = state.unpaid || [];
   const i = list.findIndex(s => s.id === id); if (i < 0) return;
   const s = list[i];
   if (!confirm(`Remove ${fullName(s)||"this one"} from the unpaid list?${s.paid?"":"\n\nTheir auto-reminder (if one is set) will be cancelled."}`)) return;
-  if (s.reminderId){
-    try{
-      fetch(`${API}/cancel-reminder`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id: s.reminderId })
-      });
-    }catch(e){}
-  }
+  await cancelReminderFor(s);
   list.splice(i, 1);
   if (s.src==="direct" && s.submission_id) dismissInvoiceOwing(s.submission_id);
   save(); render(); renderDirectBookings();
@@ -5884,7 +5921,7 @@ window.bulkSend = async (groupId) => {
   else if (nums.length) lines.push(`Copy ${nums.length} number${nums.length!==1?"s":""} and open Messages`);
   if (mailable.length) lines.push(`Email the same message to ${mailable.length} of them`);
   if (confirming) lines.push(`Save ${day} to their online accounts`);
-  lines.push(`Mark ${recipients.length} customer${recipients.length!==1?"s":""} as messaged`);
+  lines.push("Show which emails succeeded and which texts are ready to send");
   if (!confirm(`${confirming?"Send the confirmation":(who ? `Send the ${who} reminder` : "Send the reminder")} to ${recipients.length} customer${recipients.length!==1?"s":""}?\n\n`
     + lines.map(line => `• ${line}`).join("\n"))) return;
   bulkSendBusy = true;
@@ -5910,6 +5947,12 @@ window.bulkSend = async (groupId) => {
       try{
         const result = await publishBulkPickupDate(recipients,state.confirmationDate||"",true,message);
         datesSaved=true; emailed=Number(result.emailed||0);
+        const accepted=new Set(result.emailedTo||[]),failed=new Set(result.emailFailed||[]);
+        recordMessageDelivery(recipients.filter(s=>accepted.has(s.email?.trim().toLowerCase())),{email:true,emailFailed:false,emailMessage:message});
+        recordMessageDelivery(recipients.filter(s=>failed.has(s.email?.trim().toLowerCase())),{emailFailed:true});
+        if(failed.size)problem=`${failed.size} emails need retry`;
+        if(result.unmatched?.length)problem=`${result.unmatched.length} pickups could not be matched to an account; check their details`;
+
       }catch(e){ problem=e.message; }
     } else if (mailable.length){
       // With more than one SMS group, each group button emails its own people
@@ -5921,16 +5964,18 @@ window.bulkSend = async (groupId) => {
         if (result.problem) problem=result.problem;
       }
     }
+    if(phoneBatches.length===1) recordMessageDelivery(phoneBatches[0].recipients.filter(s=>goodPhone(s.phone)),{textPrepared:true});
     markRecipientsSentLocally(recipients,state.confirmationDate||"",datesSaved);
     save();
   } finally {
     bulkSendBusy = false;
     pendingTextBatches = phoneBatches.length>1 ? phoneBatches : [];
+    state.pendingTextGroups=pendingTextBatches.map(b=>({id:b.id,label:b.label,message:b.message,stopIds:b.recipients.map(s=>s.id)}));save();
     render();
   }
   const resultMessage = problem
     ? `⚠ ${nums.length?"Numbers copied — ":""}${problem}`
-    : `✓ Finished — ${recipients.length} messaged${emailed?` · emailed ${emailed}`:""}${phoneBatches.length>1?` · ${phoneBatches.length} text groups ready`:""}`;
+    : `✓ ${emailed} emails sent${nums.length?" · texts ready to send in Messages":""}${phoneBatches.length>1?` · ${phoneBatches.length} groups`:""}`;
   showBulkSendResult(resultMessage, Boolean(problem));
   // The texts are the part that matters most, so Messages still opens even if
   // the email or the account side failed - he just gets told about it.
@@ -6227,7 +6272,7 @@ function startLiveGps(){
     alert("Couldn't start live GPS. Allow location access for this site and try again.");
   },{enableHighAccuracy:true,maximumAge:3000,timeout:15000});
 }
-$("#gpsToggle").onclick=()=>gpsWatchId===null?startLiveGps():stopLiveGps();
+$("#gpsToggle").onclick=async()=>{if(await ensureMap()) gpsWatchId===null?startLiveGps():stopLiveGps();};
 $("#gpsRecentre").onclick=()=>{
   if (gpsLast) mapMove(()=>map.panTo(gpsLast));
 };
@@ -6252,13 +6297,11 @@ function backupStatus(message, bad=false){
 // never look settled and would upload forever.
 const SYNC_KEY="naki_cloud_sync_v1";
 function nakiStorageKeys(){
-  return Object.keys(localStorage).filter(key=>key.startsWith("naki_") && key!==OWNER_TOKEN_KEY && key!==SYNC_KEY);
+  return Object.keys(localStorage).filter(key=>key.startsWith("naki_") && !key.startsWith("naki_action_") && key!=="naki_weather_cache_v1" && key!==OWNER_TOKEN_KEY && key!==SYNC_KEY);
 }
 $("#backupSave").onclick=()=>{
   try{
-    const data={};
-    nakiStorageKeys().forEach(key=>{ data[key]=localStorage.getItem(key); });
-    const runCount=(loadJSON(RUNS_LS,{}).runs||[]).length;
+    const {data,runCount}=backupPayload();
     const payload=JSON.stringify({ app:"naki-pickup-run", savedAt:new Date().toISOString(), data }, null, 2);
     const url=URL.createObjectURL(new Blob([payload],{type:"application/json"}));
     const link=document.createElement("a");
@@ -6296,7 +6339,8 @@ let cloudBackupTimer=null, cloudBackupBusy=false, lastCloudPush="";
 function backupPayload(){
   const data={};
   nakiStorageKeys().forEach(key=>{ data[key]=localStorage.getItem(key); });
-  return { runCount:(loadJSON(RUNS_LS,{}).runs||[]).length, data };
+  if(fieldLocalSaveFailed)data[RUNS_LS]=JSON.stringify(runStore);
+  return { runCount:(fieldLocalSaveFailed?runStore:loadJSON(RUNS_LS,{})).runs?.length||0, data };
 }
 function whenText(stamp){
   if (!stamp) return "";
@@ -6309,6 +6353,7 @@ function whenText(stamp){
 // buttons looked broken instead of locked. Now it shouts, in the panel above them,
 // with the way to fix it right there.
 function paintCloudState(text, bad=false){
+  paintFieldSave(text,bad);
   const el=$("#cloudBackupState");
   if (el){ el.textContent=text; el.style.color=bad ? "var(--bad)" : ""; }
   const row=$("#cloudSignInRow");
@@ -6323,9 +6368,10 @@ async function refreshCloudBackupInfo(){
   if (!ownerToken){ paintCloudState("Signed out — nothing is being saved to your account yet.", true); return; }
   try{
     const info=await ownerApi("/owner/backup/info");
+    if (syncMark().payload!==JSON.stringify(backupPayload())) {paintCloudState("Saved on phone · waiting to sync",true);return;}
     paintCloudState(info.latest
       ? `✓ Saved to your account ${whenText(info.latest.savedAt)} · ${info.latest.runCount} run${info.latest.runCount===1?"":"s"}`
-      : "Nothing saved to your account yet — tap Save now.");
+      : "Saved on phone · account backup waiting");
   }catch(e){ paintCloudState("Couldn't check your saved copy right now."); }
 }
 async function pushCloudBackup(quiet=true){
@@ -6338,14 +6384,18 @@ async function pushCloudBackup(quiet=true){
     const result=await ownerApi("/owner/backup",{ method:"PUT", body:stamp });
     lastCloudPush=stamp;
     setSyncMark(result.savedAt||Date.now(), stamp);
-    paintCloudState(`✓ Saved to your account just now · ${payload.runCount} run${payload.runCount===1?"":"s"}`);
+    fieldLastSave=result.savedAt||Date.now();
+    if(JSON.stringify(backupPayload())===stamp) paintCloudState(`✓ Saved to your account ${whenText(fieldLastSave)}`);
+    else {paintCloudState("Saved on phone · newer changes waiting to sync",true);clearTimeout(cloudBackupTimer);cloudBackupTimer=setTimeout(()=>pushCloudBackup(true),1000);}
     if (!quiet) backupStatus("Saved to your account.");
   }catch(e){
+    paintCloudState("Saved on phone · waiting to sync. Tap here to retry.",true);
     if (!quiet) backupStatus("Couldn't save to your account: "+e.message, true);
   }finally{ cloudBackupBusy=false; }
 }
 // Called from save(); waits for things to settle so a drag isn't 20 uploads.
 function scheduleCloudBackup(){
+  paintCloudState(ownerToken?"Saved on phone · waiting to sync":"Saved on phone · sign in for account backup",true);
   if (!ownerToken) return;
   clearTimeout(cloudBackupTimer);
   cloudBackupTimer=setTimeout(()=>pushCloudBackup(true), 8000);
@@ -6585,38 +6635,10 @@ function weatherIcon(day, size=46){
 }
 function weatherDayHtml(day){
   const alert=(day.alerts||[]).join(" · ");
-  return `<div class="weather-day"><b>${esc(dayName(day.date))}</b>${weatherIcon(day)}<span class="wx-cond">${esc(day.condition||"Forecast")}</span><span class="wx-temp"><b>${esc(day.high)}°</b> / ${esc(day.low)}°</span><span>💧 ${esc(day.rain_chance)}%</span><span>🌬 ${esc(day.wind)} km/h</span>${alert?`<span class="weather-alert">${esc(alert)}</span>`:""}</div>`;
+  return `<div class="weather-day"><b>${esc(dayName(day.date))}</b>${weatherIcon(day)}<span>${esc(day.condition||"Forecast")}</span><span>${wxValue(day.high)}° / ${wxValue(day.low)}°</span><span>Rain ${wxValue(day.rain_mm)} mm${day.partial?" (remaining/partial day)":""}</span><span>Rain chance ${wxValue(day.rain_chance)}${day.rain_chance==null?"":"%"}</span><span>Wind ${wxValue(day.wind)} km/h · Gust ${wxValue(day.gust)} km/h</span>${alert?`<span class="weather-alert">${esc(alert)}</span>`:""}</div>`;
 }
-function renderWeather(){
-  const locations=weatherLocations(), summary=$("#weatherSummary"), content=$("#weatherContent"), updated=$("#weatherUpdated"), button=$("#weatherRefresh");
-  if (!summary || !content) return;
-  button.disabled=weatherState.loading || !locations.length;
-  if (!locations.length){ summary.textContent="Weather forecast — load pickups to see towns"; updated.textContent="Only places in the pickup list you load are shown."; content.textContent="Load a pickup file first."; return; }
-  if (weatherState.loading && !weatherState.towns.length){ summary.textContent="Weather forecast — loading…"; content.innerHTML='<span class="spinner"></span> Loading the 7-day forecast…'; return; }
-  if (!weatherState.towns.length){ summary.textContent="Weather forecast — tap to retry"; content.textContent=weatherState.error||"Weather is temporarily unavailable."; return; }
-  const first=weatherState.towns[0], today=(first.days||[])[0]||{};
-  // Picture first, so a glance at the closed panel tells you the day.
-  summary.innerHTML=`${weatherIcon(today,26)}<span>${esc(first.name)}: ${esc(today.condition||"Forecast")}${today.high!=null?` ${esc(today.high)}°`:""}${weatherState.towns.length>1?` · +${weatherState.towns.length-1} places`:""}</span>`;
-  const when=weatherState.fetchedAt ? new Date(weatherState.fetchedAt).toLocaleTimeString("en-NZ",{hour:"numeric",minute:"2-digit"}) : "now";
-  updated.textContent=`Updated ${when} · ${weatherState.towns.map(t=>t.name).join(", ")}`;
-  content.innerHTML=weatherState.towns.map(t=>`<section class="weather-town"><h3>${esc(t.name)}</h3><div class="weather-days">${(t.days||[]).map(weatherDayHtml).join("")}</div></section>`).join("");
-}
-async function refreshWeather(force=false){
-  const locations=weatherLocations(), key=weatherKey(locations);
-  if (!locations.length){ weatherState={key:"",towns:[],loading:false,fetchedAt:0,error:""}; renderWeather(); return; }
-  if (weatherState.key!==key){ weatherState={key,towns:[],loading:false,fetchedAt:0,error:""}; }
-  if (weatherState.loading || (!force && weatherState.towns.length && Date.now()-weatherState.fetchedAt<LIVE_REFRESH_MS)){ renderWeather(); return; }
-  weatherState.loading=true; weatherState.error=""; renderWeather();
-  try{
-    const res=await fetch(`${API}/weather`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({locations})});
-    const data=await res.json(); if(!res.ok) throw new Error(data.error||"Weather could not be loaded");
-    if (weatherState.key!==key) return;
-    weatherState.towns=data.towns||[]; weatherState.fetchedAt=Date.now();
-    if ((data.failed||[]).length) weatherState.error=`No forecast for ${data.failed.join(", ")}`;
-  }catch(e){ if (weatherState.key===key) weatherState.error=e.message||"Weather could not be loaded"; }
-  if (weatherState.key!==key) return;
-  weatherState.loading=false; renderWeather();
-}
+function renderWeather(){ renderRunWeather(); }
+async function refreshWeather(force=false){ return loadRunWeather(force); }
 
 /* ---------- Global Metal Solutions live hours ---------- */
 function gmsDayHtml(day){
@@ -6781,7 +6803,6 @@ $("#manageRuns").onclick=()=>{
 $("#renameRun").onclick=renameActiveRun;
 $("#deleteRun").onclick=deleteActiveRun;
 applyAppView(state.appView || (state.stops.length ? "today" : "add"));
-initMap();
 dedupeUnpaidLedger();
 render();
 drawRoute();
@@ -6809,7 +6830,7 @@ setTimeout(syncSavedProfileBookings, 1500);
 setTimeout(backfillNavLabels, 2500);
 $("#mapPanel").ontoggle = () => {
   // Opening the map fresh is a good moment to show the whole run again.
-  if ($("#mapPanel").open) setTimeout(()=>{ mapUserMoved=false; paintMapButtons(); map.invalidateSize(); drawRoute(); }, 80);
+  if ($("#mapPanel").open) ensureMap().then(ok=>{if(ok){mapUserMoved=false;paintMapButtons();map.invalidateSize();drawRoute();}});
 };
 attachAutocomplete($("#oneAddr"), $("#acOne"), r => { oneAddrPicked = { lat:r.lat, lng:r.lng, label:r.label }; });
 attachAutocomplete($("#startAddr"), $("#acStart"), r => {
@@ -6820,6 +6841,7 @@ attachAutocomplete($("#endAddr"), $("#acEnd"), r => {
   state.end = { lat:r.lat, lng:r.lng, label:r.label }; save(); render(); replanIfAuto();
   flash("✓ End set: " + r.label);
 });
+fieldBoot();
 </script>
 </body>
 </html>

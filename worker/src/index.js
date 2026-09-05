@@ -1,4 +1,6 @@
-import { handlePortalRequest, retryPendingSheetBackups, purgeExpiredAuth, purgeOldPhotos, recordBookingDocument, snapshotDatabase } from "./customer.js";
+import { OWNER_ACTIONS, ownerAction } from "./owner-actions.js";
+import { metWeather } from "./field-weather.js";
+import { handlePortalRequest, retryPendingSheetBackups, purgeExpiredAuth, purgeOldPhotos, recordBookingDocument, snapshotDatabase, sessionFor } from "./customer.js";
 
 const GMS_PLACE_ID = "ChIJI-iQUfZQFG0RorGmjzvMPRE";
 
@@ -31,7 +33,7 @@ function cors(request) {
   return {
     "Access-Control-Allow-Origin": allowed ? origin : "https://naki-pickup-run.pages.dev",
     "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, Authorization",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization, Idempotency-Key",
     "Vary": "Origin"
   };
 }
@@ -78,58 +80,6 @@ async function cached(request, key, seconds, producer) {
   return noStore(response);
 }
 
-function weatherCode(code) {
-  if (code === 0) return ["Sunny", "CLEAR"];
-  if (code <= 3) return ["Partly cloudy", "PARTLY_CLOUDY"];
-  if (code <= 48) return ["Fog", "FOG"];
-  if (code <= 57) return ["Drizzle", "DRIZZLE"];
-  if (code <= 67) return ["Rain", "RAIN"];
-  if (code <= 77) return ["Snow", "SNOW"];
-  if (code <= 82) return ["Showers", "SHOWERS"];
-  if (code <= 86) return ["Snow showers", "SNOW_SHOWERS"];
-  return ["Thunderstorms", "THUNDERSTORMS"];
-}
-
-async function openMeteoWeather(location) {
-  const params = new URLSearchParams({
-    latitude: Number(location.lat).toFixed(5),
-    longitude: Number(location.lng).toFixed(5),
-    daily: "weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,precipitation_sum,wind_speed_10m_max,wind_gusts_10m_max",
-    timezone: "Pacific/Auckland",
-    forecast_days: "7"
-  });
-  const response = await fetch(`https://api.open-meteo.com/v1/forecast?${params}`);
-  if (!response.ok) throw new Error(`Fallback weather ${response.status}`);
-  const payload = await response.json();
-  const daily = payload.daily || {};
-  const days = (daily.time || []).slice(0, 7).map((date, i) => {
-    const condition = weatherCode(number((daily.weather_code || [])[i], 3));
-    const rainChance = Math.round(number((daily.precipitation_probability_max || [])[i]));
-    const rainMm = Math.round(number((daily.precipitation_sum || [])[i]) * 10) / 10;
-    const wind = Math.round(number((daily.wind_speed_10m_max || [])[i]));
-    const gust = Math.round(number((daily.wind_gusts_10m_max || [])[i]));
-    const alerts = [];
-    if (rainChance >= 70 || rainMm >= 15) alerts.push("Heavy rain possible");
-    else if (rainChance >= 50 || rainMm >= 5) alerts.push("Rain likely");
-    if (gust >= 70) alerts.push("Severe wind gusts");
-    else if (gust >= 50) alerts.push("Strong wind");
-    return {
-      date,
-      condition: condition[0],
-      condition_type: condition[1],
-      high: Math.round(number((daily.temperature_2m_max || [])[i]) * 10) / 10,
-      low: Math.round(number((daily.temperature_2m_min || [])[i]) * 10) / 10,
-      rain_chance: rainChance,
-      rain_mm: rainMm,
-      wind,
-      gust,
-      alerts
-    };
-  });
-  if (!days.length) throw new Error("No fallback forecast returned");
-  return { name: location.name, lat: Number(location.lat), lng: Number(location.lng), days, source: "Open-Meteo fallback" };
-}
-
 async function weatherFor(location, key) {
   const params = new URLSearchParams({
     key,
@@ -139,7 +89,7 @@ async function weatherFor(location, key) {
     pageSize: "7",
     unitsSystem: "METRIC"
   });
-  const response = await fetch(`https://weather.googleapis.com/v1/forecast/days:lookup?${params}`);
+  const response = await fetch(`https://weather.googleapis.com/v1/forecast/days:lookup?${params}`,{signal:AbortSignal.timeout(10000)});
   if (!response.ok) throw new Error(`Weather ${response.status}`);
   const payload = await response.json();
   const days = (payload.forecastDays || []).slice(0, 7).map(row => {
@@ -158,7 +108,7 @@ async function weatherFor(location, key) {
     const wind = Math.round(Math.max(number((dayWind.speed || {}).value), number((nightWind.speed || {}).value)));
     const gust = Math.round(Math.max(number((dayWind.gust || {}).value), number((nightWind.gust || {}).value)));
     const alerts = [];
-    if (rainChance >= 70 || rainMm >= 15) alerts.push("Heavy rain possible");
+    if (rainMm >= 15) alerts.push("Wet day — 15 mm or more forecast");
     else if (rainChance >= 50 || rainMm >= 5) alerts.push("Rain likely");
     if (gust >= 70) alerts.push("Severe wind gusts");
     else if (gust >= 50) alerts.push("Strong wind");
@@ -184,7 +134,7 @@ async function resilientWeather(location, key) {
     try { return await weatherFor(location, key); }
     catch { /* use the no-cost fallback below */ }
   }
-  return openMeteoWeather(location);
+  return metWeather(location);
 }
 
 async function handleWeather(request, env) {
@@ -200,14 +150,14 @@ async function handleWeather(request, env) {
     if (!seen.has(id)) { seen.add(id); locations.push({ name, lat, lng }); }
   }
   if (!locations.length) return json(request, { error: "No pickup towns were found", towns: [] }, 400);
-  const key = cacheRequest(request, "weather-v2", locations.map(location => `${location.name.toLowerCase()},${location.lat.toFixed(3)},${location.lng.toFixed(3)}`).sort());
-  return cached(request, key, 10800, async () => {
+  const key = cacheRequest(request, "weather-v3", locations.map(location => `${location.name.toLowerCase()},${location.lat.toFixed(3)},${location.lng.toFixed(3)}`).sort());
+  return cached(request, key, 1800, async () => {
     const settled = await Promise.allSettled(locations.map(location => resilientWeather(location, env.GOOGLE_API_KEY)));
     const towns = settled.filter(x => x.status === "fulfilled").map(x => x.value);
     const failed = settled.map((x, i) => x.status === "rejected" ? locations[i].name : "").filter(Boolean);
     if (!towns.length) return json(request, { error: "Live weather could not be loaded", towns: [], failed }, 502);
     const fallback = towns.some(town => town.source !== "Google Weather");
-    return json(request, { towns, failed, updated_at: new Date().toISOString(), source: fallback ? "Weather fallback" : "Google Weather" }, 200, "public, max-age=10800");
+    return json(request, { towns, failed, updated_at: new Date().toISOString(), source: fallback ? "Weather fallback" : "Google Weather" }, 200, "public, max-age=1800");
   });
 }
 
@@ -693,11 +643,12 @@ async function handleSendBulk(request, env) {
   let body;
   try { body = await request.json(); } catch { return json(request, { error: "Bad request" }, 400); }
   const subject = (String(body.subject || "").trim().slice(0, 150)) || "Whiteware collection";
-  const list = Array.isArray(body.messages) ? body.messages.slice(0, 40) : [];
+  if (Array.isArray(body.messages) && body.messages.length > 40) return json(request,{error:"Send at most 40 emails per batch; none were sent."},400);
+  const list = Array.isArray(body.messages) ? body.messages : [];
   if (!list.length) return json(request, { error: "No messages" }, 400);
   const emailOk = value => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(value);
   let sent = 0;
-  const failed = [];
+  const failed = [], sentTo=[];
   for (const m of list) {
     const to = String(m && m.to || "").trim();
     const name = String(m && m.name || "").trim().slice(0, 80);
@@ -705,9 +656,9 @@ async function handleSendBulk(request, env) {
     if (!emailOk(to) || !text) { failed.push(to || "(blank)"); continue; }
     if (sent) await new Promise(r => setTimeout(r, 400));   // gentle pacing — a run of 40 looks human
     const ok = await sendMail(env, { to, name, subject, text });
-    if (ok) sent++; else failed.push(to);
+    if (ok) { sent++; sentTo.push(to.toLowerCase()); } else failed.push(to);
   }
-  return json(request, { ok: true, sent, failed });
+  return json(request, { ok: true, sent, sentTo, failed });
 }
 
 /* ---------- Email sending ----------
@@ -1006,6 +957,7 @@ export default {
       return json(request, { error: "This service is only available to the Naki Pickup Run app" }, 403);
     }
     try {
+      const dispatch = async () => {
       const portalResponse = await handlePortalRequest({ request, env, path, json, sendMail });
       if (portalResponse) return portalResponse;
       if (path === "/weather" && request.method === "POST") return await handleWeather(request, env);
@@ -1016,8 +968,16 @@ export default {
       if (path === "/send-invoice" && request.method === "POST") return await handleSendInvoice(request, env);
       if (path === "/set-reminder" && request.method === "POST") return await handleSetReminder(request, env);
       if (path === "/cancel-reminder" && request.method === "POST") return await handleCancelReminder(request, env);
-      if (path === "/run-reminders" && request.method === "GET") return json(request, await runReminders(env));
+
       return json(request, { error: "Not found" }, 404);
+      };
+      if (OWNER_ACTIONS.has(path)) {
+        const session=await sessionFor(request,env,"owner");
+        if (!session) return json(request,{error:"Sign in on the Bookings tab to send email or manage reminders."},401);
+        if (request.method !== "POST") return json(request,{error:"Method not allowed"},405);
+        return await ownerAction(request,env,path,session,json,dispatch);
+      }
+      return await dispatch();
     } catch (error) {
       console.error("Naki route request failed", request.method, path, error?.stack || String(error));
       return json(request, { error: "Live service could not be loaded" }, 502);
@@ -1030,6 +990,7 @@ export default {
     ctx.waitUntil(purgeExpiredAuth(env));
     // Only on the daily trigger - the 15-minute one has other work to do.
     if (event.cron === "0 21 * * *") {
+      ctx.waitUntil(env.CUSTOMER_DB.prepare('DELETE FROM owner_action_receipts WHERE status IS NOT NULL AND created_at<?1').bind(Date.now()-30*86400000).run());
       ctx.waitUntil(snapshotDatabase(env));
       ctx.waitUntil(purgeOldPhotos(env));
     }
