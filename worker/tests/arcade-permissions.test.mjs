@@ -1,10 +1,5 @@
 import assert from "node:assert/strict";
-import fs from "node:fs";
-
-const source = fs.readFileSync(new URL("../src/customer.js", import.meta.url), "utf8");
-const { arcadeContactAllowed, directChatAllowed } = await import(
-  `data:text/javascript,${encodeURIComponent(source)}`
-);
+import { arcadeContactAllowed, directChatAllowed } from "../src/customer.js";
 
 const kaylee = "8dd18c74-4c57-4df7-a288-50bd3f366947";
 const maddie = "812581f5-ebce-4337-9160-17ee73a9c1bd";

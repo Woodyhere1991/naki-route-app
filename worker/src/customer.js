@@ -1,3 +1,5 @@
+import { AuthMailError, reserveAuthRequest } from "./auth-limits.js";
+import { scoreReviewReason } from "./score-validation.js";
 const OWNER_EMAIL = "nakiwreckremoval@gmail.com";
 const CODE_TTL_MS = 10 * 60 * 1000;
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
@@ -937,43 +939,59 @@ async function notifyOwnerOfNewCustomer(env, sendMail, profile, source) {
   }
 }
 
-async function sendCode(env, sendMail, address, role) {
-  const recent = await env.CUSTOMER_DB.prepare(
-    "SELECT COUNT(*) AS count FROM login_codes WHERE email = ?1 AND role = ?2 AND created_at > ?3"
-  ).bind(address, role, now() - 10 * 60 * 1000).first();
-  if (Number(recent && recent.count || 0) >= 3) return true;
-
+export async function sendCode(env, sendMail, address, role, ip) {
+  await reserveAuthRequest(env, ip);
   const code = String(crypto.getRandomValues(new Uint32Array(1))[0] % 1000000).padStart(6, "0");
   const createdAt = now();
-  await env.CUSTOMER_DB.prepare(
-    "INSERT INTO login_codes (id, email, role, code_hash, expires_at, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)"
-  ).bind(crypto.randomUUID(), address, role, await hashCode(env, role, address, code), createdAt + CODE_TTL_MS, createdAt).run();
+  const id = crypto.randomUUID();
+  // Reserve a pending send in one statement, preventing simultaneous requests
+  // from passing a separate count check. Failed sends do not consume this limit.
+  const reserved = await env.CUSTOMER_DB.prepare(`INSERT INTO login_codes
+    (id,email,role,code_hash,expires_at,created_at,delivery_status)
+    SELECT ?1,?2,?3,?4,?5,?6,'pending'
+    WHERE (SELECT COUNT(*) FROM login_codes WHERE email=?2 AND role=?3 AND created_at>?7 AND delivery_status!='failed') < 3
+      AND NOT EXISTS (SELECT 1 FROM login_codes WHERE email=?2 AND role=?3 AND created_at>?8 AND delivery_status!='failed')
+    RETURNING id`).bind(id,address,role,await hashCode(env,role,address,code),createdAt+CODE_TTL_MS,createdAt,createdAt-CODE_TTL_MS,createdAt-60000).first();
+  if (!reserved) {
+    const recent = await env.CUSTOMER_DB.prepare(`SELECT COUNT(*) AS count, MIN(created_at) AS oldest, MAX(created_at) AS newest
+      FROM login_codes WHERE email=?1 AND role=?2 AND created_at>?3 AND delivery_status!='failed'`)
+      .bind(address,role,createdAt-CODE_TTL_MS).first();
+    const retryAt = Number(recent?.count)>=3 ? Number(recent.oldest)+CODE_TTL_MS : Number(recent?.newest || createdAt)+60000;
+    throw new AuthMailError('Please wait before requesting another code. Check your inbox and spam folder for the latest email.',429,Math.max(1,Math.ceil((retryAt-createdAt)/1000)));
+  }
 
   const owner = role === "owner";
-  const sent = await sendMail(env, {
+  let sent = false;
+  try { sent = await sendMail(env, {
     kind: owner ? "owner-login" : "customer-login",
     to: address,
     name: owner ? "Woody" : "",
     subject: owner ? "Your Naki Pickup Run login code" : "Your Naki Whiteware login code",
     text: `${owner ? "Your owner" : "Your"} login code is ${code}\n\nIt expires in 10 minutes. If you did not request it, you can ignore this email.\n\nNaki Whiteware Removal`
-  });
-  if (!sent) throw new Error("Login email could not be sent");
+  }); } catch { /* handled below without exposing provider details */ }
+  if (!sent) {
+    await env.CUSTOMER_DB.prepare("UPDATE login_codes SET delivery_status='failed', expires_at=0 WHERE id=?1").bind(id).run();
+    throw new AuthMailError('We could not send your code just now. Please try again in a minute.',503,60);
+  }
+  await env.CUSTOMER_DB.batch([
+    env.CUSTOMER_DB.prepare("UPDATE login_codes SET delivery_status='sent' WHERE id=?1").bind(id),
+    env.CUSTOMER_DB.prepare("UPDATE login_codes SET expires_at=0 WHERE email=?1 AND role=?2 AND id!=?3 AND created_at<=?4").bind(address,role,id,createdAt)
+  ]);
   return true;
 }
 
-async function verifyCode(env, address, role, code, refToken = "") {
-  const row = await env.CUSTOMER_DB.prepare(
-    "SELECT id, code_hash, attempts FROM login_codes WHERE email = ?1 AND role = ?2 AND consumed_at IS NULL AND expires_at > ?3 ORDER BY created_at DESC LIMIT 1"
-  ).bind(address, role, now()).first();
-  if (!row || Number(row.attempts || 0) >= 5) return null;
-
+export async function verifyCode(env, address, role, code, refToken = "") {
   const expected = await hashCode(env, role, address, code);
-  if (expected !== row.code_hash) {
-    await env.CUSTOMER_DB.prepare("UPDATE login_codes SET attempts = attempts + 1 WHERE id = ?1").bind(row.id).run();
-    return null;
-  }
-
   const createdAt = now();
+  // Claim the latest sent code and reserve an attempt in the same atomic write.
+  // A racing verifier cannot reuse the code or bypass the five-attempt limit.
+  const row = await env.CUSTOMER_DB.prepare(`UPDATE login_codes SET attempts=attempts+1,
+    consumed_at=CASE WHEN code_hash=?1 THEN ?2 ELSE consumed_at END
+    WHERE id=(SELECT id FROM login_codes WHERE email=?3 AND role=?4 AND delivery_status='sent'
+      ORDER BY created_at DESC, id DESC LIMIT 1)
+      AND consumed_at IS NULL AND expires_at>?2 AND attempts<5
+    RETURNING id,code_hash`).bind(expected,createdAt,address,role).first();
+  if (!row || row.code_hash !== expected) return null;
   let customerId = null;
   let customerCreated = false;
   if (role === "customer") {
@@ -996,12 +1014,9 @@ async function verifyCode(env, address, role, code, refToken = "") {
 
   const token = randomToken();
   const tokenHash = await hashToken(token);
-  await env.CUSTOMER_DB.batch([
-    env.CUSTOMER_DB.prepare("UPDATE login_codes SET consumed_at = ?1 WHERE id = ?2").bind(createdAt, row.id),
-    env.CUSTOMER_DB.prepare(
+  await env.CUSTOMER_DB.prepare(
       "INSERT INTO sessions (token_hash, customer_id, role, email, expires_at, created_at, last_seen_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)"
-    ).bind(tokenHash, customerId, role, address, createdAt + SESSION_TTL_MS, createdAt)
-  ]);
+    ).bind(tokenHash, customerId, role, address, createdAt + SESSION_TTL_MS, createdAt).run();
   return { token, customerId, customerCreated };
 }
 
@@ -1171,7 +1186,7 @@ export async function purgeOldPhotos(env) {
    there is always something to rebuild from. Sign-in codes and live sessions are
    deliberately left out - they are secrets, and they are worthless a day later. */
 const SNAPSHOT_SKIP = new Set([
-  "_cf_KV", "d1_migrations", "sqlite_sequence", "sessions", "login_codes"
+  "_cf_KV", "d1_migrations", "sqlite_sequence", "sessions", "login_codes", "auth_request_limits"
 ]);
 const SNAPSHOT_PREFIX = "db-backups/";
 const SNAPSHOT_KEEP_DAYS = 30;
@@ -1741,7 +1756,7 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
     try { body = await request.json(); } catch { /* handled below */ }
     const invite = await profileInvite(env, body.token);
     if (!invite) return json(request, { error: "This private link has expired or was already used" }, 410);
-    await sendCode(env, sendMail, invite.email, "customer");
+    await sendCode(env, sendMail, invite.email, "customer", request.headers.get("CF-Connecting-IP"));
     return json(request, { ok: true, message: "Check your email for the 6-digit code." });
   }
 
@@ -1782,7 +1797,7 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
     try { body = await request.json(); } catch { /* handled below */ }
     const address = email(body.email);
     if (!EMAIL_RE.test(address)) return json(request, { error: "Enter a valid email address" }, 400);
-    await sendCode(env, sendMail, address, "customer");
+    await sendCode(env, sendMail, address, "customer", request.headers.get("CF-Connecting-IP"));
     return json(request, { ok: true, message: "Check your email for the 6-digit code." });
   }
 
@@ -1812,7 +1827,7 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
   }
 
   if (path === "/owner/request-code" && request.method === "POST") {
-    await sendCode(env, sendMail, OWNER_EMAIL, "owner");
+    await sendCode(env, sendMail, OWNER_EMAIL, "owner", request.headers.get("CF-Connecting-IP"));
     return json(request, { ok: true, message: "A login code was sent to the Naki business email." });
   }
 
@@ -2278,14 +2293,19 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
       const game = clean(body.game, 20).toLowerCase();
       if (!ARCADE_GAMES.has(game)) return json(request, { error: "Unknown game" }, 400);
       const raw = Number(body.score);
-      if (!Number.isFinite(raw) || raw < 0) return json(request, { error: "Invalid score" }, 400);
-      // Cap what a single run can claim, so a fiddled request can't park an
-      // unbeatable number at the top of the board forever. 1,000,000 turned out
-      // to be too low for real play (Invade legitimately clears it) - raised
-      // well above anything a genuine run reaches, still a backstop against a
-      // garbage/overflowed number.
-      const score = Math.min(Math.floor(raw), 100000000);
+      if (typeof body.score !== "number" || !Number.isSafeInteger(raw) || raw < 0) return json(request, { error: "Invalid score" }, 400);
+      const score = raw;
       const stamp = now();
+      const reviewReason = scoreReviewReason(game, score);
+      if (reviewReason) {
+        await env.CUSTOMER_DB.prepare(`INSERT INTO arcade_score_flags(customer_id,game,score,reason,created_at)
+          VALUES (?1,?2,?3,?4,?5) ON CONFLICT(customer_id,game) DO UPDATE SET
+          score=excluded.score,reason=excluded.reason,created_at=excluded.created_at`)
+          .bind(session.customer_id,game,score,reviewReason,stamp).run();
+        const best = await env.CUSTOMER_DB.prepare("SELECT best_score FROM game_scores WHERE customer_id=?1 AND game=?2")
+          .bind(session.customer_id,game).first();
+        return json(request,{ok:true,reviewRequired:true,best:Number(best?.best_score || 0),message:"That score is unusually high for this game. It has been saved for review and has not changed the leaderboard."},202);
+      }
       const day = aucklandDay();
       const week = aucklandWeek();
       const month = aucklandMonth();
@@ -2917,6 +2937,13 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
   if (path.startsWith("/owner/")) {
     const session = await sessionFor(request, env, "owner");
     if (!session) return json(request, { error: "Owner login required" }, 401);
+
+    if (path === "/owner/arcade/score-flags" && request.method === "GET") {
+      const rows=await env.CUSTOMER_DB.prepare(`SELECT f.game,f.score,f.reason,f.created_at,c.id AS customer_id,
+        c.email,COALESCE(NULLIF(c.nickname,''),c.first_name) AS name FROM arcade_score_flags f
+        JOIN customers c ON c.id=f.customer_id ORDER BY f.created_at DESC LIMIT 100`).all();
+      return json(request,{flags:rows.results || []});
+    }
 
     /* ---- Off-phone backup of the pickup runs ----
        The runs live in one browser's storage, which a phone can wipe without

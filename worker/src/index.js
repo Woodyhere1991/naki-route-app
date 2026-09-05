@@ -1,5 +1,6 @@
 import { OWNER_ACTIONS, ownerAction } from "./owner-actions.js";
 import { loginSender } from "./login-mail.js";
+import { AuthMailError } from "./auth-limits.js";
 import { metWeather } from "./field-weather.js";
 import { handlePortalRequest, retryPendingSheetBackups, purgeExpiredAuth, purgeOldPhotos, recordBookingDocument, snapshotDatabase, sessionFor } from "./customer.js";
 
@@ -985,6 +986,11 @@ export default {
       }
       return await dispatch();
     } catch (error) {
+      if (error instanceof AuthMailError) {
+        const response = json(request, { error: error.message, retryAfter: error.retryAfter }, error.status);
+        response.headers.set("Retry-After", String(error.retryAfter));
+        return response;
+      }
       console.error("Naki route request failed", request.method, path, error?.stack || String(error));
       return json(request, { error: "Live service could not be loaded" }, 502);
     }
@@ -994,6 +1000,7 @@ export default {
     ctx.waitUntil(runReminders(env));
     ctx.waitUntil(retryPendingSheetBackups(env));
     ctx.waitUntil(purgeExpiredAuth(env));
+    ctx.waitUntil(env.CUSTOMER_DB.prepare("DELETE FROM auth_request_limits WHERE expires_at<?1").bind(Date.now()).run());
     // Only on the daily trigger - the 15-minute one has other work to do.
     if (event.cron === "0 21 * * *") {
       ctx.waitUntil(env.CUSTOMER_DB.prepare('DELETE FROM owner_action_receipts WHERE status IS NOT NULL AND created_at<?1').bind(Date.now()-30*86400000).run());
