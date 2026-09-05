@@ -4096,7 +4096,7 @@ function renderList(){
     const navBtn   = (!isDone && s.lat!=null) ? `<button class="sm nav-action" onclick="navStop('${s.id}')">🧭 Navigate</button>` : "";
     const doneBtn  = `<button class="${isDone?'warn':'good'} sm" onclick="toggleDone('${s.id}')">${isDone?'↺ Undo':'✓ Done'}</button>`;
     const del      = `<button class="ghost sm" title="Remove this stop" onclick="delStop('${s.id}')">✕</button>`;
-    const btns = `<div class="stopbtns primary-actions">${isDone?doneBtn+receiptBtn:navBtn+doneBtn+phone}</div><details class="stop-more"><summary>More actions</summary><div class="stopbtns">${isDone?invoiceBtn+editBtn+emailBtn+del:textBtn+emailBtn+prioBtn+editBtn+receiptBtn+invoiceBtn+del}</div></details>`;
+    const btns = `<div class="stopbtns primary-actions">${isDone?receiptBtn+doneBtn:navBtn+doneBtn+textBtn}</div><details class="stop-more"><summary>More actions</summary><div class="stopbtns">${isDone?invoiceBtn+editBtn+emailBtn+del:phone+emailBtn+prioBtn+editBtn+receiptBtn+invoiceBtn+del}</div></details>`;
     return `<div class="stop ${isDone?'done':''} ${asap&&!isDone?'asap':''} ${s.id===nextId&&!isDone?'next':''}"
         data-id="${s.id}" style="border-left-color:${AREA_COLORS[area]||AREA_COLORS['']}">
       <div class="num">${num}</div>
