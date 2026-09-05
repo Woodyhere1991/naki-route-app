@@ -20,6 +20,7 @@
     { "binding": "DOCUMENTS", "bucket_name": "naki-booking-documents" }
   ],
   "vars": {
+    "AUTH_EMAIL_FROM": "no-reply@nakiwhitewareremoval.vip",
     "GOOGLE_SHEET_ID": "18D6Z6TpjTS9MPXedcF-s4qMMOs_J3b65bj63SRGj5L0"
   },
   "triggers": {
