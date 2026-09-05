@@ -1,4 +1,5 @@
 import { OWNER_ACTIONS, ownerAction } from "./owner-actions.js";
+import { loginSender } from "./login-mail.js";
 import { metWeather } from "./field-weather.js";
 import { handlePortalRequest, retryPendingSheetBackups, purgeExpiredAuth, purgeOldPhotos, recordBookingDocument, snapshotDatabase, sessionFor } from "./customer.js";
 
@@ -756,6 +757,11 @@ async function sendGmail(env, msg) {
 
 // One front door: Gmail first, Brevo fallback so a Google hiccup never loses a send.
 async function sendMail(env, msg) {
+  if (msg.kind === "customer-login" && env.AUTH_EMAIL_FROM) {
+    // Authentication mail must never fall back to the personal Gmail sender.
+    const sender = loginSender(env.AUTH_EMAIL_FROM);
+    return sendBrevo(env, { ...msg, sender });
+  }
   if (await sendGmail(env, msg)) return true;
   return sendBrevo(env, msg);
 }
@@ -763,14 +769,14 @@ async function sendMail(env, msg) {
 function mailConfigured(env) { return Boolean(env.GMAIL_REFRESH_TOKEN || env.BREVO_API_KEY); }
 
 // Brevo sender — now the fallback path only.
-async function sendBrevo(env, { to, name, subject, text, attachment, replyTo }) {
+async function sendBrevo(env, { to, name, subject, text, attachment, replyTo, sender }) {
   if (!env.BREVO_API_KEY) return false;
   const replyAddress = String(replyTo && replyTo.email || "").trim();
   const useReply = /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(replyAddress)
     ? { email: replyAddress, ...(replyTo.name ? { name: String(replyTo.name).slice(0, 80) } : {}) }
     : { name: "Naki Whiteware Removal", email: "nakiwhitewareremoval@gmail.com" };
   const payload = {
-    sender: { name: "Naki Whiteware Removal", email: "nakiwreckremoval@gmail.com" },
+    sender: sender || { name: "Naki Whiteware Removal", email: "nakiwreckremoval@gmail.com" },
     replyTo: useReply,
     to: [{ email: to, ...(name ? { name } : {}) }],
     subject,

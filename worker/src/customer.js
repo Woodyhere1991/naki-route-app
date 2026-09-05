@@ -951,6 +951,7 @@ async function sendCode(env, sendMail, address, role) {
 
   const owner = role === "owner";
   const sent = await sendMail(env, {
+    kind: owner ? "owner-login" : "customer-login",
     to: address,
     name: owner ? "Woody" : "",
     subject: owner ? "Your Naki Pickup Run login code" : "Your Naki Whiteware login code",
