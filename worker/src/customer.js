@@ -55,7 +55,7 @@ const RURAL_PRICES = {
 const REFERRAL_OPTIONS = new Set(["Google", "Facebook", "Neighbourly", "Find My Local", "AI", "Word of mouth", "Other", ""]);
 const OWNER_STATUSES = new Set(["NEW", "ADDED_TO_RUN", "CONTACTED", "CONFIRMED", "COMPLETED", "DECLINED", "CANCELLED"]);
 // The arcade games. Anything else posting a score is rejected.
-const ARCADE_GAMES = new Set(["stack", "flap", "tower", "invade", "dash", "wio", "squad"]);
+const ARCADE_GAMES = new Set(["stack", "flap", "tower", "invade", "invade_coop", "dash", "wio", "squad"]);
 // Arcade chat guard rails. Short lines, a handful a minute, kept a month.
 const CHAT_MAX_LEN = 140;
 const CHAT_KEEP_MS = 30 * 24 * 60 * 60 * 1000;
