@@ -104,9 +104,10 @@ async function fetchRouteData(url) {
 
 function messageDeliveryLabel(s) {
   const m=markFor(s);
-  if(m.emailFailed) return m.textConfirmed?'Text sent · email needs retry':m.textPrepared?'Text ready · email needs retry':'Email needs retry';
-  if(m.textConfirmed) return m.email?'Text + email sent':'Text sent';
-  if(m.textPrepared) return m.email?'Email sent · text ready':'Text ready';
+  // Existing prepared marks came from the same Messages handoff.
+  const textSent=m.textConfirmed||m.textPrepared;
+  if(m.emailFailed) return textSent?'Text sent · email needs retry':'Email needs retry';
+  if(textSent) return m.email?'Text + email sent':'Text sent';
   if(m.email) return 'Email sent';
   return m.contacted||m.text?'Previously sent':'Not sent';
 }
@@ -116,15 +117,9 @@ function recordMessageDelivery(recipients, changes) {
   recipients.forEach(s=>{const k=messageMarkKey(s);bucket[k]={...markFor(s),...(bucket[k]||{}),stopId:s.id,deliveryVersion:2,...changes};});
   save();
 }
-function confirmPreparedTexts() {
-  const pending=state.stops.filter(s=>markFor(s).textPrepared&&!markFor(s).textConfirmed);
-  if(!pending.length) return;
-  if(!confirm(`Have you sent the prepared texts to all ${pending.length} selected people in Messages?`)) return;
-  recordMessageDelivery(pending,{textConfirmed:true,textPrepared:false});renderContacts();
-}
-function preparedTextConfirmation() {
-  const count=state.stops.filter(s=>markFor(s).textPrepared&&!markFor(s).textConfirmed).length;
-  return count?`<p class="small muted">${count} texts prepared. Send them in Messages, then confirm here.</p><button class="ghost sm" onclick="confirmPreparedTexts()">I've sent the prepared texts</button>`:'';
+// The owner sends every text when Messages opens; record that handoff immediately.
+function markTextsSentOnOpen(recipients) {
+  recordMessageDelivery(recipients.filter(s=>goodPhone(s.phone)),{textConfirmed:true,textPrepared:false});
 }
 
 function weatherRunDate() { return state.confirmationDate||localIso(new Date()); }

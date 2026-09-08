@@ -4514,7 +4514,7 @@ function markFor(s){
 }
 function isContacted(stop){
   const mark = markFor(typeof stop === "string" ? findStop(stop) : stop);
-  if(mark.deliveryVersion===2) return !mark.emailFailed && Boolean(mark.textConfirmed || mark.email);
+  if(mark.deliveryVersion===2) return !mark.emailFailed && Boolean(mark.textConfirmed || mark.textPrepared || mark.email);
   return !!(mark.contacted || mark.email || mark.text); // also keeps your existing marks
 }
 function selectedRecipientIds(){
@@ -4642,13 +4642,13 @@ async function sendReminderEmailBatch(batch){
 let pendingTextBatches=[];
 function preparedTextBatchControls(){
   pendingTextBatches=(state.pendingTextGroups||[]).map(b=>({...b,recipients:b.stopIds.map(findStop).filter(Boolean)}));
-  if (!pendingTextBatches.length) return preparedTextConfirmation();
+  if (!pendingTextBatches.length) return "";
   const rows=pendingTextBatches.map((batch,index)=>{
     const phones=batchPhoneNumbers(batch);
     return `<button class="ghost sm" style="margin:5px 5px 0 0" onclick="openPreparedTextBatch(${index},this)">📣 Text &amp; email group ${index+1} · ${phones.length} · ${esc(batch.label)}</button>`;
   }).join("");
   return `<div class="card" style="margin-top:10px;padding:9px"><b>Text groups ready</b>
-    <p class="small muted" style="margin:4px 0">Open one group, paste the copied numbers into To, send it, then return here for the next group.</p>${rows}${preparedTextConfirmation()}</div>`;
+    <p class="small muted" style="margin:4px 0">Open one group, paste the copied numbers into To, send it, then return here for the next group.</p>${rows}</div>`;
 }
 window.openPreparedTextBatch = async (index, button) => {
   if(bulkSendBusy)return;
@@ -4662,8 +4662,8 @@ window.openPreparedTextBatch = async (index, button) => {
     if(!copied)return alert("Couldn't copy the numbers. Please try again.");
     if(button){button.disabled=true;button.textContent="Preparing…";}
     const emailResult=await sendReminderEmailBatch(batch);
-    recordMessageDelivery(batch.recipients.filter(s=>goodPhone(s.phone)),{textPrepared:true,textConfirmed:false});
     showBulkSendResult(`${emailResult.problem?emailResult.problem+" · ":""}Text group ${index+1} ready — paste the copied numbers into To.`,Boolean(emailResult.problem));
+    markTextsSentOnOpen(batch.recipients);
     location.href="sms:"+(/iPad|iPhone|iPod/.test(navigator.userAgent)?"&body=":"?body=")+encodeURIComponent(batch.message);
   } finally {bulkSendBusy=false;renderContacts();}
 };
@@ -5965,7 +5965,7 @@ window.bulkSend = async (groupId) => {
   else if (nums.length) lines.push(`Copy ${nums.length} number${nums.length!==1?"s":""} and open Messages`);
   if (mailable.length) lines.push(`Email the same message to ${mailable.length} of them`);
   if (confirming) lines.push(`Save ${day} to their online accounts`);
-  lines.push("Show which emails succeeded and which texts are ready to send");
+  lines.push("Mark texts as sent when Messages opens and show which emails succeeded");
   if (!confirm(`${confirming?"Send the confirmation":(who ? `Send the ${who} reminder` : "Send the reminder")} to ${recipients.length} customer${recipients.length!==1?"s":""}?\n\n`
     + lines.map(line => `• ${line}`).join("\n"))) return;
   bulkSendBusy = true;
@@ -6008,7 +6008,6 @@ window.bulkSend = async (groupId) => {
         if (result.problem) problem=result.problem;
       }
     }
-    if(phoneBatches.length===1) recordMessageDelivery(phoneBatches[0].recipients.filter(s=>goodPhone(s.phone)),{textPrepared:true,textConfirmed:false});
     markRecipientsSentLocally(recipients,state.confirmationDate||"",datesSaved);
     save();
   } finally {
@@ -6019,12 +6018,14 @@ window.bulkSend = async (groupId) => {
   }
   const resultMessage = problem
     ? `⚠ ${nums.length?"Numbers copied — ":""}${problem}`
-    : `✓ ${emailed} emails sent${nums.length?" · texts ready to send in Messages":""}${phoneBatches.length>1?` · ${phoneBatches.length} groups`:""}`;
+    : `✓ ${emailed} emails sent${nums.length?(phoneBatches.length===1?" · texts marked sent":" · text groups ready"):""}${phoneBatches.length>1?` · ${phoneBatches.length} groups`:""}`;
   showBulkSendResult(resultMessage, Boolean(problem));
   // The texts are the part that matters most, so Messages still opens even if
   // the email or the account side failed - he just gets told about it.
   if (problem) alert(`The texts are ready to send, but ${problem}.`);
   if (phoneBatches.length===1){
+    markTextsSentOnOpen(phoneBatches[0].recipients);
+    renderContacts();
     location.href = "sms:" + (/iPad|iPhone|iPod/.test(navigator.userAgent) ? "&body=" : "?body=") + encodeURIComponent(phoneBatches[0].message);
   }
 };
