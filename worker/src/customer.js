@@ -3360,23 +3360,25 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
       const jotform = bookingId.startsWith("JOTFORM-");
       const pickupRun = bookingId.startsWith("PICKUP-");
       const table = jotform ? "jotform_bookings" : pickupRun ? "external_bookings" : "bookings";
-      const existing = await env.CUSTOMER_DB.prepare(`SELECT id, photo_count FROM ${table} WHERE id = ?1`).bind(bookingId).first();
-      if (!existing) return json(request, { error: "Booking not found" }, 404);
-      // Deleting the job deletes its photos too - no orphaned images left behind.
-      if (!jotform && !pickupRun && Number(existing.photo_count || 0) > 0) {
-        await clearPhotos(env, bookingId, existing.photo_count);
-      }
+      // Imported sources do not have photo_count in their schema.
+      const columns = table === "bookings" ? "id, photo_count" : "id";
+      const existing = await env.CUSTOMER_DB.prepare(`SELECT ${columns} FROM ${table} WHERE id = ?1`).bind(bookingId).first();
       // A permanent delete must not leave its invoice behind to make the same job
       // reappear as owing after a refresh. Remove the stored PDF too when there is
       // one; an R2 hiccup should not stop the database deletion succeeding.
       const documents = await env.CUSTOMER_DB.prepare(
         "SELECT r2_key FROM booking_documents WHERE booking_id = ?1"
       ).bind(bookingId).all();
-      await env.CUSTOMER_DB.prepare("DELETE FROM booking_documents WHERE booking_id = ?1").bind(bookingId).run();
-      await env.CUSTOMER_DB.prepare("DELETE FROM booking_events WHERE booking_id = ?1").bind(bookingId).run();
-      const result = await env.CUSTOMER_DB.prepare(`DELETE FROM ${table} WHERE id = ?1`).bind(bookingId).run();
-      const changes = Number(result?.meta?.changes || result?.meta?.rows_written || 0);
-      if (!changes) return json(request, { error: "Booking not found" }, 404);
+      // One transaction: never leave a partially deleted booking. An already
+      // deleted ID is a successful retry (for example after a lost response).
+      await env.CUSTOMER_DB.batch([
+        env.CUSTOMER_DB.prepare("DELETE FROM booking_documents WHERE booking_id = ?1").bind(bookingId),
+        env.CUSTOMER_DB.prepare("DELETE FROM booking_events WHERE booking_id = ?1").bind(bookingId),
+        env.CUSTOMER_DB.prepare(`DELETE FROM ${table} WHERE id = ?1`).bind(bookingId)
+      ]);
+      if (table === "bookings" && Number(existing?.photo_count || 0) > 0) {
+        await clearPhotos(env, bookingId, existing.photo_count).catch(() => {});
+      }
       if (env.DOCUMENTS) {
         await Promise.all((documents.results || []).map(document =>
           document.r2_key ? env.DOCUMENTS.delete(document.r2_key).catch(() => {}) : Promise.resolve()
