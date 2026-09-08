@@ -110,6 +110,16 @@ test('a Yard Wars invite is still a Yard Wars invite when it comes back', async 
     assert.equal((await response.json()).invites[0].game,game);
   }
 });
+test('four versus invites preserve their game and room, with no email', async () => {
+  for (const game of ['sumo','hot','skip','hoops']) {
+    const h=harness(),r=await h.request('/customer/arcade/invites','POST',{customerId:'test-friend',game,inApp:true,room:'ABC12'});
+    assert.equal(r.status,200);assert.deepEqual(await r.json(),{ok:true,game,room:'ABC12',emailSent:false});assert.equal(h.mails(),0);
+    const received=await handlePortalRequest({path:'/customer/arcade/friends',request:new Request('https://test.example/customer/arcade/friends',{headers:{Authorization:'Bearer test-token'}}),env:{CUSTOMER_DB:gameDb(game)},json:(_req,data,status=200)=>Response.json(data,{status}),sendMail:async()=>true});
+    assert.equal((await received.json()).invites[0].game,game);
+    for(const room of ['', 'ABCDE6', '../AB', 'abc12'])assert.equal((await h.request('/customer/arcade/invites','POST',{customerId:'test-friend',game,inApp:true,room})).status,400);
+    assert.equal((await h.request('/customer/arcade/invites','POST',{customerId:'test-friend',game,room:'ABC12'})).status,400);
+  }
+});
 function gameDb(game){
   return { prepare(sql){ return { bind(...args){ return { sql,args,
     async first(){

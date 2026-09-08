@@ -56,7 +56,7 @@ const RURAL_PRICES = {
 const REFERRAL_OPTIONS = new Set(["Google", "Facebook", "Neighbourly", "Find My Local", "AI", "Word of mouth", "Other", ""]);
 const OWNER_STATUSES = new Set(["NEW", "ADDED_TO_RUN", "CONTACTED", "CONFIRMED", "COMPLETED", "DECLINED", "CANCELLED"]);
 // The arcade games. Anything else posting a score is rejected.
-const ARCADE_GAMES = new Set(["stack", "flap", "tower", "invade", "invade_coop", "dash", "wio", "squad", "spin", "yard"]);
+const ARCADE_GAMES = new Set(["stack", "flap", "tower", "invade", "invade_coop", "dash", "wio", "squad", "spin", "yard", "sumo", "hot", "skip", "hoops"]);
 // Arcade chat guard rails. Short lines, a handful a minute, kept a month.
 const CHAT_MAX_LEN = 140;
 const CHAT_KEEP_MS = 30 * 24 * 60 * 60 * 1000;
@@ -2192,8 +2192,12 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
       const recipient = clean(body.customerId, 80);
       const game = clean(body.game || "wio", 20).toLowerCase();
       const inApp = body.inApp === true;
-      if (game !== "wio" && game !== "squad" && game !== "invade" && game !== "spin" && game !== "yard") {
+      if (game !== "wio" && game !== "squad" && game !== "invade" && game !== "spin" && game !== "yard" && !["sumo", "hot", "skip", "hoops"].includes(game)) {
         return json(request, { error: "Choose a multiplayer game" }, 400);
+      }
+      const partyGame = ["sumo", "hot", "skip", "hoops"].includes(game);
+      if (partyGame && (body.inApp !== true || !/^[A-Z0-9]{5}$/.test(String(body.room || "")))) {
+        return json(request, { error: "Create a game room before inviting a friend" }, 400);
       }
       const hexRoom = game === "invade" || game === "spin";
       const requestedRoom = clean(body.room, hexRoom ? 64 : 24);
@@ -2202,7 +2206,7 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
           ? "Create a Spin Cycle room before inviting a friend"
           : "Create a Microwave Invasion room before inviting a friend" }, 400);
       }
-      const room = hexRoom ? requestedRoom : (game === "squad" || game === "yard")
+      const room = hexRoom ? requestedRoom : (game === "squad" || game === "yard" || partyGame)
         ? (requestedRoom.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 5)
             || randomToken(5).toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 5))
         : (requestedRoom.toLowerCase().replace(/[^a-z0-9_-]/g, "").slice(0, 24)
