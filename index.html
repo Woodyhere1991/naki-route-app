@@ -409,13 +409,15 @@
   a{color:#82d9ef}
 .kids-activity-table{width:100%;border-collapse:collapse;margin:12px 0}.kids-activity-table caption{text-align:left;font-weight:700;padding:6px 0}.kids-activity-table th,.kids-activity-table td{text-align:right;padding:9px 4px;border-bottom:1px solid var(--line)}.kids-activity-table th:first-child{text-align:left;font-weight:600}
   .scheduled-shortcuts{max-width:1080px;margin:0 auto;padding:8px 12px 10px}
-  .scheduled-shortcuts nav{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px}
+  .scheduled-shortcuts nav{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}
   .scheduled-shortcuts button{min-height:44px;padding:8px 2px;font-size:14px}
+  .today-actions{order:15}
+  body[data-view="today"] .gms-panel{order:12}
   .scheduled-shortcuts button[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);color:#fff}
   body[data-view="today"]:not([data-scheduled-section="listWrap"]) :is(.today-list,.today-bad,.today-unpaid),
   body[data-view="today"]:not([data-scheduled-section="weatherPanel"]) .today-weather,
   body[data-view="today"]:not([data-scheduled-section="mapPanel"]) .today-map,
-  body[data-view="today"]:not([data-scheduled-section="routeOptions"]) :is(.today-actions,.gms-panel){display:none}
+  body[data-view="today"]:not([data-scheduled-section="listWrap"]) :is(.today-actions,.gms-panel){display:none}
   .weather-town{border-top:1px solid var(--line);padding:8px 0}
   .weather-town>summary{display:flex;gap:10px;align-items:center;cursor:pointer;list-style:none}
   .weather-town>summary::after{content:'＋';margin-left:auto;color:var(--muted)}
@@ -460,7 +462,6 @@
       <button class="ghost" data-scheduled-button="listWrap" aria-pressed="true" onclick="jumpToScheduled('listWrap')">Pickups</button>
       <button class="ghost" data-scheduled-button="weatherPanel" aria-pressed="false" onclick="jumpToScheduled('weatherPanel')">Weather</button>
       <button class="ghost" data-scheduled-button="mapPanel" aria-pressed="false" onclick="jumpToScheduled('mapPanel')">Map</button>
-      <button class="ghost" data-scheduled-button="routeOptions" aria-pressed="false" onclick="jumpToScheduled('routeOptions')">Route</button>
     </nav>
   </section>
 
@@ -540,13 +541,13 @@
   </div>
 
   <!-- ACTIONS -->
-  <details id="routeOptions" class="card view-panel view-today today-actions field-route-actions"><summary>Route options</summary><div>
+  <section id="routeOptions" aria-label="Route options" class="card view-panel view-today today-actions"><h2 style="font-size:16px;margin:0 0 10px">Route options</h2><div>
     <button id="optimise" style="width:100%">Optimise route</button>
     <div class="row" style="margin-top:10px">
       <button id="optimiseHere" class="ghost grow">Optimise from where I am</button>
 
     </div>
-  </div></details>
+  </div></section>
 
   <!-- BULK MESSAGE CONTACTS -->
   <div id="contactsWrap" class="view-panel view-messages"></div>
