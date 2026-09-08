@@ -412,12 +412,12 @@
   .scheduled-shortcuts nav{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}
   .scheduled-shortcuts button{min-height:44px;padding:8px 2px;font-size:14px}
   .today-actions{order:15}
-  body[data-view="today"] .gms-panel{order:12}
+  body[data-view="today"] .gms-panel{order:25}
   .scheduled-shortcuts button[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);color:#fff}
   body[data-view="today"]:not([data-scheduled-section="listWrap"]) :is(.today-list,.today-bad,.today-unpaid),
-  body[data-view="today"]:not([data-scheduled-section="weatherPanel"]) .today-weather,
+  body[data-view="today"]:not([data-scheduled-section="weatherPanel"]) :is(.today-weather,.gms-panel),
   body[data-view="today"]:not([data-scheduled-section="mapPanel"]) .today-map,
-  body[data-view="today"]:not([data-scheduled-section="listWrap"]) :is(.today-actions,.gms-panel){display:none}
+  body[data-view="today"]:not([data-scheduled-section="listWrap"]) .today-actions{display:none}
   .weather-town{border-top:1px solid var(--line);padding:8px 0}
   .weather-town>summary{display:flex;gap:10px;align-items:center;cursor:pointer;list-style:none}
   .weather-town>summary::after{content:'＋';margin-left:auto;color:var(--muted)}
@@ -460,7 +460,7 @@
   <section class="view-panel view-today scheduled-shortcuts" aria-label="Scheduled shortcuts">
     <nav aria-label="Run sections">
       <button class="ghost" data-scheduled-button="listWrap" aria-pressed="true" onclick="jumpToScheduled('listWrap')">Pickups</button>
-      <button class="ghost" data-scheduled-button="weatherPanel" aria-pressed="false" onclick="jumpToScheduled('weatherPanel')">Weather</button>
+      <button class="ghost" data-scheduled-button="weatherPanel" aria-pressed="false" onclick="jumpToScheduled('weatherPanel')">Run info</button>
       <button class="ghost" data-scheduled-button="mapPanel" aria-pressed="false" onclick="jumpToScheduled('mapPanel')">Map</button>
     </nav>
   </section>
