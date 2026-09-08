@@ -104,16 +104,16 @@ async function fetchRouteData(url) {
 
 function messageDeliveryLabel(s) {
   const m=markFor(s);
-  if(m.emailFailed) return m.textConfirmed?'Text sent · email needs retry':'Email needs retry';
+  if(m.emailFailed) return m.textConfirmed?'Text sent · email needs retry':m.textPrepared?'Text ready · email needs retry':'Email needs retry';
   if(m.textConfirmed) return m.email?'Text + email sent':'Text sent';
   if(m.textPrepared) return m.email?'Email sent · text ready':'Text ready';
   if(m.email) return 'Email sent';
-  return m.contacted||m.text?'Previously marked':'New';
+  return m.contacted||m.text?'Previously sent':'Not sent';
 }
 function recordMessageDelivery(recipients, changes) {
   state.messageHistory=state.messageHistory||{};
   const bucket=state.messageHistory[messageBucket()]=state.messageHistory[messageBucket()]||{};
-  recipients.forEach(s=>{const k=messageMarkKey(s);bucket[k]={...(bucket[k]||{}),stopId:s.id,deliveryVersion:2,...changes};});
+  recipients.forEach(s=>{const k=messageMarkKey(s);bucket[k]={...markFor(s),...(bucket[k]||{}),stopId:s.id,deliveryVersion:2,...changes};});
   save();
 }
 function confirmPreparedTexts() {

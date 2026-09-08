@@ -4514,8 +4514,7 @@ function markFor(s){
 }
 function isContacted(stop){
   const mark = markFor(typeof stop === "string" ? findStop(stop) : stop);
-  const s=typeof stop==="string"?findStop(stop):stop;
-  if(mark.deliveryVersion===2) return !mark.emailFailed && (goodPhone(s?.phone)?Boolean(mark.textConfirmed):Boolean(mark.email));
+  if(mark.deliveryVersion===2) return !mark.emailFailed && Boolean(mark.textConfirmed || mark.email);
   return !!(mark.contacted || mark.email || mark.text); // also keeps your existing marks
 }
 function selectedRecipientIds(){
@@ -4663,7 +4662,7 @@ window.openPreparedTextBatch = async (index, button) => {
     if(!copied)return alert("Couldn't copy the numbers. Please try again.");
     if(button){button.disabled=true;button.textContent="Preparing…";}
     const emailResult=await sendReminderEmailBatch(batch);
-    recordMessageDelivery(batch.recipients.filter(s=>goodPhone(s.phone)),{textPrepared:true});
+    recordMessageDelivery(batch.recipients.filter(s=>goodPhone(s.phone)),{textPrepared:true,textConfirmed:false});
     showBulkSendResult(`${emailResult.problem?emailResult.problem+" · ":""}Text group ${index+1} ready — paste the copied numbers into To.`,Boolean(emailResult.problem));
     location.href="sms:"+(/iPad|iPhone|iPod/.test(navigator.userAgent)?"&body=":"?body=")+encodeURIComponent(batch.message);
   } finally {bulkSendBusy=false;renderContacts();}
@@ -4691,7 +4690,7 @@ function renderContacts(){
     return { label:fullName(s)||fullAddr(s)||"Unnamed pickup", fields };
   }).filter(Boolean);
   const recipientRows = pend.map(s => {
-    const flags = isContacted(s) ? "already sent" : "new customer";
+    const flags = messageDeliveryLabel(s);
     return `<label class="missing-contact" style="display:flex;gap:8px;align-items:flex-start;cursor:pointer">
       <input type="checkbox" data-recipient="${s.id}" ${selected.has(s.id)?"checked":""} onchange="setRecipientSelected('${s.id}',this.checked)" style="width:auto;margin-top:3px" />
       <span><b>${esc(fullName(s)||fullAddr(s)||"Unnamed pickup")}</b><br><span class="small muted">${esc(flags)}</span></span>
@@ -6009,7 +6008,7 @@ window.bulkSend = async (groupId) => {
         if (result.problem) problem=result.problem;
       }
     }
-    if(phoneBatches.length===1) recordMessageDelivery(phoneBatches[0].recipients.filter(s=>goodPhone(s.phone)),{textPrepared:true});
+    if(phoneBatches.length===1) recordMessageDelivery(phoneBatches[0].recipients.filter(s=>goodPhone(s.phone)),{textPrepared:true,textConfirmed:false});
     markRecipientsSentLocally(recipients,state.confirmationDate||"",datesSaved);
     save();
   } finally {

@@ -1,0 +1,31 @@
+const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
+const html=fs.readFileSync('index.html','utf8');
+const helpers=fs.readFileSync('assets/field-tools.js','utf8');
+for(const match of html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/g))new vm.Script(match[1]);
+function extract(source,name){const start=source.indexOf('function '+name+'(');assert(start>=0,name);const lineEnd=source.indexOf('\n',start);if(source.slice(start,lineEnd).trimEnd().endsWith('}'))return source.slice(start,lineEnd);const end=source.indexOf('\n}',start);return source.slice(start,end+2);}
+const ctx=vm.createContext({state:{stops:[],messageHistory:{}},save(){},messageBucket:()=> 'confirm:2026-09-10',messageDay:()=> '2026-09-10',messageMarkKey:s=>s.key,findStop:id=>ctx.state.stops.find(s=>s.id===id)});
+for(const name of ['messageHistory','markFor','isContacted'])vm.runInContext(extract(html,name),ctx);
+for(const name of ['messageDeliveryLabel','recordMessageDelivery'])vm.runInContext(extract(helpers,name),ctx);
+const stop={id:'one',key:'stable',phone:'0211234567',email:'qa@example.test'};ctx.state.stops=[stop];
+assert.equal(ctx.messageDeliveryLabel(stop),'Not sent');
+ctx.recordMessageDelivery([stop],{email:true});
+assert.equal(ctx.isContacted(stop),true,'Email success counts even with a phone number');
+assert.equal(ctx.messageDeliveryLabel(stop),'Email sent');
+ctx.recordMessageDelivery([stop],{textPrepared:true,textConfirmed:false});
+assert.equal(ctx.messageDeliveryLabel(stop),'Email sent · text ready');
+ctx.recordMessageDelivery([stop],{textPrepared:false,textConfirmed:true});
+assert.equal(ctx.messageDeliveryLabel(stop),'Text + email sent');
+ctx.recordMessageDelivery([stop],{emailFailed:true});
+assert.equal(ctx.isContacted(stop),false,'Failed email remains retryable');
+assert.equal(ctx.messageDeliveryLabel(stop),'Text sent · email needs retry');
+ctx.recordMessageDelivery([stop],{textPrepared:true,textConfirmed:false});
+assert.equal(ctx.messageDeliveryLabel(stop),'Text ready · email needs retry','New text is not falsely marked sent');
+assert.equal(ctx.messageDeliveryLabel({...stop,id:'reloaded'}),'Text ready · email needs retry','Stable marks survive new stop IDs');
+ctx.state.messageHistory={'2026-09-10':{stable:{email:true}}};
+ctx.recordMessageDelivery([stop],{textPrepared:true});
+assert.equal(ctx.messageDeliveryLabel(stop),'Email sent · text ready','Existing email marks survive legacy migration');
+ctx.messageBucket=()=> 'reminder:2026-09-11';ctx.messageDay=()=> '2026-09-11';
+assert.equal(ctx.messageDeliveryLabel(stop),'Not sent','Different day/mode has independent marks');
+assert(html.includes('const flags = messageDeliveryLabel(s);'),'Confirmation uses channel delivery labels');
+console.log('PASS: inline syntax, delivery labels, email success, retry, text preparation, stable IDs, legacy migration, and separate buckets');
+
