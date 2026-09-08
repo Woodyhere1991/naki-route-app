@@ -1,4 +1,5 @@
 import { OWNER_ACTIONS, ownerAction } from "./owner-actions.js";
+import { recordKidsActivity, purgeKidsActivity } from "./kids-activity.js";
 import { loginSender } from "./login-mail.js";
 import { AuthMailError } from "./auth-limits.js";
 import { metWeather } from "./field-weather.js";
@@ -965,6 +966,7 @@ export default {
     }
     try {
       const dispatch = async () => {
+      if (path === "/kids/activity") return await recordKidsActivity(request, env, json);
       const portalResponse = await handlePortalRequest({ request, env, path, json, sendMail });
       if (portalResponse) return portalResponse;
       if (path === "/weather" && request.method === "POST") return await handleWeather(request, env);
@@ -1000,6 +1002,7 @@ export default {
     ctx.waitUntil(runReminders(env));
     ctx.waitUntil(retryPendingSheetBackups(env));
     ctx.waitUntil(purgeExpiredAuth(env));
+    ctx.waitUntil(purgeKidsActivity(env));
     ctx.waitUntil(env.CUSTOMER_DB.prepare("DELETE FROM auth_request_limits WHERE expires_at<?1").bind(Date.now()).run());
     // Only on the daily trigger - the 15-minute one has other work to do.
     if (event.cron === "0 21 * * *") {

@@ -1,4 +1,5 @@
 import { AuthMailError, reserveAuthRequest } from "./auth-limits.js";
+import { kidsActivityReport } from "./kids-activity.js";
 import { scoreReviewReason } from "./score-validation.js";
 const OWNER_EMAIL = "nakiwreckremoval@gmail.com";
 const CODE_TTL_MS = 10 * 60 * 1000;
@@ -2940,6 +2941,7 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
   if (path.startsWith("/owner/")) {
     const session = await sessionFor(request, env, "owner");
     if (!session) return json(request, { error: "Owner login required" }, 401);
+    if (path === "/owner/kids-activity" && request.method === "GET") return await kidsActivityReport(request,env,json);
 
     if (path === "/owner/arcade/score-flags" && request.method === "GET") {
       const rows=await env.CUSTOMER_DB.prepare(`SELECT f.game,f.score,f.reason,f.created_at,c.id AS customer_id,

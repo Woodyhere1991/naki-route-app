@@ -5,6 +5,9 @@
   "compatibility_date": "2026-07-14",
   "workers_dev": true,
   "preview_urls": false,
+  "ratelimits": [
+    { "name": "KIDS_RATE_LIMIT", "namespace_id": "1008", "simple": { "limit": 120, "period": 60 } }
+  ],
   "kv_namespaces": [
     { "binding": "REMINDERS", "id": "4eac6b5c298747cb9a6243c18a97852d" },
     { "binding": "PHOTOS", "id": "2062b789df9941ac8f7b823afebe81ba" }

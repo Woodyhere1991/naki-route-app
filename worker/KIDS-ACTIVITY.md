@@ -1,0 +1,13 @@
+# Kids game activity — 8 September 2026
+
+Owner access: Pickup Run → Customers → Kids game activity. The existing owner bearer session protects `GET /v2/owner/kids-activity?days=1|7|30`. Anonymous and customer sessions cannot read it. Counts begin at release, with no historical backfill. This is a manual report with Refresh, not a notification subscription.
+
+The public `POST /v2/kids/activity` accepts exactly `{game,id,kind}`. Game is one of eight approved identifiers; id is a fresh UUIDv4 per round; kind is start or finish. Only canonical public-site origins are accepted. The browser sends no account credentials or referrer. Origin checks discourage accidental submissions, but are not bot authentication. Cloudflare limits requests using a rotating hashed connection key; the limiter is not written to D1. Browser DNT/GPC, the parent opt-out and offline mode suppress requests. Counts may undercount or include automated traffic; they measure rounds, not distinct children, educational outcomes or enjoyment.
+
+Migration `0025_kids_activity.sql` adds two isolated tables and atomic triggers. A receipt insert increments starts once. Updating its finished flag increments completions once. Unknown, mismatched and expired finishes do nothing. Completions belong to the NZ calendar day the round started. The existing scheduled Worker job deletes receipts after 24 hours and daily aggregates older than a year. Provider backups can retain deleted records until normal rotation. No names, ages, answers, scores, player IDs or raw IPs are stored in either table.
+
+`?kids-test=1` on the public games selects the API's `?test=1` bucket. The owner report defaults to the live bucket. Use the panel's test-play link for checking games without inflating live totals. Random receipt IDs exist in memory only, so reloads abandon unfinished rounds. Offline events are not queued. Start and finish retries reuse the same ID.
+
+Release order: apply only migration 0025 to `naki-customer-bookings`; deploy `naki-route-api`; publish a committed static staging folder containing only `index.html`, `manifest.webmanifest`, `sw.js`, and `assets` to `naki-pickup-run`; publish the customer site using its separate approved allowlist. Never publish Worker source or database files. Verify both canonical sites and the protected endpoint.
+
+Tests: `node --test worker/tests/kids-activity.test.mjs worker/tests/auth-reliability.test.mjs`; `node worker/tests/kids-activity-browser.mjs`. The latter uses actual game controls, real Worker routing, local SQLite and synthetic owner sessions to verify the private report at phone and desktop widths. It touches no production accounts or messages. Additional client, puzzle, offline and full-game tests are in the customer-site repository.
