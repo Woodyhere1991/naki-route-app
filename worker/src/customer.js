@@ -55,7 +55,7 @@ const RURAL_PRICES = {
 const REFERRAL_OPTIONS = new Set(["Google", "Facebook", "Neighbourly", "Find My Local", "AI", "Word of mouth", "Other", ""]);
 const OWNER_STATUSES = new Set(["NEW", "ADDED_TO_RUN", "CONTACTED", "CONFIRMED", "COMPLETED", "DECLINED", "CANCELLED"]);
 // The arcade games. Anything else posting a score is rejected.
-const ARCADE_GAMES = new Set(["stack", "flap", "tower", "invade", "invade_coop", "dash", "wio", "squad"]);
+const ARCADE_GAMES = new Set(["stack", "flap", "tower", "invade", "invade_coop", "dash", "wio", "squad", "spin", "yard"]);
 // Arcade chat guard rails. Short lines, a handful a minute, kept a month.
 const CHAT_MAX_LEN = 140;
 const CHAT_KEEP_MS = 30 * 24 * 60 * 60 * 1000;
@@ -2044,7 +2044,7 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
         id: row.id,
         fromId: row.sender_id,
         from: arcadeDisplayName(row),
-        game: row.game === "invade" ? "invade" : row.game === "squad" ? "squad" : "wio",
+        game: ARCADE_GAMES.has(row.game) ? row.game : "wio",
         room: row.room,
         at: Number(row.created_at || 0),
         expiresAt: Number(row.expires_at || 0)
@@ -2191,14 +2191,17 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
       const recipient = clean(body.customerId, 80);
       const game = clean(body.game || "wio", 20).toLowerCase();
       const inApp = body.inApp === true;
-      if (game !== "wio" && game !== "squad" && game !== "invade") {
+      if (game !== "wio" && game !== "squad" && game !== "invade" && game !== "spin" && game !== "yard") {
         return json(request, { error: "Choose a multiplayer game" }, 400);
       }
-      const requestedRoom = clean(body.room, game === "invade" ? 64 : 24);
-      if (game === "invade" && (!inApp || !/^[a-f0-9]{32}$/.test(requestedRoom))) {
-        return json(request, { error: "Create a Microwave Invasion room before inviting a friend" }, 400);
+      const hexRoom = game === "invade" || game === "spin";
+      const requestedRoom = clean(body.room, hexRoom ? 64 : 24);
+      if (hexRoom && (!inApp || !/^[a-f0-9]{32}$/.test(requestedRoom))) {
+        return json(request, { error: game === "spin"
+          ? "Create a Spin Cycle room before inviting a friend"
+          : "Create a Microwave Invasion room before inviting a friend" }, 400);
       }
-      const room = game === "invade" ? requestedRoom : game === "squad"
+      const room = hexRoom ? requestedRoom : (game === "squad" || game === "yard")
         ? (requestedRoom.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 5)
             || randomToken(5).toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 5))
         : (requestedRoom.toLowerCase().replace(/[^a-z0-9_-]/g, "").slice(0, 24)
@@ -2248,7 +2251,7 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
           `INSERT INTO arcade_lobby_invites
             (id, sender_id, recipient_id, game, room, created_at, expires_at)
            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)`
-        ).bind(randomToken(12), me, recipient, game, room, stamp, stamp + (game === "invade" ? 6 * 60 * 60 * 1000 : LOBBY_INVITE_TTL_MS))
+        ).bind(randomToken(12), me, recipient, game, room, stamp, stamp + (game === "invade" ? 6 * 60 * 60 * 1000 : game === "spin" ? 2 * 60 * 60 * 1000 : LOBBY_INVITE_TTL_MS))
         ,
         ...(inApp ? [] : [env.CUSTOMER_DB.prepare(
           `INSERT INTO arcade_invite_sends (id, sender_id, recipient_id, created_at)

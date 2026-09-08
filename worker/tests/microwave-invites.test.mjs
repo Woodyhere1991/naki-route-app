@@ -69,3 +69,57 @@ test('existing Scrap Squad and IO invitations retain their room formats', async 
     assert.equal(r.status,200); assert.equal((await r.json()).room,expected);
   }
 });
+test('Spin Cycle invite saves the exact room, stays in-app and expires with the court', async () => {
+  const h=harness();
+  const response=await h.request('/customer/arcade/invites','POST',{customerId:'test-friend',game:'spin',inApp:true,room});
+  assert.equal(response.status,200);
+  assert.deepEqual(await response.json(),{ok:true,game:'spin',room,emailSent:false});
+  const insert=h.writes.find(row=>row.sql.includes('INSERT INTO arcade_lobby_invites'));
+  assert.equal(insert.args[3],'spin'); assert.equal(insert.args[4],room);
+  assert.equal(insert.args[6]-insert.args[5],2*60*60*1000);
+  assert.equal(h.mails(),0);
+});
+test('invalid rooms and email invites cannot send Spin Cycle invites', async () => {
+  for (const bad of ['',room+'x','abc','../'+room]) {
+    const h=harness(); const r=await h.request('/customer/arcade/invites','POST',{customerId:'test-friend',game:'spin',inApp:true,room:bad});
+    assert.equal(r.status,400); assert.equal(h.writes.length,0);
+  }
+  const h=harness();
+  assert.equal((await h.request('/customer/arcade/invites','POST',{customerId:'test-friend',game:'spin',room})).status,400);
+  assert.equal(h.mails(),0);
+});
+test('Yard Wars invites use the same short shoutable code as Scrap Squad', async () => {
+  const h=harness();
+  const response=await h.request('/customer/arcade/invites','POST',{customerId:'test-friend',game:'yard',inApp:true,room:'z4a4b'});
+  assert.equal(response.status,200);
+  assert.deepEqual(await response.json(),{ok:true,game:'yard',room:'Z4A4B',emailSent:false});
+  const insert=h.writes.find(row=>row.sql.includes('INSERT INTO arcade_lobby_invites'));
+  assert.equal(insert.args[3],'yard'); assert.equal(insert.args[4],'Z4A4B');
+  assert.equal(h.mails(),0);
+});
+test('a Yard Wars invite is still a Yard Wars invite when it comes back', async () => {
+  // The friends list used to collapse anything that was not Microwave or Squad into
+  // "wio", which sent Play now to the wrong game entirely.
+  for (const game of ['yard','spin','squad','invade','wio']) {
+    const h=harness(); h.game=game;
+    const response=await handlePortalRequest({
+      path:'/customer/arcade/friends',
+      request:new Request('https://test.example/customer/arcade/friends',{headers:{Authorization:'Bearer test-token'}}),
+      env:{CUSTOMER_DB:gameDb(game)}, json:(_req,data,status=200)=>Response.json(data,{status}), sendMail:async()=>true
+    });
+    assert.equal((await response.json()).invites[0].game,game);
+  }
+});
+function gameDb(game){
+  return { prepare(sql){ return { bind(...args){ return { sql,args,
+    async first(){
+      if (sql.includes('FROM sessions')) return { customer_id:'test-sender' };
+      if (sql.includes('FROM arcade_friendships')) return { status:'accepted' };
+      if (sql.includes('FROM customers')) return { id:args[0], nickname:'Test friend', email:'test@example.invalid' };
+      return null;
+    },
+    async all(){ return { results: sql.includes('FROM arcade_lobby_invites')
+      ? [{ id:'invite', sender_id:'test-sender', nickname:'Test friend', game, room:'ABC12' }] : [] }; },
+    async run(){}
+  }; }}; }, async batch(statements){ for (const statement of statements) await statement.run(); } };
+}
