@@ -396,7 +396,7 @@
 
   .field-save{display:block;width:100%;min-height:32px;border:0;border-radius:0;background:#08283d;color:var(--muted);font-size:12px;padding:5px 10px}
   .field-save.pending{color:var(--warn)}
-  .today-weather{order:15}.gms-panel.view-today{order:45}
+  .today-weather{order:30}.gms-panel.view-today{order:45}
   .weather-hours{display:flex;gap:8px;overflow-x:auto;padding:8px 0}.weather-hours>.weather-day{flex:0 0 108px}
   .weather-town>.weather-day{max-width:100%;margin-bottom:8px}.weather-town summary{min-height:44px;align-content:center}
   .stop-more{margin-top:8px}.stop-more>summary{min-height:44px;font-size:14px;color:var(--muted)}
@@ -408,6 +408,18 @@
   .field-route-actions summary{min-height:44px}.field-route-actions>div{padding-top:10px}
   a{color:#82d9ef}
 .kids-activity-table{width:100%;border-collapse:collapse;margin:12px 0}.kids-activity-table caption{text-align:left;font-weight:700;padding:6px 0}.kids-activity-table th,.kids-activity-table td{text-align:right;padding:9px 4px;border-bottom:1px solid var(--line)}.kids-activity-table th:first-child{text-align:left;font-weight:600}
+  .scheduled-shortcuts{order:10;margin:10px 0}
+  .scheduled-shortcuts nav{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px}
+  .scheduled-shortcuts button{min-height:44px;padding:8px 2px;font-size:14px}
+  #listWrap,.today-weather,.today-map,.today-actions{scroll-margin-top:190px}
+  .weather-town{border-top:1px solid var(--line);padding:8px 0}
+  .weather-town>summary{display:flex;gap:10px;align-items:center;cursor:pointer;list-style:none}
+  .weather-town>summary::after{content:'＋';margin-left:auto;color:var(--muted)}
+  .weather-town[open]>summary::after{content:'−'}
+  .weather-town-label{min-width:0;flex:1}.weather-town-label strong,.weather-town-label small{display:block}
+  .weather-town-label small{color:var(--muted);margin-top:4px;line-height:1.5}
+  .weather-town .weather-day{margin-top:8px}
+  .completed-pickups>summary{min-height:44px;align-content:center;font-weight:700}
 </style>
 </head>
 <body>
@@ -514,8 +526,17 @@
     </details>
   </div>
 
+  <section class="view-panel view-today scheduled-shortcuts" aria-label="Scheduled shortcuts">
+    <nav aria-label="Jump to run section">
+      <button class="ghost" onclick="jumpToScheduled('listWrap')">Pickups</button>
+      <button class="ghost" onclick="jumpToScheduled('weatherPanel')">Weather</button>
+      <button class="ghost" onclick="jumpToScheduled('mapPanel')">Map</button>
+      <button class="ghost" onclick="jumpToScheduled('routeOptions')">Route</button>
+    </nav>
+  </section>
+
   <!-- ACTIONS -->
-  <details class="card view-panel view-today today-actions field-route-actions"><summary>Route options</summary><div>
+  <details id="routeOptions" class="card view-panel view-today today-actions field-route-actions"><summary>Route options</summary><div>
     <button id="optimise" style="width:100%">Optimise route</button>
     <div class="row" style="margin-top:10px">
       <button id="optimiseHere" class="ghost grow">Optimise from where I am</button>
@@ -4038,8 +4059,18 @@ function render(){
   $("#roundTrip").checked = !!state.roundTrip;
 }
 
+function jumpToScheduled(id){
+  const target=document.getElementById(id);
+  if(!target)return;
+  if(target.tagName==='DETAILS')target.open=true;
+  target.style.scrollMarginTop=(document.querySelector('header').getBoundingClientRect().height+12)+'px';
+  const focusTarget=target.querySelector('summary')||target;
+  focusTarget.tabIndex=-1;
+  requestAnimationFrame(()=>{focusTarget.focus({preventScroll:true});target.scrollIntoView({block:'start'});});
+}
 function renderList(){
   const wrap = $("#listWrap");
+  const completedOpen=Boolean(wrap.querySelector(".completed-pickups")?.open);
 
   if (!state.stops.length){
     wrap.innerHTML = `<div class="card empty">
@@ -4126,9 +4157,9 @@ function renderList(){
   const doneRows = done.map(s=>card(s,true)).join("");
 
   wrap.innerHTML =
-    `<div class="sectitle">${esc(activeRunName())} ${state.manual?'· manual order':''} · hold &amp; drag to reorder</div>
+    `<div class="sectitle">${pending.length} pickups left · ${esc(activeRunName())} ${state.manual?'· manual order':''} · hold &amp; drag to reorder</div>
      <div id="pendingList">${pendRows || `<div class="empty" style="padding:16px 8px">Nothing pending — all picked up 🎉</div>`}</div>` +
-    (done.length ? `<div class="sectitle">Completed (${done.length})</div><div id="doneList">${doneRows}</div>` : "");
+    (done.length ? `<details class="card completed-pickups"${completedOpen?" open":""}><summary>Completed (${done.length})</summary><div id="doneList">${doneRows}</div></details>` : "");
 
   // Drag only the pending list. Slot the reordered ids back into state.stops,
   // leaving DONE stops exactly where they are.
