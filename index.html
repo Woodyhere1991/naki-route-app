@@ -408,10 +408,14 @@
   .field-route-actions summary{min-height:44px}.field-route-actions>div{padding-top:10px}
   a{color:#82d9ef}
 .kids-activity-table{width:100%;border-collapse:collapse;margin:12px 0}.kids-activity-table caption{text-align:left;font-weight:700;padding:6px 0}.kids-activity-table th,.kids-activity-table td{text-align:right;padding:9px 4px;border-bottom:1px solid var(--line)}.kids-activity-table th:first-child{text-align:left;font-weight:600}
-  .scheduled-shortcuts{order:10;margin:10px 0}
+  .scheduled-shortcuts{max-width:1080px;margin:0 auto;padding:8px 12px 10px}
   .scheduled-shortcuts nav{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px}
   .scheduled-shortcuts button{min-height:44px;padding:8px 2px;font-size:14px}
-  #listWrap,.today-weather,.today-map,.today-actions{scroll-margin-top:190px}
+  .scheduled-shortcuts button[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);color:#fff}
+  body[data-view="today"]:not([data-scheduled-section="listWrap"]) :is(.today-list,.today-bad,.today-unpaid),
+  body[data-view="today"]:not([data-scheduled-section="weatherPanel"]) .today-weather,
+  body[data-view="today"]:not([data-scheduled-section="mapPanel"]) .today-map,
+  body[data-view="today"]:not([data-scheduled-section="routeOptions"]) :is(.today-actions,.gms-panel){display:none}
   .weather-town{border-top:1px solid var(--line);padding:8px 0}
   .weather-town>summary{display:flex;gap:10px;align-items:center;cursor:pointer;list-style:none}
   .weather-town>summary::after{content:'＋';margin-left:auto;color:var(--muted)}
@@ -422,7 +426,7 @@
   .completed-pickups>summary{min-height:44px;align-content:center;font-weight:700}
 </style>
 </head>
-<body>
+<body data-scheduled-section="listWrap">
 
 <header>
   <div class="topbar">
@@ -451,6 +455,15 @@
   </section>
 <button class="field-save" id="fieldSave" title="Tap to retry saving">Checking saved copy…</button>
 <div id="busy" class="small muted" role="status" style="padding:0 10px"></div>
+  <section class="view-panel view-today scheduled-shortcuts" aria-label="Scheduled shortcuts">
+    <nav aria-label="Run sections">
+      <button class="ghost" data-scheduled-button="listWrap" aria-pressed="true" onclick="jumpToScheduled('listWrap')">Pickups</button>
+      <button class="ghost" data-scheduled-button="weatherPanel" aria-pressed="false" onclick="jumpToScheduled('weatherPanel')">Weather</button>
+      <button class="ghost" data-scheduled-button="mapPanel" aria-pressed="false" onclick="jumpToScheduled('mapPanel')">Map</button>
+      <button class="ghost" data-scheduled-button="routeOptions" aria-pressed="false" onclick="jumpToScheduled('routeOptions')">Route</button>
+    </nav>
+  </section>
+
 </header>
 
 <div class="wrap">
@@ -525,15 +538,6 @@
       <p class="small muted" style="margin:10px 0 0">Your start and end stay saved on this phone until you change them.</p>
     </details>
   </div>
-
-  <section class="view-panel view-today scheduled-shortcuts" aria-label="Scheduled shortcuts">
-    <nav aria-label="Jump to run section">
-      <button class="ghost" onclick="jumpToScheduled('listWrap')">Pickups</button>
-      <button class="ghost" onclick="jumpToScheduled('weatherPanel')">Weather</button>
-      <button class="ghost" onclick="jumpToScheduled('mapPanel')">Map</button>
-      <button class="ghost" onclick="jumpToScheduled('routeOptions')">Route</button>
-    </nav>
-  </section>
 
   <!-- ACTIONS -->
   <details id="routeOptions" class="card view-panel view-today today-actions field-route-actions"><summary>Route options</summary><div>
@@ -4062,11 +4066,13 @@ function render(){
 function jumpToScheduled(id){
   const target=document.getElementById(id);
   if(!target)return;
+  document.body.dataset.scheduledSection=id;
+  document.querySelectorAll('[data-scheduled-button]').forEach(button=>{
+    button.setAttribute('aria-pressed',String(button.dataset.scheduledButton===id));
+  });
   if(target.tagName==='DETAILS')target.open=true;
-  target.style.scrollMarginTop=(document.querySelector('header').getBoundingClientRect().height+12)+'px';
-  const focusTarget=target.querySelector('summary')||target;
-  focusTarget.tabIndex=-1;
-  requestAnimationFrame(()=>{focusTarget.focus({preventScroll:true});target.scrollIntoView({block:'start'});});
+  window.scrollTo({top:0,behavior:'instant'});
+  if(id==='mapPanel')ensureMap().then(ok=>{if(ok){map.invalidateSize();drawRoute();}});
 }
 function renderList(){
   const wrap = $("#listWrap");
