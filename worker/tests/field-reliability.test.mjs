@@ -84,11 +84,15 @@ test('a 41-person frontend batch splits 40 + 1 and retries only failed recipient
   const first=await context.sendReminderEmailBatch(batch);assert.deepEqual(chunks,[40,1]);assert.equal(first.sent,40);assert.match(first.problem,/1 email/);
   failLast=false;chunks.length=0;const second=await context.sendReminderEmailBatch(batch);assert.deepEqual(chunks,[1]);assert.equal(second.sent,1);assert.equal(second.problem,'');
 });
-test('prepared SMS is not called sent and JS strings cannot escape their argument',()=>{
+test('a prepared text counts as sent and JS strings cannot escape their argument',()=>{
   const context={markFor:s=>s.mark};
   vm.runInNewContext(section(helpers,'function messageDeliveryLabel(','function recordMessageDelivery('),context);
-  assert.equal(context.messageDeliveryLabel({mark:{textPrepared:true}}),'Text ready');
-  assert.equal(context.messageDeliveryLabel({mark:{textPrepared:true,email:true}}),'Email sent · text ready');
+  // Messages sends every text the moment it opens, so there is no longer a
+  // prepared-but-unsent state. Marks left over from when there was one came
+  // from that same handoff, and read as sent. The full matrix of labels lives
+  // in tests/message-status.cjs; this is the case that changed.
+  assert.equal(context.messageDeliveryLabel({mark:{textPrepared:true}}),'Text sent');
+  assert.equal(context.messageDeliveryLabel({mark:{textPrepared:true,email:true}}),'Text + email sent');
   vm.runInNewContext(section(html,'function jsString(','function esc('),context);
   const input="O'Neil'); hacked=true; //";context.accept=x=>context.accepted=x;context.hacked=false;
   vm.runInNewContext(`accept('${context.jsString(input)}')`,context);assert.equal(context.hacked,false);assert.equal(context.accepted,input);
