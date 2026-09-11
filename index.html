@@ -396,7 +396,7 @@
 
   .field-save{display:block;width:100%;min-height:32px;border:0;border-radius:0;background:#08283d;color:var(--muted);font-size:12px;padding:5px 10px}
   .field-save.pending{color:var(--warn)}
-  .today-weather{order:30}.gms-panel.view-today{order:45}
+  .today-weather{order:30}.gms-panel.view-today{order:45}.today-startend{order:46}
   .weather-hours{display:flex;gap:8px;overflow-x:auto;padding:8px 0}.weather-hours>.weather-day{flex:0 0 108px}
   .weather-town>.weather-day{max-width:100%;margin-bottom:8px}.weather-town summary{min-height:44px;align-content:center}
   .stop-more{margin-top:8px}.stop-more>summary{min-height:44px;font-size:14px;color:var(--muted)}
@@ -415,7 +415,7 @@
   body[data-view="today"] .gms-panel{order:25}
   .scheduled-shortcuts button[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);color:#fff}
   body[data-view="today"]:not([data-scheduled-section="listWrap"]) :is(.today-list,.today-bad,.today-unpaid),
-  body[data-view="today"]:not([data-scheduled-section="weatherPanel"]) :is(.today-weather,.gms-panel),
+  body[data-view="today"]:not([data-scheduled-section="weatherPanel"]) :is(.today-weather,.gms-panel,.today-startend),
   body[data-view="today"]:not([data-scheduled-section="mapPanel"]) .today-map,
   body[data-view="today"]:not([data-scheduled-section="listWrap"]) .today-actions{display:none}
   .weather-town{border-top:1px solid var(--line);padding:8px 0}
@@ -514,7 +514,7 @@
   </div>
 
   <!-- START & END POINT -->
-  <div class="card view-panel view-add">
+  <div class="card view-panel view-today today-startend">
     <details id="startBox">
       <summary>Start &amp; end <span id="seSummary" class="se-sum"></span><span class="chev">›</span></summary>
 
@@ -623,7 +623,7 @@
   </section>
 
   <!-- WEATHER -->
-  <div class="card view-panel view-add view-today today-weather">
+  <div class="card view-panel view-today today-weather">
     <details id="weatherPanel">
       <summary class="live-head"><span id="weatherSummary">Weather forecast — load pickups to see towns</span><span class="chev">›</span></summary>
       <div class="live-body">
@@ -637,7 +637,7 @@
   </div>
 
   <!-- GMS HOURS -->
-  <div class="card gms-panel view-panel view-add view-today" id="gmsCard" data-level="ok">
+  <div class="card gms-panel view-panel view-today" id="gmsCard" data-level="ok">
     <details id="gmsPanel">
       <summary class="live-head"><span id="gmsSummary">GMS New Plymouth hours — checking…</span><span class="chev">›</span></summary>
       <div class="live-body">
@@ -4166,7 +4166,9 @@ function renderList(){
   wrap.innerHTML =
     `<div class="sectitle">${pending.length} pickups left · ${esc(activeRunName())} ${state.manual?'· manual order':''} · hold &amp; drag to reorder</div>
      <div id="pendingList">${pendRows || `<div class="empty" style="padding:16px 8px">Nothing pending — all picked up 🎉</div>`}</div>` +
-    (done.length ? `<details class="card completed-pickups"${completedOpen?" open":""}><summary>Completed (${done.length})</summary><div id="doneList">${doneRows}</div></details>` : "");
+    (done.length ? `<details class="card completed-pickups"${completedOpen?" open":""}><summary>Completed (${done.length})</summary>
+      <div class="row" style="margin:10px 0 12px"><button class="ghost grow" onclick="clearCompletedStops()">🧹 Clear completed off this run</button></div>
+      <div id="doneList">${doneRows}</div></details>` : "");
 
   // Drag only the pending list. Slot the reordered ids back into state.stops,
   // leaving DONE stops exactly where they are.
@@ -6096,6 +6098,29 @@ window.delStop = id => {
   if (!confirm(`Remove ${who} from ${activeRunName()}?\n\nThis takes it off the scheduled run.`)) return;
   state.stops = state.stops.filter(x=>x.id!==id);
   if (Array.isArray(state.messageSelectedIds)) state.messageSelectedIds = state.messageSelectedIds.filter(x=>x!==id);
+  save(); render(); drawRoute();
+};
+// Tidy the run at the end of the day: take every completed pickup off this run
+// in one go. The stops are only removed from this phone's run, so anything still
+// waiting to reach Bookings is pushed up first — otherwise a finished job with
+// no receipt could vanish before the cloud ever heard about it.
+window.clearCompletedStops = async () => {
+  const done = state.stops.filter(s => s.status==="DONE");
+  if (!done.length) return;
+  const noPaperwork = done.filter(s => !s.receiptSent && !s.invoiceSent).length;
+  const warn = noPaperwork
+    ? `\n\n⚠️ ${noPaperwork} of them ${noPaperwork===1?"has":"have"} no receipt or invoice sent yet.`
+    : "";
+  const msg = `Clear ${done.length} completed pickup${done.length===1?"":"s"} off ${activeRunName()}?${warn}`
+    + `\n\nThey come off this run only — completed jobs stay in Bookings. This can't be undone here.`;
+  if (!confirm(msg)) return;
+  busy("Saving completed pickups…");
+  try{ await flushExternalBookingSyncs(true); }catch(e){}
+  busy("");
+  const ids = new Set(done.map(s => s.id));
+  state.stops = state.stops.filter(s => !ids.has(s.id));
+  if (Array.isArray(state.messageSelectedIds))
+    state.messageSelectedIds = state.messageSelectedIds.filter(x => !ids.has(x));
   save(); render(); drawRoute();
 };
 window.copyText = (id, btn) => {
