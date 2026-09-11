@@ -7,6 +7,7 @@ import {readFileSync,existsSync,mkdirSync} from 'node:fs';
 import {fileURLToPath} from 'node:url';
 import {activityHarness} from './kids-activity.test.mjs';
 import worker from '../src/index.js';
+import {nzDay} from '../src/kids-activity.js';
 const publicRoot=new URL('../../../customer-site/',import.meta.url);
 const root=new URL('../../',import.meta.url);
 const out=new URL('output/kids-activity/',root);mkdirSync(out,{recursive:true});
@@ -35,22 +36,34 @@ try{
   }
   assert.deepEqual(events.map(e=>e.kind),['start','finish']);assert.deepEqual({...h.db.prepare('SELECT starts,finishes FROM kids_activity_daily').get()},{starts:1,finishes:1});
   await p.locator('#kidBack').click();await p.locator('.grownups summary').click();await p.locator('#kidCounting').uncheck();await p.locator('[data-kid="share"]').click();await p.locator('#workStart').click();assert.equal(events.length,2);
-  // Use the actual shipped panel and Worker owner route; counts above are test-only.
-  const app=readFileSync(new URL('index.html',root),'utf8'),card=app.match(/<details class="card" id="kidsActivityCard"[\s\S]*?<\/details>/)[0],css=app.match(/<style>([\s\S]*?)<\/style>/)[1];
-  await p.setContent(`<style>${css}</style><main style="padding:12px">${card}</main>`);
-  await p.addScriptTag({content:readFileSync(new URL('assets/kids-activity-panel.js',root),'utf8')});
-  await p.evaluate(()=>{
-    window.testOwnerToken='owner-test';
-    window.testPanel=window.KidsActivityPanel.mount({token:()=>window.testOwnerToken,api:async path=>{
-      const r=await fetch('https://naki-route-api.nakiwreckremoval.workers.dev/v2'+path+'&test=1',{headers:{Authorization:'Bearer '+window.testOwnerToken}});
-      if(!r.ok)throw Error('Rejected');return r.json();
-    }});
-  });
-  await p.locator('#kidsActivityCard summary').click();await p.getByText('1 play started · 1 round completed',{exact:true}).waitFor();
-  assert.ok((await p.locator('.kids-activity-table').textContent()).includes('Fair Share Picnic'));
+  // The report now sits at the top of the public Naki Kids page, so the child
+  // opening that page must see nothing of it at all.
+  await p.goto('https://nakiwhitewareremoval.vip/kids');
+  assert.ok(!(await p.locator('#ownerActivity').isVisible()));
+  assert.equal(await p.locator('#ownerActivity').evaluate(el=>el.childElementCount),0);
+
+  // A stale or forged token earns a 401, and the child still sees nothing.
+  // This has to run before the synthetic session is seeded below, because that
+  // seeding happens on every navigation.
+  await p.evaluate(()=>localStorage.setItem('naki_owner_token','not-a-real-session'));
+  await p.goto('https://nakiwhitewareremoval.vip/kids');
+  await p.waitForFunction(()=>!localStorage.getItem('naki_owner_token'));
+  assert.ok(!(await p.locator('#ownerActivity').isVisible()));
+
+  // The plays above went to the test bucket; the report reads the live one, so
+  // give it a live row of its own to find.
+  h.db.prepare("INSERT INTO kids_activity_daily VALUES(?,'share','live',4,3)").run(nzDay(Date.now()));
+  await context.addInitScript(()=>{try{localStorage.setItem('naki_owner_token','owner-test');}catch{/* blocked storage is handled by the page */}});
+  await p.goto('https://nakiwhitewareremoval.vip/kids');
+  await p.getByText('4 plays started · 3 rounds completed',{exact:true}).waitFor();
+  assert.ok((await p.locator('.owner-table').textContent()).includes('Fair Share Picnic'));
   await p.screenshot({path:fileURLToPath(new URL('owner-panel-390.png',out)),fullPage:true});
-  await p.selectOption('#kidsActivityRange','30');await p.locator('#kidsActivityRefresh:enabled').waitFor();
+  await p.selectOption('#ownerRange','30');await p.getByRole('button',{name:'Refresh'}).and(p.locator(':enabled')).waitFor();
   await p.setViewportSize({width:1280,height:900});await p.screenshot({path:fileURLToPath(new URL('owner-panel-1280.png',out)),fullPage:true});
-  await p.evaluate(()=>{window.testOwnerToken='';window.testPanel.visibility();});assert.ok(!(await p.locator('#kidsActivityCard').isVisible()));assert.equal(await p.locator('#kidsActivityBody').textContent(),'');
-  assert.deepEqual(errors,[]);console.log('PASS: real game start/finish reach SQLite once; opt-out works; owner report shows the counts at phone/desktop widths and clears on logout.');
+
+  // Signing out has to put the page back to what a child would see.
+  await p.getByRole('button',{name:'Sign out'}).click();
+  assert.ok(!(await p.locator('#ownerActivity').isVisible()));
+  assert.equal(await p.evaluate(()=>localStorage.getItem('naki_owner_token')),null);
+  assert.deepEqual(errors,[]);console.log('PASS: real game start/finish reach SQLite once; opt-out works; the kids page hides the report from everyone but a signed-in owner, shows the counts at phone/desktop widths, and clears on logout or a dead session.');
 }finally{await browser.close();h.db.close();}

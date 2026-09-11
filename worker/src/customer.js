@@ -2,6 +2,20 @@ import { AuthMailError, reserveAuthRequest } from "./auth-limits.js";
 import { kidsActivityReport } from "./kids-activity.js";
 import { scoreReviewReason } from "./score-validation.js";
 const OWNER_EMAIL = "nakiwreckremoval@gmail.com";
+// Addresses allowed to sign in as the owner. OWNER_EMAIL stays the one that
+// receives booking alerts; this list is only about who can log in, so Woody can
+// reach the owner pages from a second inbox of his own. A login code is only
+// ever posted to an address on this list, so an unknown address is refused
+// outright rather than quietly mailing the business inbox instead.
+const OWNER_LOGIN_EMAILS = new Set([
+  OWNER_EMAIL,
+  "woodywoodyemail@gmail.com"
+]);
+function ownerLoginAddress(value){
+  const address = String(value || "").trim().toLowerCase();
+  if (!address) return OWNER_EMAIL;                 // older app builds send no address
+  return OWNER_LOGIN_EMAILS.has(address) ? address : "";
+}
 const CODE_TTL_MS = 10 * 60 * 1000;
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const PROFILE_INVITE_TTL_MS = 90 * 24 * 60 * 60 * 1000;
@@ -1828,8 +1842,19 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
   }
 
   if (path === "/owner/request-code" && request.method === "POST") {
-    await sendCode(env, sendMail, OWNER_EMAIL, "owner", request.headers.get("CF-Connecting-IP"));
-    return json(request, { ok: true, message: "A login code was sent to the Naki business email." });
+    let body = {};
+    try { body = await request.json(); } catch { /* no body means the business inbox */ }
+    const asked = String(body.email || "").trim();
+    const address = ownerLoginAddress(asked);
+    // When an address was typed the answer is deliberately the same whether it
+    // is on the list or not: telling a stranger which addresses are owner
+    // addresses would just hand them the guest list.
+    const message = asked
+      ? "If that address can sign in, a login code is on its way to it."
+      : "A login code was sent to the Naki business email.";
+    if (!address) return json(request, { ok: true, message });
+    await sendCode(env, sendMail, address, "owner", request.headers.get("CF-Connecting-IP"));
+    return json(request, { ok: true, message });
   }
 
   if (path === "/owner/verify-code" && request.method === "POST") {
@@ -1837,7 +1862,8 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
     try { body = await request.json(); } catch { /* handled below */ }
     const code = clean(body.code, 6);
     if (!/^\d{6}$/.test(code)) return json(request, { error: "Enter the 6-digit code" }, 400);
-    const verified = await verifyCode(env, OWNER_EMAIL, "owner", code);
+    const address = ownerLoginAddress(body.email);
+    const verified = address ? await verifyCode(env, address, "owner", code) : null;
     if (!verified) return json(request, { error: "That code is incorrect or has expired" }, 401);
     return json(request, { token: verified.token });
   }
@@ -2361,7 +2387,7 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
        Only the display name is ever returned - the same rule as the boards.
        Woody signs in with the owner address and gets a delete on every message,
        which is the part that actually handles anything the filter misses. */
-    const chatOwner = String(session.email || "").toLowerCase() === OWNER_EMAIL;
+    const chatOwner = OWNER_LOGIN_EMAILS.has(String(session.email || "").trim().toLowerCase());
 
     if (path === "/customer/arcade/chat/unread" && request.method === "GET") {
       const restrictedChat = CHAT_RESTRICTED_VIEWERS.has(session.customer_id);

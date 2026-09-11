@@ -407,7 +407,6 @@
   body[data-view="today"] #manageRuns{grid-column:auto;width:auto}
   .field-route-actions summary{min-height:44px}.field-route-actions>div{padding-top:10px}
   a{color:#82d9ef}
-.kids-activity-table{width:100%;border-collapse:collapse;margin:12px 0}.kids-activity-table caption{text-align:left;font-weight:700;padding:6px 0}.kids-activity-table th,.kids-activity-table td{text-align:right;padding:9px 4px;border-bottom:1px solid var(--line)}.kids-activity-table th:first-child{text-align:left;font-weight:600}
   .scheduled-shortcuts{max-width:1080px;margin:0 auto;padding:8px 12px 10px}
   .scheduled-shortcuts nav{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}
   .scheduled-shortcuts button{min-height:44px;padding:8px 2px;font-size:14px}
@@ -606,13 +605,6 @@
     </div>
     <div id="customerStatus" class="small muted"></div>
     <p class="small muted">App installs are recorded when opened from the home screen. Later removals and browser shortcuts cannot be confirmed.</p>
-    <details class="card" id="kidsActivityCard" style="display:none">
-      <summary><b>🎮 Kids game activity</b><span class="chev">›</span></summary>
-      <div class="row" style="gap:10px;margin-top:12px;flex-wrap:wrap"><label for="kidsActivityRange">Show</label><select id="kidsActivityRange" style="width:auto"><option value="1">Today</option><option value="7" selected>Last 7 days</option><option value="30">Last 30 days</option></select><button type="button" class="ghost sm" id="kidsActivityRefresh">Refresh</button></div>
-      <div id="kidsActivityBody" class="small" aria-live="polite">Open to load activity.</div>
-      <p class="small muted">Counts of game starts and completed rounds, not individual children. Repeat plays count again. Finished rounds belong to the day they started. Offline, blocked and opted-out plays may be missing; automated traffic may still be included.</p>
-      <a class="small" href="https://nakiwhitewareremoval.vip/kids?kids-test=1" target="_blank" rel="noopener">Try the games without adding to these counts ↗</a>
-    </details>
     <div id="customerList"></div>
 
     <!-- Occasional reading, not the reason you opened this page: it sits under the list. -->
@@ -789,7 +781,6 @@
   </div>
 </div>
 
-<script src="/assets/kids-activity-panel.js"></script>
 <script>
 "use strict";
 /* ============================================================
@@ -2607,7 +2598,6 @@ function customerWithJobDetails(customer, byEmail){
   };
 }
 function renderCustomers(){
-  window.kidsActivityPanel?.visibility();
   const list=$("#customerList"); if(!list) return;
   // Own contacts ride alongside server customers everywhere below.
   const allCustomers=customerRows.concat(customContactRows());
@@ -6941,7 +6931,6 @@ loadGms(false);
 renderDirectBookings();
 if (ownerToken) refreshOwnerData();
 if (ownerToken) setTimeout(syncPastBulkBookingDates, 1800);
-window.kidsActivityPanel=window.KidsActivityPanel.mount({api:ownerApi,token:()=>ownerToken});
 refreshCloudBackupInfo();
 if (ownerToken) setTimeout(offerCloudRestoreIfEmpty, 2500);
 // Pull down anything the other phone did while this one was closed.
