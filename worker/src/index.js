@@ -3,6 +3,7 @@ import { recordKidsActivity, purgeKidsActivity } from "./kids-activity.js";
 import { loginSender } from "./login-mail.js";
 import { AuthMailError } from "./auth-limits.js";
 import { metWeather } from "./field-weather.js";
+import { LIVE_SESSION_PATH, liveSession } from "./live-voice.js";
 import { handlePortalRequest, retryPendingSheetBackups, purgeExpiredAuth, purgeOldPhotos, recordBookingDocument, snapshotDatabase, sessionFor } from "./customer.js";
 
 const GMS_PLACE_ID = "ChIJI-iQUfZQFG0RorGmjzvMPRE";
@@ -967,6 +968,13 @@ export default {
     try {
       const dispatch = async () => {
       if (path === "/kids/activity") return await recordKidsActivity(request, env, json);
+      // Ahead of the portal so the owner router doesn't 404 on it. Hands-free
+      // voice: the phone swaps WebRTC details with OpenAI through here.
+      if (path === LIVE_SESSION_PATH) {
+        const voiceSession = await sessionFor(request, env, "owner");
+        if (!voiceSession) return json(request, { error: "Sign in on the Bookings tab, then start voice again." }, 401);
+        return await liveSession(request, env, json, voiceSession);
+      }
       const portalResponse = await handlePortalRequest({ request, env, path, json, sendMail });
       if (portalResponse) return portalResponse;
       if (path === "/weather" && request.method === "POST") return await handleWeather(request, env);
