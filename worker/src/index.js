@@ -4,6 +4,7 @@ import { loginSender } from "./login-mail.js";
 import { AuthMailError } from "./auth-limits.js";
 import { metWeather } from "./field-weather.js";
 import { LIVE_SESSION_PATH, liveSession } from "./live-voice.js";
+import { isPhonePath, phoneIncoming, phoneStream, ReceptionCall } from "./phone-reception.js";
 import { handlePortalRequest, retryPendingSheetBackups, purgeExpiredAuth, purgeOldPhotos, recordBookingDocument, snapshotDatabase, sessionFor } from "./customer.js";
 
 const GMS_PLACE_ID = "ChIJI-iQUfZQFG0RorGmjzvMPRE";
@@ -962,6 +963,12 @@ export default {
     if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: cors(request) });
     const url = new URL(request.url);
     const path = url.pathname.replace(/^\/v2/, "");
+    // Twilio and Jotform are servers, not browsers - neither sends an Origin.
+    // They prove themselves with a signature instead, inside their handlers.
+    if (isPhonePath(path)) {
+      if (path === "/phone/incoming") return await phoneIncoming(request, env);
+      return phoneStream(request, env);
+    }
     if (path !== "/jotform/submission" && !allowedOrigin(request)) {
       return json(request, { error: "This service is only available to the Naki Pickup Run app" }, 403);
     }
@@ -1021,4 +1028,5 @@ export default {
   }
 };
 
+export { ReceptionCall };
 export { addressMatchScore, houseNumberOf, linzAddressResults, linzCqlFor, physicalAddressQuery };

@@ -22,7 +22,7 @@ const PROFILE_INVITE_TTL_MS = 90 * 24 * 60 * 60 * 1000;
 const CUSTOMER_ACCOUNT_URL = "https://nakiwhitewareremoval.vip/account.html";
 const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 
-const ITEM_PRICES = {
+export const ITEM_PRICES = {
   "Fridge or upright freezer": [2000, 1000],
   "Fridge/freezer": [2000, 1000],
   "Large or French-door fridge": [3000, 2000],
@@ -60,7 +60,7 @@ const ITEM_PRICES = {
   "Other": [0, 0]
 };
 
-const RURAL_PRICES = {
+export const RURAL_PRICES = {
   "Main town or main road - no travel fee": 0,
   "Rural: up to 5 km from a main town or road - add $5": 500,
   "Outlying route, or rural 6-10 km away - add $10": 1000,
