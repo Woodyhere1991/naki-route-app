@@ -5525,6 +5525,8 @@ window.sendReceipt = async id => {
       s.paid = true;
     }
     await cancelReminderFor(s);
+    if (s.submission_id) dismissInvoiceOwing(s.submission_id);
+    await settleInvoiceTwins(s);
     save(); render(); drawRoute();
     if (s.src==="direct" && s.submission_id){
       queueDirectCompletion(s.submission_id);
@@ -5852,6 +5854,62 @@ async function cancelReminderFor(s){
   queueReminderCancellation(s.reminderId);
   s.reminderId=""; save();
   await flushReminderCancellations();
+}
+// The same pickup can sit in two places at once: a row on the unpaid ledger for
+// the invoice, and a stop on a run for the gear. Find the other copies of this
+// job so settling one settles the lot.
+function invoiceTwinsOf(s){
+  if (!s) return [];
+  const key=historyBookingKey(s);
+  const sub=String(s.submission_id||"").trim();
+  const email=String(s.email||"").trim().toLowerCase();
+  const street=normKey(s.street||"");
+  const town=townKey(s.town||"");
+  // Anything that links back by id is the same job beyond doubt.
+  const strong=x=>{
+    if (s.unpaidSourceId && x.id===s.unpaidSourceId) return true;
+    if (x.unpaidSourceId && x.unpaidSourceId===s.id) return true;
+    if (s.unpaidSourceId && x.unpaidSourceId===s.unpaidSourceId) return true;
+    if (sub && String(x.submission_id||"").trim()===sub) return true;
+    return Boolean(key) && historyBookingKey(x)===key;
+  };
+  // Ids diverge between a sheet row and a website booking, so fall back to the
+  // person and the address the way Bookings already pairs cards up.
+  const loose=x=>{
+    if (!email || !street) return false;
+    if (String(x.email||"").trim().toLowerCase()!==email) return false;
+    if (normKey(x.street||"")!==street) return false;
+    return !(town && x.town && townKey(x.town)!==town);
+  };
+  const pool=[]; const seen=new Set([s.id]);
+  const scan=list=>(list||[]).forEach(x=>{ if (x && x!==s && !seen.has(x.id)){ seen.add(x.id); pool.push(x); } });
+  scan(state.unpaid);
+  allRunStates().forEach(data=>{ if (data){ scan(data.stops); scan(data.bad); } });
+  const twins=pool.filter(strong);
+  if (twins.length) return twins;
+  const guesses=pool.filter(loose);
+  // One clear match only. Two invoices at the same address can be two real jobs,
+  // and guessing would wipe a debt that is still owed.
+  return guesses.length===1 ? guesses : [];
+}
+// A receipt means the money has landed, so an invoice sent earlier for the same
+// pickup is settled too. Without this the ledger row kept its owing flag, so
+// Bookings held the card in Owing after the receipt went out — it never reached
+// Done — and the auto-reminder carried on chasing them for money already paid.
+async function settleInvoiceTwins(s){
+  const twins=invoiceTwinsOf(s).filter(x=>!x.paid || x.reminderId);
+  if (!twins.length) return 0;
+  for (const twin of twins){
+    twin.paid=true;
+    twin.receiptSent=true;
+    twin.status="DONE";
+    twin.historyStatus="COMPLETED";
+    twin.collectedAt=twin.collectedAt || s.collectedAt || Date.now();
+    if (twin.submission_id) dismissInvoiceOwing(twin.submission_id);
+    await cancelReminderFor(twin);
+  }
+  save();
+  return twins.length;
 }
 // Paid up without a receipt: cancel any waiting auto-reminder and move the card
 // to Completed. Sending a receipt already does this on its own.
