@@ -244,6 +244,263 @@ async function voiceConfirmPickup(query, date) {
   });
 }
 
+/* ---------- the pickup run that lives on this phone ----------
+   These read and write state.stops directly, the same as the buttons on the
+   cards do. Nothing here needs the network, which is the point: the run is what
+   he is actually driving, and it has to answer on one bar. */
+function voiceStops() {
+  try { return Array.isArray(state.stops) ? state.stops : []; } catch (error) { return []; }
+}
+function voiceStopsLeft() {
+  return voiceStops().filter(stop => stop.status !== 'DONE');
+}
+function voiceStopBrief(stop, withPhone = false) {
+  const price = stopPrice(stop);
+  const brief = {
+    name: fullName(stop) || 'no name on this stop',
+    address: fullAddr(stop) || 'no address on this stop',
+    items: (stop.appliances || []).join(', ') || 'not listed',
+    price: price == null ? 'no price set' : '$' + Number(price).toFixed(2),
+    state: stop.status === 'DONE' ? 'done' : isCollected(stop) ? 'picked up, not finished off' : 'still to do',
+    paid: stop.paid ? 'paid' : 'not paid yet'
+  };
+  if (stop.priority) brief.urgent = true;
+  if (stop.reminderDate) brief.payment_reminder = voiceDayWords(stop.reminderDate);
+  if (withPhone) brief.phone = stop.phone || 'no phone on this stop';
+  return brief;
+}
+
+/* "next", "this one" and an empty query all mean the stop he is driving to. */
+const VOICE_NEXT_WORDS = ['next', 'this', 'this one', 'current', 'the next one', 'next one', 'here'];
+function voiceResolveStop(query) {
+  const text = String(query || '').trim().toLowerCase();
+  const left = voiceStopsLeft();
+  if (!text || VOICE_NEXT_WORDS.includes(text)) {
+    if (!left.length) return { error: 'There is nothing left on the run.' };
+    return { stop: left[0] };
+  }
+  const haystack = stop => (fullName(stop) + ' ' + (stop.street || '') + ' ' + (stop.town || '')).toLowerCase();
+  let hits = voiceStops().filter(stop => haystack(stop).includes(text));
+  if (!hits.length) return { error: 'Nothing on the run matches "' + query + '". Ask him for the street or the name again.' };
+  if (hits.length > 1) {
+    // A finished stop with the same name is almost never the one he means.
+    const open = hits.filter(stop => stop.status !== 'DONE');
+    if (open.length === 1) hits = open;
+    else return {
+      needs_choice: true,
+      note: 'More than one stop matches. Ask him which one.',
+      matches: hits.slice(0, 5).map(stop => voiceStopBrief(stop))
+    };
+  }
+  return { stop: hits[0] };
+}
+
+function voiceListRun() {
+  const all = voiceStops();
+  const left = voiceStopsLeft();
+  return {
+    run: activeRunName(),
+    stops_total: all.length,
+    done: all.length - left.length,
+    still_to_do: left.length,
+    unpaid_jobs: (state.unpaid || []).length,
+    next_up: left.slice(0, 5).map(stop => voiceStopBrief(stop))
+  };
+}
+
+function voiceStopDetails(query) {
+  const found = voiceResolveStop(query);
+  if (!found.stop) return found;
+  return { stop: voiceStopBrief(found.stop, true) };
+}
+
+function voiceNavigate(query) {
+  const found = voiceResolveStop(query);
+  if (!found.stop) return found;
+  const stop = found.stop;
+  if (!fullAddr(stop)) return { error: 'There is no address on ' + (fullName(stop) || 'that stop') + ' to navigate to.' };
+  navStop(stop.id);
+  return { ok: true, navigating_to: (fullName(stop) || 'the next stop') + ', ' + fullAddr(stop) };
+}
+
+/* A phone call takes the microphone, so the conversation is wound up first.
+   The short delay leaves room for it to say who is being rung. */
+function voiceCall(query) {
+  const found = voiceResolveStop(query);
+  if (!found.stop) return found;
+  const stop = found.stop;
+  const number = String(stop.phone || '').replace(/\s+/g, '');
+  if (!number) return { error: 'There is no phone number on ' + (fullName(stop) || 'that stop') + '.' };
+  setTimeout(() => {
+    voiceStop('Ringing them now.');
+    setTimeout(() => { location.href = 'tel:' + number; }, 400);
+  }, 2500);
+  return {
+    ok: true,
+    calling: fullName(stop) || 'the customer',
+    note: 'Tell him you are ringing them now. The voice session ends as the call starts.'
+  };
+}
+
+function voiceSetPriority(query, urgent) {
+  const found = voiceResolveStop(query);
+  if (!found.stop) return found;
+  const stop = found.stop;
+  const wanted = urgent !== false;
+  const who = fullName(stop) || 'That stop';
+  if (Boolean(stop.priority) === wanted) {
+    return { ok: true, already: true, note: who + ' is already ' + (wanted ? 'marked ASAP' : 'off ASAP') + '.' };
+  }
+  togglePriority(stop.id);
+  return { ok: true, done: who + ' is ' + (wanted ? 'now ASAP and moved up the run' : 'no longer ASAP') + '.' };
+}
+
+function voiceMarkStopDone(query) {
+  const found = voiceResolveStop(query);
+  if (!found.stop) return found;
+  const stop = found.stop;
+  const who = fullName(stop) || 'That stop';
+  if (stop.status === 'DONE') return { ok: true, already: true, note: who + ' is already done.' };
+  const owed = !stop.paid;
+  toggleDone(stop.id);
+  const left = voiceStopsLeft();
+  const out = {
+    ok: true,
+    done: who + ' is marked done.',
+    still_to_do: left.length,
+    next_up: left.length ? voiceStopBrief(left[0]) : null
+  };
+  if (owed) out.warning = 'This one is still showing as not paid.';
+  return out;
+}
+
+function voiceMarkCollected(query) {
+  const found = voiceResolveStop(query);
+  if (!found.stop) return found;
+  const stop = found.stop;
+  const who = fullName(stop) || 'That stop';
+  if (isCollected(stop)) return { ok: true, already: true, note: who + ' is already marked picked up.' };
+  toggleCollected(stop.id);
+  return { ok: true, done: who + ' is marked as picked up.' };
+}
+
+function voiceRemoveStop(query) {
+  const found = voiceResolveStop(query);
+  if (!found.stop) return found;
+  const stop = found.stop;
+  const summary = 'Take ' + (fullName(stop) || fullAddr(stop) || 'that stop') + ' off ' + activeRunName();
+  return voiceStartConfirm(summary, async () => {
+    state.stops = state.stops.filter(other => other.id !== stop.id);
+    if (Array.isArray(state.messageSelectedIds)) {
+      state.messageSelectedIds = state.messageSelectedIds.filter(other => other !== stop.id);
+    }
+    save(); render(); drawRoute();
+    return summary;
+  });
+}
+
+/* ---------- money ---------- */
+function voiceAmount(value, fallback) {
+  if (value == null || String(value).trim() === '') return fallback == null ? null : Number(fallback);
+  const amount = Number(String(value).replace(/[^0-9.]/g, ''));
+  return Number.isFinite(amount) && amount >= 0 && amount <= 100000 ? amount : null;
+}
+
+function voiceMarkPaid(query) {
+  const found = voiceResolveStop(query);
+  if (!found.stop) return found;
+  const stop = found.stop;
+  const who = fullName(stop) || fullAddr(stop) || 'that job';
+  if (stop.paid) return { ok: true, already: true, note: who + ' is already down as paid.' };
+  const price = stopPrice(stop);
+  const summary = 'Mark ' + who + ' as paid' + (price == null ? '' : ' - $' + Number(price).toFixed(2));
+  return voiceStartConfirm(summary, async () => {
+    await cancelReminderFor(stop);
+    await settleAsPaid(stop);
+    return summary;
+  });
+}
+
+/* The receipt PDF is built on the phone - the same one the Receipt button makes -
+   then handed to the app's own send. No email address means no voice send: the
+   fallback there is a share sheet, which is no use to someone driving. */
+function voiceSendReceipt(query, amount) {
+  const found = voiceResolveStop(query);
+  if (!found.stop) return found;
+  const stop = found.stop;
+  const who = fullName(stop) || 'That job';
+  if (!goodEmail(stop.email)) {
+    return { error: who + ' has no email address, so a receipt cannot be sent by voice. Tell him it needs the app.' };
+  }
+  const total = voiceAmount(amount, stopPrice(stop));
+  if (total == null) return { error: 'Ask him what the amount was, in dollars.' };
+  const summary = 'Email a $' + total.toFixed(2) + ' receipt to ' + (fullName(stop) || stop.email) + ', and mark the job paid and done';
+  return voiceStartConfirm(summary, async () => {
+    await ensurePdf();
+    if (!window.jspdf) throw Error('the PDF maker did not load');
+    stop.amount = total;
+    stop.receiptAmount = total;
+    stop.profileUrl = await customerProfileLink(stop);
+    const blob = await buildReceiptPdf(stop, total);
+    const name = 'Receipt - ' + (fullName(stop) || 'pickup').replace(/[^\w \-]/g, '') + '.pdf';
+    pendingReceipts[stop.id] = new File([blob], name, { type: 'application/pdf' });
+    save();
+    await sendReceipt(stop.id);
+    // sendReceipt clears the pending file only once the send is confirmed.
+    if (pendingReceipts[stop.id]) throw Error('the email was not confirmed. The receipt is built and waiting on the Receipt button, and the job has not been marked paid. Check Sent mail before trying again');
+    return summary;
+  });
+}
+
+function voiceSetReminder(query, amount, date, repeatDays) {
+  const found = voiceResolveStop(query);
+  if (!found.stop) return found;
+  const stop = found.stop;
+  const who = fullName(stop) || 'That job';
+  if (!goodEmail(stop.email)) return { error: who + ' has no email address, so there is nobody to remind.' };
+  const day = String(date || '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return { error: 'Work out the day for the reminder as a real date first.' };
+  const today = voiceToday();
+  if (day < today) return { error: 'That day has already been. Ask him which day he means.' };
+  if (day > voiceIsoPlus(today, 365)) return { error: 'That is over a year away. Check the day with him.' };
+  const total = voiceAmount(amount, stopPrice(stop));
+  const repeat = [7, 14, 30].includes(Number(repeatDays)) ? Number(repeatDays) : 0;
+  const summary = 'Email ' + (fullName(stop) || stop.email) + ' a payment reminder'
+    + (total == null ? '' : ' for $' + total.toFixed(2))
+    + ' on ' + voiceDayWords(day)
+    + (repeat ? ', then every ' + repeat + ' days' : '');
+  return voiceStartConfirm(summary, async () => {
+    const res = await ownerActionFetch(API + '/set-reminder', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: stop.reminderId || '', to: stop.email.trim(), name: fullName(stop), amount: total, date: day, repeatDays: repeat })
+    });
+    const out = await res.json().catch(() => ({}));
+    if (!out.ok) throw Error(out.error || 'the reminder was not saved');
+    stop.reminderId = out.reminderId || '';
+    stop.reminderDate = day;
+    stop.reminderRepeat = repeat;
+    save(); render();
+    return summary;
+  });
+}
+
+function voiceCancelReminder(query) {
+  const found = voiceResolveStop(query);
+  if (!found.stop) return found;
+  const stop = found.stop;
+  const who = fullName(stop) || fullAddr(stop) || 'that job';
+  if (!stop.reminderId) return { ok: true, already: true, note: who + ' has no payment reminder set.' };
+  const summary = 'Turn off the payment reminder for ' + who;
+  return voiceStartConfirm(summary, async () => {
+    await cancelReminderFor(stop);
+    stop.reminderDate = '';
+    stop.reminderRepeat = 0;
+    save(); render();
+    return summary;
+  });
+}
+
 /* Every path returns an object - the model is waiting on a reply, and a thrown
    error here would leave the conversation hanging. */
 async function voiceRunTool(name, args) {
@@ -254,6 +511,18 @@ async function voiceRunTool(name, args) {
     if (name === 'business_summary') return await voiceSummary();
     if (name === 'mark_job') return await voiceMarkJob(args.query, args.status);
     if (name === 'confirm_pickup') return await voiceConfirmPickup(args.query, args.date);
+    if (name === 'list_run') return voiceListRun();
+    if (name === 'stop_details') return voiceStopDetails(args.query);
+    if (name === 'navigate_to') return voiceNavigate(args.query);
+    if (name === 'call_customer') return voiceCall(args.query);
+    if (name === 'set_priority') return voiceSetPriority(args.query, args.urgent);
+    if (name === 'mark_stop_done') return voiceMarkStopDone(args.query);
+    if (name === 'mark_collected') return voiceMarkCollected(args.query);
+    if (name === 'remove_stop') return voiceRemoveStop(args.query);
+    if (name === 'mark_paid') return voiceMarkPaid(args.query);
+    if (name === 'send_receipt') return voiceSendReceipt(args.query, args.amount);
+    if (name === 'set_payment_reminder') return voiceSetReminder(args.query, args.amount, args.date, args.repeat_days);
+    if (name === 'cancel_payment_reminder') return voiceCancelReminder(args.query);
     if (name === 'confirm_action') return await voiceConfirm(args.token);
     return { error: `There is no tool called ${name}.` };
   } catch (error) {
