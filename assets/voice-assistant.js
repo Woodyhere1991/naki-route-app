@@ -384,6 +384,125 @@ function voiceMarkCollected(query) {
   return { ok: true, done: who + ' is marked as picked up.' };
 }
 
+/* ---------- putting bookings onto the run ----------
+
+   He does these in handfuls, not one at a time: a whole town gets collected in
+   one trip, so being asked to confirm each stop separately while driving is
+   worse than useless. One call, one yes, however many stops. */
+
+const VOICE_ADD_ALL = /^(all|everything|the lot|all of them|every ?one|all of it)$/i;
+const VOICE_MAX_ADD = 25;
+
+// Bookings a customer has sent in that are not on any run yet.
+function voiceWaitingBookings() {
+  if (typeof directBookingRows === 'undefined' || !Array.isArray(directBookingRows)) return [];
+  return directBookingRows.filter(row =>
+    !['COMPLETED', 'DECLINED', 'CANCELLED'].includes(row.status) &&
+    !runContainingBooking(row.id));
+}
+
+function voiceBookingBrief(row) {
+  return {
+    name: [row.firstName, row.lastName].filter(Boolean).join(' ') || 'No name',
+    street: row.streetAddress || '',
+    town: row.town || '',
+    items: (row.items || []).join(', ')
+  };
+}
+
+function voiceListWaiting() {
+  const waiting = voiceWaitingBookings();
+  if (!waiting.length) return { count: 0, note: 'Every booking is already on a run.' };
+  const towns = {};
+  for (const row of waiting) {
+    const label = townLabel(row.town) || 'No town';
+    towns[label] = (towns[label] || 0) + 1;
+  }
+  return {
+    count: waiting.length,
+    by_town: towns,
+    first_few: waiting.slice(0, 3).map(voiceBookingBrief),
+    note: 'Say a town, some names, or "all" and I will add them in one go.'
+  };
+}
+
+/* `which` is whatever he said - a town, a few names, or "all". Each comma or
+   "and" separated part is matched on its own so "Hawera and the Devon Street
+   one" picks up both. */
+function voiceAddStops(which) {
+  const waiting = voiceWaitingBookings();
+  if (!waiting.length) {
+    return { ok: false, note: 'There are no bookings waiting - they are all on a run already.' };
+  }
+
+  const asked = String(which || '').trim();
+  if (!asked) {
+    return { needs_choice: true, note: 'Ask him which ones to add.', waiting: voiceListWaiting() };
+  }
+
+  let chosen;
+  if (VOICE_ADD_ALL.test(asked)) {
+    chosen = waiting.slice();
+  } else {
+    const parts = asked
+      .split(/\s*(?:,|\band\b|\bplus\b|\balso\b)\s*/i)
+      .map(part => part.replace(/\b(the|job|jobs|one|ones|stop|stops|booking|bookings|in|at|on|from)\b/gi, ' ')
+        .replace(/\s+/g, ' ').trim().toLowerCase())
+      .filter(Boolean);
+    const picked = new Map();
+    const missed = [];
+    for (const part of parts) {
+      const hits = waiting.filter(row => matchesSearch(row, part));
+      if (!hits.length) missed.push(part);
+      for (const hit of hits) picked.set(hit.id, hit);
+    }
+    chosen = [...picked.values()];
+    if (!chosen.length) {
+      return {
+        ok: false,
+        not_found: missed,
+        note: 'Nothing waiting matches that. Tell him what is waiting and ask again.',
+        waiting: voiceListWaiting()
+      };
+    }
+  }
+
+  if (chosen.length > VOICE_MAX_ADD) {
+    return {
+      ok: false,
+      note: `That is ${chosen.length} stops, more than one run should take. Ask him to do it by town.`,
+      waiting: voiceListWaiting()
+    };
+  }
+
+  const towns = [...new Set(chosen.map(row => townLabel(row.town) || 'no town'))];
+  const summary = chosen.length === 1
+    ? `Add ${voiceBookingBrief(chosen[0]).name} to ${activeRunName()}`
+    : `Add ${chosen.length} stops to ${activeRunName()} - ${towns.join(', ')}`;
+
+  return voiceStartConfirm(summary, async () => {
+    let added = 0, already = 0, needsAddress = 0, failed = 0;
+    for (const row of chosen) {
+      const result = await addDirectBooking(row.id, {
+        renderAfter: false, announce: false, updateStatus: false
+      });
+      if (result?.status === 'added') added++;
+      else if (result?.status === 'already') already++;
+      else if (result?.status === 'needs-address') needsAddress++;
+      else failed++;
+    }
+    if (typeof renderDirectBookings === 'function') renderDirectBookings();
+    render(); drawRoute();
+    if (typeof refreshWeather === 'function') refreshWeather(true);
+
+    const bits = [`${added} added to ${activeRunName()}`];
+    if (already) bits.push(`${already} were already on it`);
+    if (needsAddress) bits.push(`${needsAddress} need an address before they can go on`);
+    if (failed) bits.push(`${failed} could not be added`);
+    return bits.join(', ');
+  });
+}
+
 function voiceRemoveStop(query) {
   const found = voiceResolveStop(query);
   if (!found.stop) return found;
@@ -555,6 +674,8 @@ async function voiceRunTool(name, args) {
     if (name === 'set_priority') return voiceSetPriority(args.query, args.urgent);
     if (name === 'mark_stop_done') return voiceMarkStopDone(args.query);
     if (name === 'mark_collected') return voiceMarkCollected(args.query);
+    if (name === 'add_stops') return voiceAddStops(args.which);
+    if (name === 'list_waiting') return voiceListWaiting();
     if (name === 'remove_stop') return voiceRemoveStop(args.query);
     if (name === 'mark_paid') return voiceMarkPaid(args.query);
     if (name === 'send_receipt') return voiceSendReceipt(args.query, args.amount);
