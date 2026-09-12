@@ -760,7 +760,7 @@ async function sendGmail(env, msg) {
 }
 
 // One front door: Gmail first, Brevo fallback so a Google hiccup never loses a send.
-async function sendMail(env, msg) {
+export async function sendMail(env, msg) {
   if (msg.kind === "customer-login" && env.AUTH_EMAIL_FROM) {
     // Authentication mail must never fall back to the personal Gmail sender.
     const sender = loginSender(env.AUTH_EMAIL_FROM);

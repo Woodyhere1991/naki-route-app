@@ -11,7 +11,11 @@
    Audio never touches our storage. We keep what a booking needs and a short
    transcript of what was agreed, and nothing else. */
 
-import { ITEM_PRICES, RURAL_PRICES } from "./customer.js";
+import { ITEM_PRICES, RURAL_PRICES, OWNER_EMAIL } from "./customer.js";
+// index.js imports this module, so this is a cycle - safe only because
+// sendMail is a hoisted declaration and is called at runtime, never while
+// the modules are still loading.
+import { sendMail } from "./index.js";
 
 const LIVE_MODEL = "gpt-live-1";
 const BACKEND_MODEL = "gpt-5.6-luna";
@@ -234,6 +238,42 @@ export function quoteFor(items, ruralKey) {
   return { cents, quoteRequired, known, unknown, ruralOption };
 }
 
+
+/* Worth an email when a booking was taken, or when there was a real
+   conversation. A wrong number that hung up after two seconds is not news.
+   Split out from the call object so the wording can be tested without
+   standing up two websockets. */
+export function ownerEmailFor({ booking, transcript = [], from = "", reason = "", seconds = 0 }) {
+  if (!booking && transcript.length < 2) return null;
+  const caller = from || "a withheld number";
+  const lines = [];
+  if (booking) {
+    const price = booking.quoteRequired ? "Needs your quote" : `$${(booking.total / 100).toFixed(2)}`;
+    lines.push(
+      "The phone assistant took a booking. It is sitting in Bookings as NEW - nothing has been confirmed and nobody has been given a day.",
+      "",
+      `Name:    ${booking.name}`,
+      `Address: ${booking.street}, ${booking.town}`,
+      `Phone:   ${booking.phone}`,
+      `Price:   ${price}`,
+      ""
+    );
+  } else {
+    lines.push(
+      `Someone rang and the assistant did not end up taking a booking (${reason}).`,
+      "Might be worth ringing them back.",
+      ""
+    );
+  }
+  lines.push(`Called from ${caller}, ${seconds} seconds.`, "", "What was said:", ...transcript.slice(-40));
+  return {
+    subject: booking
+      ? `Phone booking - ${booking.name}, ${booking.town}`
+      : `Missed enquiry - ${caller}`,
+    text: lines.join("\n")
+  };
+}
+
 export class ReceptionCall {
   constructor(ctx, env) {
     this.ctx = ctx;
@@ -445,5 +485,18 @@ export class ReceptionCall {
     console.log("Phone reception call ended", reason, `${seconds}s`, this.booking ? this.booking.id : "no booking");
     try { this.openai && this.openai.close(); } catch (error) { /* already gone */ }
     try { this.twilio && this.twilio.close(); } catch (error) { /* already gone */ }
+    // A booking sitting in the inbox he hasn't opened is no use to him. The
+    // socket is already closing, so this has to outlive the request.
+    this.ctx.waitUntil(this.tellWoody(reason, seconds).catch(error => {
+      console.error("Phone reception could not email the owner", String(error));
+    }));
+  }
+
+  async tellWoody(reason, seconds) {
+    const mail = ownerEmailFor({
+      booking: this.booking, transcript: this.transcript, from: this.from, reason, seconds
+    });
+    if (!mail) return;
+    await sendMail(this.env, { to: OWNER_EMAIL, name: "Woody", ...mail });
   }
 }

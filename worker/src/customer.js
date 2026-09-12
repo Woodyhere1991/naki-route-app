@@ -1,7 +1,7 @@
 import { AuthMailError, reserveAuthRequest } from "./auth-limits.js";
 import { kidsActivityReport } from "./kids-activity.js";
 import { scoreReviewReason } from "./score-validation.js";
-const OWNER_EMAIL = "nakiwreckremoval@gmail.com";
+export const OWNER_EMAIL = "nakiwreckremoval@gmail.com";
 // Addresses allowed to sign in as the owner. OWNER_EMAIL stays the one that
 // receives booking alerts; this list is only about who can log in, so Woody can
 // reach the owner pages from a second inbox of his own. A login code is only

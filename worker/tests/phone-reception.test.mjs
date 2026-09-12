@@ -129,3 +129,55 @@ test('an empty or junk item list costs nothing and asks for a quote', async () =
   assert.equal(quoteFor(null, 'town').cents, 0);
   assert.equal(quoteFor(undefined, 'nonsense').ruralOption, 'Main town or main road - no travel fee');
 });
+
+/* ---- what lands in Woody's inbox ---- */
+import { ownerEmailFor } from '../src/phone-reception.js';
+
+const booked = {
+  id: 'WEB-PHONE-1', name: 'Jane Smith', street: '12 Devon Street', town: 'New Plymouth',
+  phone: '+64271112222', total: 3000, quoteRequired: false
+};
+
+test('a booking emails him the details and says it is not confirmed', async () => {
+  const mail = ownerEmailFor({ booking: booked, transcript: ['Caller: hi', 'Reception: hello'], from: '+64271112222', seconds: 95 });
+  assert.match(mail.subject, /Phone booking - Jane Smith, New Plymouth/);
+  assert.match(mail.text, /12 Devon Street/);
+  assert.match(mail.text, /\$30\.00/);
+  // The whole point: he still decides.
+  assert.match(mail.text, /NEW - nothing has been confirmed/);
+  assert.match(mail.text, /nobody has been given a day/);
+});
+
+test('a job needing his quote never shows a made-up figure', async () => {
+  const mail = ownerEmailFor({ booking: { ...booked, quoteRequired: true }, transcript: [], seconds: 60 });
+  assert.match(mail.text, /Needs your quote/);
+  assert.ok(!/\$/.test(mail.text.split('Price:')[1].split('\n')[0]));
+});
+
+test('a real conversation that took no booking still gets flagged for a call back', async () => {
+  const mail = ownerEmailFor({
+    booking: null,
+    transcript: ['Caller: do you take fridges', 'Reception: we do, twenty dollars'],
+    from: '+6421999888', reason: 'caller hung up', seconds: 40
+  });
+  assert.match(mail.subject, /Missed enquiry - \+6421999888/);
+  assert.match(mail.text, /ringing them back/);
+  assert.match(mail.text, /do you take fridges/);
+});
+
+test('a wrong number that hangs up is not worth an email', async () => {
+  assert.equal(ownerEmailFor({ booking: null, transcript: [], from: '+6421000000', seconds: 2 }), null);
+  assert.equal(ownerEmailFor({ booking: null, transcript: ['Reception: Naki Whiteware Removal, how can I help?'], seconds: 4 }), null);
+});
+
+test('a withheld number is described, not left blank', async () => {
+  const mail = ownerEmailFor({ booking: null, transcript: ['Caller: hi', 'Reception: hello'], from: '', seconds: 20 });
+  assert.match(mail.subject, /a withheld number/);
+});
+
+test('only the tail of a long call is kept, so the email stays readable', async () => {
+  const long = Array.from({ length: 120 }, (_, i) => `Caller: line ${i}`);
+  const mail = ownerEmailFor({ booking: null, transcript: long, seconds: 300 });
+  assert.ok(mail.text.includes('line 119'));
+  assert.ok(!mail.text.includes('line 79'));
+});
