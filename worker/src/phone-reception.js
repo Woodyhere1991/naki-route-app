@@ -145,7 +145,13 @@ export function receptionBackendInstructions() {
     "The first item costs the most and extra items are cheaper. quote_price works it out exactly. Read back the total, not the breakdown.",
     "If they name something not on the list, say Woody will confirm the price and take the booking anyway.",
     "",
-    "TAKING A BOOKING - what you must collect before calling take_booking",
+    "HOW TO GET THE JOB IN - OFFER THE TEXT FIRST",
+    "Once they know the price and want to go ahead, offer to text them the booking link before anything else: \"I can flick you a text with the booking form now if that's easier?\" Most people would rather tap a link than spell an address down the phone, and a form they fill in themselves has no mis-heard street names in it.",
+    "If they say yes, call text_booking_link, tell them it has gone through, and wrap the call up. You do not need their address, email or item list for this - do not collect them.",
+    "If they say they would rather do it on the phone, or they have not got a mobile, or the text will not send, then take it on the call with take_booking as set out below. Never make them feel awkward about choosing the phone.",
+    "Do not offer the text twice. One offer, then get on with whichever way they picked.",
+    "",
+    "TAKING A BOOKING ON THE CALL - what you must collect before calling take_booking",
     "1. Their name.",
     "2. The pickup address, including the town. Read the street number and street back to them to check it.",
     "3. What they want taken. Match it to the tool's item list as closely as you can.",
@@ -162,6 +168,12 @@ export function receptionBackendInstructions() {
     "Do not take payment details. The business does not take card over the phone. If they ask, say Woody sorts payment at the pickup.",
     "Do not give out Woody's mobile number or any other customer's details.",
     "If they are angry, complaining about a job already done, or asking about something you have no answer for, say you will get Woody to ring them back, take their name and number, and use take_booking with a note explaining it is a callback rather than a new job.",
+    "",
+    "NEVER SAY YOU WILL CHECK WITH WOODY AND THEN ANSWER IT YOURSELF",
+    "Woody is not on the call and cannot be asked anything during it. Decide before you open your mouth: either you can answer from the price list and what you have been told here, or you cannot.",
+    "If you CAN answer, just answer. Do not say \"let me check with Woody\", \"I'll just ask Woody\" or \"bear with me\" first - there is nobody to ask and it makes you sound like you are stalling.",
+    "If you CANNOT answer, say Woody will ring them back about it, take the callback, and do not then produce an answer anyway. Saying you will check and then answering in the next breath tells the caller you made it up.",
+    "The same goes for holding: you have nothing to look up and nobody to consult, so never put them on hold or say you are looking into it.",
     "",
     "IF THEY JUST WANT A PRICE",
     "Quote it, and offer to book it in. If they say no, leave it - do not push. Say they are welcome to ring back.",
@@ -192,6 +204,20 @@ export function receptionTools() {
           }
         },
         required: ["items", "rural"],
+        additionalProperties: false
+      }
+    },
+    {
+      type: "function",
+      name: "text_booking_link",
+      description: "Text the caller a link to the booking form while they are still on the phone. Offer this FIRST, before taking details out loud - it is quicker for them and nothing gets mis-heard. Only fall back to take_booking if they would rather do it on the call.",
+      parameters: {
+        type: "object",
+        properties: {
+          name: { type: "string", description: "Their first name if you have it, so the text reads properly. Leave out if you have not asked yet." },
+          to: { type: "string", description: "Only if they want it sent to a different number than the one they are ringing from. Otherwise leave this out." }
+        },
+        required: [],
         additionalProperties: false
       }
     },
@@ -421,11 +447,60 @@ export class ReceptionCall {
           travel: quote.ruralOption
         };
       }
+      if (name === "text_booking_link") return await this.textBookingLink(args);
       if (name === "take_booking") return await this.saveBooking(args);
       return { error: `There is no tool called ${name}.` };
     } catch (error) {
       console.error("Phone reception tool failed", name, String(error));
       return { error: "That did not save. Tell them you will get Woody to ring them back, then say goodbye." };
+    }
+  }
+
+  /* Texts the caller the booking link while they are still on the phone.
+     Most people would rather tap a link than spell an address out loud, and a
+     booking they fill in themselves has no mis-heard street names in it.
+
+     Needs a Twilio account: TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN and
+     TWILIO_FROM_NUMBER. Without them the call still works - the tool just says
+     it could not send, and the assistant falls back to taking the booking. */
+  async textBookingLink(args) {
+    const env = this.env;
+    const to = String(args?.to || this.from || "").replace(/[^\d+]/g, "");
+    if (!to) {
+      return { sent: false, reason: "no_number", say: "Their number is withheld, so a text cannot be sent. Offer to take the booking on the phone instead." };
+    }
+    if (!env.TWILIO_ACCOUNT_SID || !env.TWILIO_AUTH_TOKEN || !env.TWILIO_FROM_NUMBER) {
+      return { sent: false, reason: "not_configured", say: "Texting is not switched on yet. Do not tell them a text is coming - offer to take the booking on the phone instead." };
+    }
+
+    const name = String(args?.name || "").trim().slice(0, 40);
+    // The booking form is the #book section on the front page. There is no
+    // /book path - sending one would text every caller a 404.
+    const link = env.BOOKING_LINK || "https://nakiwhitewareremoval.vip/#book";
+    const body = `${name ? `Hi ${name}, ` : "Hi, "}here's the booking form for your pickup: ${link} - Naki Whiteware Removal`;
+
+    try {
+      const res = await fetch(
+        `https://api.twilio.com/2010-04-01/Accounts/${env.TWILIO_ACCOUNT_SID}/Messages.json`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Basic ${btoa(`${env.TWILIO_ACCOUNT_SID}:${env.TWILIO_AUTH_TOKEN}`)}`,
+            "Content-Type": "application/x-www-form-urlencoded"
+          },
+          body: new URLSearchParams({ To: to, From: env.TWILIO_FROM_NUMBER, Body: body }),
+          signal: AbortSignal.timeout(10000)
+        }
+      );
+      if (!res.ok) {
+        console.error("Booking link text rejected", res.status, (await res.text()).slice(0, 300));
+        return { sent: false, reason: "send_failed", say: "The text would not go through. Offer to take the booking on the phone instead." };
+      }
+      this.texted = true;
+      return { sent: true, to, say: "Tell them it has just gone to their phone, and that Woody will ring once it is in." };
+    } catch (error) {
+      console.error("Booking link text failed", String(error));
+      return { sent: false, reason: "send_failed", say: "The text would not go through. Offer to take the booking on the phone instead." };
     }
   }
 

@@ -762,6 +762,15 @@ async function voiceRunTool(name, args) {
     if (voice && voice.mode === 'reception') {
       if (name === 'quote_price') return await voiceReceptionQuote(args.items, args.rural);
       if (name === 'take_booking') return voiceReceptionBooking(args);
+      // A rehearsal has no real caller to text, so this always declines - which
+      // is also what a real call does until Twilio is connected.
+      if (name === 'text_booking_link') {
+        return {
+          sent: false,
+          reason: 'rehearsal',
+          say: 'This is a practice call, so no text went anywhere. Carry on as if they had asked to do it on the phone instead.'
+        };
+      }
       return { error: `There is no tool called ${name}.` };
     }
     if (name === 'list_jobs') return await voiceListJobs(args.when);
