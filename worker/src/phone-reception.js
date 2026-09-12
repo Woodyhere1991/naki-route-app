@@ -88,7 +88,7 @@ export function phoneStream(request, env) {
 }
 
 /* ---- what it is allowed to say and do ---- */
-function priceLines() {
+export function priceLines() {
   const seen = new Map();
   for (const [item, [first]] of Object.entries(ITEM_PRICES)) {
     if (item === "Other") continue;
@@ -113,7 +113,7 @@ function nzNow() {
   };
 }
 
-function liveInstructions() {
+export function receptionLiveInstructions() {
   return [
     "You are answering the phone for Naki Whiteware Removal in New Plymouth, New Zealand. You are the receptionist, not the owner. The owner is Woody and he is out on the truck.",
     "",
@@ -131,7 +131,7 @@ function liveInstructions() {
   ].join("\n");
 }
 
-function backendInstructions() {
+export function receptionBackendInstructions() {
   const today = nzNow();
   return [
     "You are the reasoning side of the phone receptionist for Naki Whiteware Removal - whiteware, appliance and scrap metal collection based in New Plymouth, Taranaki, New Zealand.",
@@ -171,7 +171,7 @@ function backendInstructions() {
   ].join("\n");
 }
 
-function toolsFor() {
+export function receptionTools() {
   return [
     {
       type: "function",
@@ -324,14 +324,14 @@ export class ReceptionCall {
         type: "session.start",
         session: {
           model: LIVE_MODEL,
-          instructions: liveInstructions(),
+          instructions: receptionLiveInstructions(),
           audio: { format: { type: "audio/pcmu", rate: 8000 }, output: { voice: VOICE } },
           delegation: {
             type: "responses",
             responses: {
               model: BACKEND_MODEL,
-              instructions: backendInstructions() + "\n\nTHE PRICE LIST\n" + priceLines(),
-              tools: toolsFor(),
+              instructions: receptionBackendInstructions() + "\n\nTHE PRICE LIST\n" + priceLines(),
+              tools: receptionTools(),
               tool_choice: "auto"
             }
           }

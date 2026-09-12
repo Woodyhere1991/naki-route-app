@@ -11,7 +11,10 @@
    Voice time is billed on wall-clock seconds from connect to close - silence
    included - so the app hangs up the moment it goes quiet. */
 
+import { receptionLiveInstructions, receptionBackendInstructions, receptionTools, priceLines, quoteFor } from "./phone-reception.js";
+
 export const LIVE_SESSION_PATH = "/owner/live-session";
+export const RECEPTION_QUOTE_PATH = "/owner/reception-quote";
 
 const LIVE_MODEL = "gpt-live-1";
 // The cheap fast tier. Swap in a bigger gpt-5.6 if it starts picking the wrong
@@ -337,11 +340,19 @@ export async function liveSession(request, env, json, session) {
   }
   let body;
   try { body = await request.json(); } catch { return json(request, { error: "Bad request" }, 400); }
-  const sdp = typeof body?.sdp === "string" ? body.sdp.trim() : "";
+  // Only the front gets trimmed. An SDP offer is line based and its parser
+  // expects the LAST line terminated like every other one - trimming the
+  // trailing newline off makes OpenAI reject the whole offer with
+  // "failed to unmarshal SDP: EOF".
+  const sdp = typeof body?.sdp === "string" ? body.sdp.trimStart() : "";
   // A WebRTC offer is a few kB of text starting with the version line.
   if (!sdp || sdp.length > 200000 || !sdp.startsWith("v=")) {
     return json(request, { error: "The phone couldn't start the microphone connection. Try again." }, 400);
   }
+  // "reception" lets him ring the phone assistant from the app: same prompt and
+  // same tools the real line uses, so a rehearsal is worth something, but no
+  // Twilio number and nothing written to the bookings inbox.
+  const reception = body?.mode === "reception";
   if (!await withinLimit(env, String(session.email || "").toLowerCase())) {
     return json(request, { error: "That's a lot of voice sessions this hour. Give it a minute." }, 429);
   }
@@ -357,19 +368,23 @@ export async function liveSession(request, env, json, session) {
       body: JSON.stringify({
         session: {
           model: LIVE_MODEL,
-          instructions: liveInstructions(),
+          instructions: reception ? receptionLiveInstructions() : liveInstructions(),
           audio: { output: { voice: VOICE } },
           delegation: {
             type: "responses",
             responses: {
               model: BACKEND_MODEL,
-              instructions: backendInstructions(),
-              tools: toolsFor(),
+              instructions: reception
+                ? receptionBackendInstructions() + "\n\nTHE PRICE LIST\n" + priceLines()
+                : backendInstructions(),
+              tools: reception ? receptionTools() : toolsFor(),
               tool_choice: "auto"
             }
           }
         },
-        transport: { type: "webrtc", sdp }
+          // Belt and braces: guarantee the final line is terminated, whatever
+        // the phone's browser sent.
+        transport: { type: "webrtc", sdp: sdp.endsWith("\n") ? sdp : `${sdp}\r\n` }
       }),
       signal: AbortSignal.timeout(20000)
     });
@@ -398,4 +413,20 @@ export async function liveSession(request, env, json, session) {
     return json(request, { error: "The voice service replied, but the connection details were missing." }, 502);
   }
   return json(request, { sessionId: result?.session?.id || "", sdp: answer });
+}
+
+/* The rehearsal runs its tools in the browser, but the price must come from the
+   one place that decides prices for real. */
+export async function receptionQuote(request, env, json) {
+  if (request.method !== "POST") return json(request, { error: "Method not allowed" }, 405);
+  let body;
+  try { body = await request.json(); } catch { return json(request, { error: "Bad request" }, 400); }
+  const quote = quoteFor(body?.items, body?.rural);
+  return json(request, {
+    total: `$${(quote.cents / 100).toFixed(2)}`,
+    cents: quote.cents,
+    quote_required: quote.quoteRequired,
+    unknown_items: quote.unknown,
+    travel: quote.ruralOption
+  });
 }

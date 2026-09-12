@@ -3,7 +3,7 @@ import { recordKidsActivity, purgeKidsActivity } from "./kids-activity.js";
 import { loginSender } from "./login-mail.js";
 import { AuthMailError } from "./auth-limits.js";
 import { metWeather } from "./field-weather.js";
-import { LIVE_SESSION_PATH, liveSession } from "./live-voice.js";
+import { LIVE_SESSION_PATH, RECEPTION_QUOTE_PATH, liveSession, receptionQuote } from "./live-voice.js";
 import { isPhonePath, phoneIncoming, phoneStream, ReceptionCall } from "./phone-reception.js";
 import { handlePortalRequest, retryPendingSheetBackups, purgeExpiredAuth, purgeOldPhotos, recordBookingDocument, snapshotDatabase, sessionFor } from "./customer.js";
 
@@ -977,10 +977,12 @@ export default {
       if (path === "/kids/activity") return await recordKidsActivity(request, env, json);
       // Ahead of the portal so the owner router doesn't 404 on it. Hands-free
       // voice: the phone swaps WebRTC details with OpenAI through here.
-      if (path === LIVE_SESSION_PATH) {
+      if (path === LIVE_SESSION_PATH || path === RECEPTION_QUOTE_PATH) {
         const voiceSession = await sessionFor(request, env, "owner");
         if (!voiceSession) return json(request, { error: "Sign in on the Bookings tab, then start voice again." }, 401);
-        return await liveSession(request, env, json, voiceSession);
+        return path === LIVE_SESSION_PATH
+          ? await liveSession(request, env, json, voiceSession)
+          : await receptionQuote(request, env, json);
       }
       const portalResponse = await handlePortalRequest({ request, env, path, json, sendMail });
       if (portalResponse) return portalResponse;

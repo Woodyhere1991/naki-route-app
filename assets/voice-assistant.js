@@ -501,11 +501,48 @@ function voiceCancelReminder(query) {
   });
 }
 
+/* ---------- rehearsing the phone assistant ----------
+   Same prompt and same tools the real line uses, so what he hears here is what
+   a customer would hear. The difference is only at the end: nothing is written
+   to the bookings inbox, and he is told exactly what would have been. */
+async function voiceReceptionQuote(items, rural) {
+  const res = await ownerApi('/owner/reception-quote', {
+    method: 'POST',
+    body: JSON.stringify({ items: Array.isArray(items) ? items : [], rural: rural || 'town' })
+  });
+  if (res.quote_required) {
+    return {
+      quote_required: true,
+      reason: (res.unknown_items || []).length
+        ? 'Not on the price list: ' + res.unknown_items.join(', ') + '.'
+        : 'Over 10 km rural.',
+      say: 'Tell them Woody will confirm the price, and take the booking anyway.'
+    };
+  }
+  return { total: res.total, travel: res.travel };
+}
+
+function voiceReceptionBooking(args) {
+  const where = [args.street, args.town].filter(Boolean).join(', ');
+  voiceSetPending(`${args.name || 'no name'} — ${where || 'no address'}`, 'Practice only, nothing saved');
+  return {
+    ok: true,
+    saved: true,
+    say: 'Tell them it is booked in and Woody will ring to arrange the day, then say goodbye.'
+  };
+}
+
 /* Every path returns an object - the model is waiting on a reply, and a thrown
    error here would leave the conversation hanging. */
 async function voiceRunTool(name, args) {
   try {
     if (!ownerToken) return { error: 'The owner is signed out of the app, so nothing can be looked up. Tell him to sign in on the Bookings tab.' };
+    // A rehearsal only ever gets the phone assistant's own two tools.
+    if (voice && voice.mode === 'reception') {
+      if (name === 'quote_price') return await voiceReceptionQuote(args.items, args.rural);
+      if (name === 'take_booking') return voiceReceptionBooking(args);
+      return { error: `There is no tool called ${name}.` };
+    }
     if (name === 'list_jobs') return await voiceListJobs(args.when);
     if (name === 'find_job') return await voiceFindJob(args.query);
     if (name === 'business_summary') return await voiceSummary();
@@ -577,7 +614,9 @@ function voiceBuildUi() {
     </div>`;
 
   document.body.append(fab, panel);
-  fab.onclick = () => { if (!voice) voiceStart(); };
+  fab.onclick = () => { if (!voice) voiceStart('owner'); };
+  const rehearse = document.getElementById('receptionTest');
+  if (rehearse) rehearse.onclick = () => { if (!voice) voiceStart('reception'); };
   voiceEl('voiceStop').onclick = () => voiceStop('You ended it.');
   voiceEl('voiceHear').onclick = () => {
     if (!voice || !voice.audio) return;
@@ -588,10 +627,10 @@ function voiceBuildUi() {
 function voiceSetState(text) { const el = voiceEl('voiceState'); if (el) el.textContent = text; }
 function voiceSetSaid(text) { const el = voiceEl('voiceSaid'); if (el) el.textContent = text || ''; }
 function voiceSetHint(text) { const el = voiceEl('voiceHint'); if (el) el.textContent = text || ''; }
-function voiceSetPending(text) {
+function voiceSetPending(text, label = 'Waiting on your yes') {
   const el = voiceEl('voicePending');
   if (!el) return;
-  el.textContent = text ? `Waiting on your yes: ${text}` : '';
+  el.textContent = text ? `${label}: ${text}` : '';
   el.style.display = text ? 'block' : 'none';
 }
 
@@ -652,8 +691,11 @@ async function voiceHandleEvent(raw) {
 
   if (event.type === 'session.started') {
     voice.ready = true;
-    voiceSetState('Listening');
-    voiceSetHint('Try: "What\'s on today?" · "Mark the Devon Street job done"');
+    const rehearsing = voice.mode === 'reception';
+    voiceSetState(rehearsing ? 'Practice call' : 'Listening');
+    voiceSetHint(rehearsing
+      ? 'You are the customer. Nothing you agree to here is saved.'
+      : 'Try: "What\'s on today?" · "Mark the Devon Street job done"');
     return;
   }
   if (event.type === 'session.closed') {
@@ -691,11 +733,11 @@ async function voiceHandleEvent(raw) {
     if (!voice) return;
     voiceSend({ type: 'response.item.create', item: { type: 'function_call_output', call_id: item.call_id, output: JSON.stringify(output) } });
     voiceSend({ type: 'response.create' });
-    voiceSetState('Listening');
+    voiceSetState(voice && voice.mode === 'reception' ? 'Practice call' : 'Listening');
   }
 }
 
-async function voiceStart() {
+async function voiceStart(mode = 'owner') {
   if (voice) return;
   voiceBuildUi();
   if (!ownerToken) {
@@ -718,6 +760,7 @@ async function voiceStart() {
   voiceEl('voiceHear').style.display = 'none';
 
   const session = {
+    mode,
     pc: null, dc: null, mic: null, audio: null, meter: null, timer: null,
     startedAt: Date.now(), activeAt: Date.now(), hiddenAt: Date.now(),
     handled: new Set(), ready: false, finalised: false,
@@ -782,7 +825,7 @@ async function voiceStart() {
     const res = await boundedFetch(`${API}/owner/live-session`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${ownerToken}` },
-      body: JSON.stringify({ sdp: pc.localDescription.sdp })
+      body: JSON.stringify({ sdp: pc.localDescription.sdp, mode })
     }, 25000);
     let data = {};
     try { data = await res.json(); } catch (error) { data = {}; }
@@ -801,8 +844,10 @@ async function voiceStart() {
     session.startedAt = Date.now();
     session.activeAt = Date.now();
     session.timer = setInterval(voiceTick, 1000);
-    voiceSetState('Listening');
-    voiceSetHint('Try: "What\'s on today?" · "Mark the Devon Street job done"');
+    voiceSetState(mode === 'reception' ? 'Practice call' : 'Listening');
+    voiceSetHint(mode === 'reception'
+      ? 'You are the customer. Nothing you agree to here is saved.'
+      : 'Try: "What\'s on today?" · "Mark the Devon Street job done"');
   } catch (error) {
     if (voice === session) {
       voiceCleanup(error && error.message === 'cancelled' ? '' : `Couldn't start: ${error && error.message ? error.message : 'microphone or network problem'}`);

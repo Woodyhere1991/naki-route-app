@@ -99,7 +99,9 @@ test('the session is built with GPT-Live, a backend model and every tool the app
     const payload = JSON.parse(sent.options.body);
     assert.equal(payload.session.model, 'gpt-live-1');
     assert.equal(payload.transport.type, 'webrtc');
-    assert.equal(payload.transport.sdp, OFFER.trim());
+    // An SDP offer has to end with a newline, so the trailing one is kept and
+    // added back when the browser leaves it off.
+    assert.equal(payload.transport.sdp, OFFER);
     assert.equal(payload.session.delegation.type, 'responses');
     assert.ok(payload.session.delegation.responses.model.startsWith('gpt-5'));
 
@@ -114,9 +116,21 @@ test('the session is built with GPT-Live, a backend model and every tool the app
     for (const name of names) {
       assert.ok(app.includes(`name === '${name}'`), `${name} is declared but the app never handles it`);
     }
-    const handled = [...app.matchAll(/name === '([a-z_]+)'/g)].map(match => match[1]).sort();
+    // The app also handles the phone assistant's own tools, for the practice
+    // call. Those are declared only when the session asks for reception mode.
+    const reception = await worker.fetch(new Request('https://local.invalid/v2/owner/live-session', {
+      method: 'POST',
+      headers: { Origin: ORIGIN, 'Content-Type': 'application/json', Authorization: 'Bearer voice-test-token' },
+      body: JSON.stringify({ sdp: OFFER, mode: 'reception' })
+    }), env);
+    assert.equal(reception.status, 200);
+    const receptionTools = JSON.parse(sent.options.body).session.delegation.responses.tools.map(tool => tool.name);
+    assert.deepEqual(receptionTools.sort(), ['quote_price', 'take_booking']);
+
+    const declared = new Set([...names, ...receptionTools]);
+    const handled = [...app.matchAll(/name === '([a-z_]+)'/g)].map(match => match[1]);
     for (const name of handled) {
-      assert.ok(names.includes(name), `the app handles ${name} but the session never declares it`);
+      assert.ok(declared.has(name), `the app handles ${name} but no session declares it`);
     }
 
     // Both prompts have to carry the confirm-first rule, or the gate is the
@@ -582,4 +596,22 @@ test('an empty run answers plainly instead of erroring', async () => {
   const out = await context.voiceRunTool('list_run', {});
   assert.equal(out.still_to_do, 0);
   assert.match((await context.voiceRunTool('mark_stop_done', { query: 'next' })).error, /nothing left/);
+});
+
+test('an offer missing its trailing newline gets one, rather than being rejected', async () => {
+  const { env, db } = await signedEnv({ OPENAI_API_KEY: 'sk-test' });
+  const original = globalThis.fetch;
+  let sent = null;
+  globalThis.fetch = async (url, options) => {
+    sent = JSON.parse(options.body);
+    return new Response(JSON.stringify({ session: { id: 's' }, transport: { sdp: 'v=0 answer' } }), { status: 200 });
+  };
+  try {
+    const res = await worker.fetch(sessionRequest({ sdp: OFFER.trimEnd() }), env);
+    assert.equal(res.status, 200);
+    const tail = sent.transport.sdp.slice(-2);
+    assert.equal(tail.charCodeAt(0), 13);
+    assert.equal(tail.charCodeAt(1), 10);
+    assert.ok(sent.transport.sdp.startsWith('v=0'));
+  } finally { globalThis.fetch = original; db.close(); }
 });
