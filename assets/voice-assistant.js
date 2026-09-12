@@ -18,7 +18,13 @@
 const VOICE_RATE_PER_MIN = 0.05;        // USD, GPT-Live wall-clock time
 const VOICE_IDLE_MS = 90000;            // quiet this long and we hang up
 const VOICE_MAX_MS = 15 * 60000;        // hard cap on one session
-const VOICE_HIDDEN_MS = 20000;          // phone locked or app swapped away
+// He swaps to Google Maps mid-run and still wants to be heard, so a hidden app
+// is no longer treated as "he has walked away". The idle timer above still
+// hangs up on silence, which is what actually protects the bill.
+// Caveat worth knowing: on iPhone the browser suspends the microphone once the
+// app is in the background, so the session stays open but stops hearing him
+// until he swaps back. Nothing in a web app can change that.
+const VOICE_HIDDEN_MS = 10 * 60000;     // phone locked or app swapped away
 const VOICE_CONFIRM_MS = 120000;        // a pending yes goes stale after this
 const VOICE_MIC_LEVEL = 0.012;          // RMS that counts as "someone is talking"
 
@@ -503,6 +509,102 @@ function voiceAddStops(which) {
   });
 }
 
+/* ---------- route order ---------- */
+
+async function voiceOptimiseRoute(fromHere) {
+  if (typeof optimise !== 'function') {
+    return { error: 'The route optimiser is not loaded. Tell him it needs the app.' };
+  }
+  const count = voiceStops().length;
+  if (count < 2) return { ok: true, note: 'There are not enough stops on the run to reorder.' };
+
+  // "From where I am" needs a GPS fix first. routeStartOverride is the app's
+  // one-off start, so the saved start address is left alone.
+  let startedFrom = 'the saved start address';
+  if (fromHere) {
+    const fix = await new Promise(resolve => {
+      if (!navigator.geolocation) return resolve(null);
+      navigator.geolocation.getCurrentPosition(
+        pos => resolve({ lat: pos.coords.latitude, lng: pos.coords.longitude, label: 'My current location' }),
+        () => resolve(null),
+        { enableHighAccuracy: true, timeout: 10000 }
+      );
+    });
+    if (fix) {
+      routeStartOverride = fix;
+      startedFrom = 'where the truck is now';
+    }
+  }
+  state.manual = false;
+  await optimise();
+
+  const order = voiceStops().slice(0, 3).map(stop => fullName(stop) || stop.town || 'a stop');
+  return {
+    ok: true,
+    stops: count,
+    from: startedFrom,
+    note_if_no_fix: fromHere && startedFrom !== 'where the truck is now'
+      ? 'Could not get a GPS fix, so it used the saved start address instead. Tell him.'
+      : undefined,
+    first_few: order,
+    note: 'Route reordered. Read back the first stop or two, not the whole list.'
+  };
+}
+
+/* ---------- messaging one customer ---------- */
+
+function voiceEmailCustomer(query, subject, message) {
+  const found = voiceResolveStop(query);
+  if (!found.stop) return found;
+  const stop = found.stop;
+  const who = fullName(stop) || 'that stop';
+  if (!goodEmail(stop.email)) {
+    return { error: who + ' has no email address on the job.' };
+  }
+  const body = String(message || '').trim();
+  if (!body) return { error: 'Ask him what the email should say.' };
+  const line = String(subject || '').trim() || 'Naki Whiteware Removal';
+
+  const summary = 'Email ' + who + ': "' + body.slice(0, 90) + (body.length > 90 ? '…' : '') + '"';
+  return voiceStartConfirm(summary, async () => {
+    const res = await fetch(`${API}/send-bulk`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${ownerToken}` },
+      body: JSON.stringify({
+        subject: line,
+        messages: [{ to: stop.email, name: fullName(stop) || '', body }]
+      })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.sent) throw Error(data.error || 'the email did not go through');
+    return 'Emailed ' + who;
+  });
+}
+
+/* Opens the phone's Messages app with the words ready. It cannot send on his
+   behalf - there is no SMS service behind this, only the handset - so the
+   session is wound up first, the same as making a call. */
+function voiceTextCustomer(query, message) {
+  const found = voiceResolveStop(query);
+  if (!found.stop) return found;
+  const stop = found.stop;
+  const who = fullName(stop) || 'that stop';
+  const number = String(stop.phone || '').replace(/[^\d+]/g, '');
+  if (!number) return { error: who + ' has no phone number on the job.' };
+  const body = String(message || '').trim();
+  if (!body) return { error: 'Ask him what the text should say.' };
+
+  const summary = 'Open a text to ' + who + ': "' + body.slice(0, 90) + (body.length > 90 ? '…' : '') + '" - he taps send';
+  return voiceStartConfirm(summary, async () => {
+    const joiner = /iPad|iPhone|iPod/.test(navigator.userAgent) ? '&body=' : '?body=';
+    setTimeout(() => {
+      voiceStop('Opening the text.');
+      setTimeout(() => { location.href = 'sms:' + number + joiner + encodeURIComponent(body); }, 400);
+    }, 2000);
+    return 'Text to ' + who + ' is ready - tap send';
+  });
+}
+
 function voiceRemoveStop(query) {
   const found = voiceResolveStop(query);
   if (!found.stop) return found;
@@ -675,6 +777,9 @@ async function voiceRunTool(name, args) {
     if (name === 'mark_stop_done') return voiceMarkStopDone(args.query);
     if (name === 'mark_collected') return voiceMarkCollected(args.query);
     if (name === 'add_stops') return voiceAddStops(args.which);
+    if (name === 'optimise_route') return await voiceOptimiseRoute(Boolean(args.from_here));
+    if (name === 'email_customer') return voiceEmailCustomer(args.query, args.subject, args.message);
+    if (name === 'text_customer') return voiceTextCustomer(args.query, args.message);
     if (name === 'list_waiting') return voiceListWaiting();
     if (name === 'remove_stop') return voiceRemoveStop(args.query);
     if (name === 'mark_paid') return voiceMarkPaid(args.query);
@@ -765,9 +870,16 @@ function voiceTick() {
     meter.textContent = `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')} · about $${cost.toFixed(2)}`;
   }
   if (elapsed > VOICE_MAX_MS) { voiceStop('Fifteen minutes up — hung up to stop the meter running.'); return; }
-  if (Date.now() - voice.activeAt > VOICE_IDLE_MS) { voiceStop('Quiet for a minute and a half — hung up to save credit.'); return; }
+  // While the app is in the background the silence timer is paused: some phones
+  // mute the microphone the moment you swap away, so "quiet" there means the
+  // operating system muted him, not that he has finished. The hidden timer
+  // below is what closes a session he has walked away from.
+  if (!document.hidden && Date.now() - voice.activeAt > VOICE_IDLE_MS) {
+    voiceStop('Quiet for a minute and a half — hung up to save credit.');
+    return;
+  }
   if (document.hidden && Date.now() - voice.hiddenAt > VOICE_HIDDEN_MS) {
-    voiceStop('Phone went away — hung up to save credit.');
+    voiceStop('App was away ten minutes — hung up to save credit.');
   }
 }
 

@@ -6135,7 +6135,12 @@ function mapsDirUrl(s){
 }
 window.navStop = id => {
   const s = findStop(id); if(!s) return;
-  const url = mapsDirUrl(s); if (url) window.open(url, "_blank");
+  const url = mapsDirUrl(s); if (!url) return;
+  // window.open only survives a real tap. When the voice assistant calls this
+  // there has been no gesture, so the phone blocks the popup or leaves a blank
+  // tab sitting there - go straight to the maps app instead.
+  const opened = window.open(url, "_blank");
+  if (!opened || opened.closed) location.href = url;
 };
 // Stops saved before this check existed carry no confirmed address, so the card
 // couldn't show where Navigate would really take Woody. Fill them in quietly.

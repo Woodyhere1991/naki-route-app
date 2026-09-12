@@ -128,6 +128,51 @@ function toolsFor() {
     },
     {
       type: "function",
+      name: "optimise_route",
+      description: "Put today's stops in the best driving order, using real road times. Takes effect straight away - no confirmation needed. Use this for 'optimise the route', 'sort the order out', 'what's the best way round'.",
+      parameters: {
+        type: "object",
+        properties: {
+          from_here: {
+            type: "boolean",
+            description: "True when he wants it worked out from where the truck is right now, rather than from the saved start address. 'From here' or 'from where I am' means true."
+          }
+        },
+        required: [],
+        additionalProperties: false
+      }
+    },
+    {
+      type: "function",
+      name: "email_customer",
+      description: "Send a plain email to one customer on the run. Use for anything that is not a receipt - running late, a question, confirming a change. Waits for a yes.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "Which stop: a name, street or town." },
+          subject: { type: "string", description: "A short subject line." },
+          message: { type: "string", description: "The email, written in Woody's voice: short, friendly, plain. No greeting padding." }
+        },
+        required: ["query", "message"],
+        additionalProperties: false
+      }
+    },
+    {
+      type: "function",
+      name: "text_customer",
+      description: "Open a text message to one customer with the words already typed in. It does NOT send - Woody taps send himself, and the app closes the voice session to hand over to Messages. Tell him that. Waits for a yes.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "Which stop: a name, street or town." },
+          message: { type: "string", description: "The text, in Woody's voice. Short." }
+        },
+        required: ["query", "message"],
+        additionalProperties: false
+      }
+    },
+    {
+      type: "function",
       name: "list_waiting",
       description: "Bookings that are NOT on a pickup run yet, grouped by town. Use this before adding stops, or when he asks what is waiting to be put on the run.",
       parameters: { type: "object", properties: {}, required: [], additionalProperties: false }
@@ -326,8 +371,8 @@ function backendInstructions() {
     "Turn what he says into a real date using today's date above. 'Tomorrow', 'Thursday' and 'next Tuesday' all mean the next one coming up. Always say the day back to him in words so he can catch a mistake before it is saved.",
     "",
     "WHAT HAPPENS STRAIGHT AWAY, AND WHAT WAITS FOR A YES",
-    "These run the moment you call them, because he is driving and they are easy to undo: navigate_to, call_customer, set_priority, mark_stop_done, mark_collected. Just tell him it is done. Do not ask him to confirm these.",
-    "Everything that spends money, moves money, emails a customer or deletes something waits for a yes: add_stops, remove_stop, mark_paid, send_receipt, set_payment_reminder, cancel_payment_reminder, mark_job, confirm_pickup.",
+    "These run the moment you call them, because he is driving and they are easy to undo: navigate_to, call_customer, set_priority, mark_stop_done, mark_collected, optimise_route. Just tell him it is done. Do not ask him to confirm these.",
+    "Everything that spends money, moves money, emails a customer or deletes something waits for a yes: add_stops, email_customer, text_customer, remove_stop, mark_paid, send_receipt, set_payment_reminder, cancel_payment_reminder, mark_job, confirm_pickup.",
     "",
     "ADDING STOPS - HE DOES THESE IN BATCHES",
     "add_stops takes as many stops as he wants in one call. A whole town, a handful of names, or the lot. Pass what he said straight through in 'which' - do not split it up, do not ask him to name them one at a time, and never tell him you can only do one job at a time. He adds them in batches because he collects them in one trip, and being made to repeat himself per stop while driving is useless to him.",
@@ -346,8 +391,9 @@ function backendInstructions() {
     "Say what went wrong in one plain sentence. Do not retry the same call more than once. If a job cannot be found, say so and ask him for the street or the town.",
     "",
     "WHAT YOU CANNOT DO YET",
-    "You cannot send invoices, send texts, or email a whole group at once, and you cannot reorder the run by hand or move pins on the map. Those still need the app. If he asks for one, say so plainly in one sentence and move on.",
-    "Adding stops is NOT on this list any more - you can do that with add_stops."
+    "You cannot send invoices, or email a whole group at once, and you cannot move pins on the map. Those still need the app. If he asks for one, say so plainly in one sentence and move on.",
+    "text_customer does not actually send the text - it opens Messages with the words ready and he taps send. Say so when he asks for a text.",
+    "Adding stops and optimising the route are NOT on this list any more - use add_stops and optimise_route."
   ].join("\n");
 }
 
