@@ -104,7 +104,9 @@ test('pickup route timing still works with the map library absent',async()=>{
 
 test('server search finds an old booking and its paperwork beyond the old list limits',async()=>{
   const {env,db}=await signedEnv();
-  const columns=['id','customer_id','status','first_name','last_name','phone','email','street_address','town','area','rural_option','items_json','additional_info','referral_source','referral_details','total_cents','quote_required','quote_cents','quote_note','quoted_at','photo_count','sheet_sync_status','pickup_date','pickup_window','customer_note','cancellation_reason','cancelled_at','created_at','updated_at','external_key'];
+  // Mirrors the real bookings table, including the columns later migrations add
+  // (requested_date/requested_window) that the owner list selects.
+  const columns=['id','customer_id','status','first_name','last_name','phone','email','street_address','town','area','rural_option','items_json','additional_info','referral_source','referral_details','total_cents','quote_required','quote_cents','quote_note','quoted_at','photo_count','sheet_sync_status','pickup_date','pickup_window','requested_date','requested_window','customer_note','cancellation_reason','cancelled_at','created_at','updated_at','external_key'];
   for(const table of ['bookings','jotform_bookings','external_bookings']) db.exec(`CREATE TABLE ${table} (${columns.map(c=>c==='created_at'?c+' INTEGER':c+' TEXT').join(',')})`);
   db.exec('CREATE TABLE booking_events(id TEXT,booking_id TEXT,event_type TEXT); CREATE TABLE booking_documents(id TEXT,booking_id TEXT,email TEXT,kind TEXT,amount_cents INTEGER,reference TEXT,created_at INTEGER,items_json TEXT,address TEXT,filename TEXT,r2_key TEXT);');
   const insert=db.prepare('INSERT INTO bookings(id,status,first_name,last_name,email,street_address,town,items_json,created_at) VALUES(?,?,?,?,?,?,?,?,?)');

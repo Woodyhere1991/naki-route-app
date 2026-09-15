@@ -136,6 +136,17 @@ function clean(value, max = 200) {
   return String(value == null ? "" : value).trim().slice(0, max);
 }
 
+// A pickup day the customer asked for. Accepts only a real calendar date in
+// YYYY-MM-DD form, so nothing a customer types can end up rendered as markup or
+// stored as a nonsense "date" in the owner app.
+function isoDate(value) {
+  const text = clean(value, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) return "";
+  const parsed = new Date(`${text}T12:00:00Z`);
+  if (Number.isNaN(parsed.getTime())) return "";
+  return parsed.toISOString().slice(0, 10) === text ? text : "";
+}
+
 function email(value) {
   return clean(value, 160).toLowerCase();
 }
@@ -549,6 +560,9 @@ function bookingFrom(row) {
     source,
     pickupDate: row.pickup_date || "",
     pickupWindow: row.pickup_window || "",
+    // What the customer asked for, as opposed to the day that is confirmed.
+    requestedDate: row.requested_date || "",
+    requestedWindow: row.requested_window || "",
     customerNote: row.customer_note || "",
     cancellationReason: row.cancellation_reason || "",
     cancelledAt: row.cancelled_at ? new Date(row.cancelled_at).toISOString() : "",
@@ -786,6 +800,12 @@ function bookingDetails(profile, items, additionalInfo, price, bookingId = "") {
   ];
   items.forEach((item, index) => lines.push(`Appliance ${index + 1}: ${item}`));
   if (additionalInfo) lines.push(`Comments or additional details: ${additionalInfo}`);
+  // The day they asked for, worded as a preference so it is never mistaken for a
+  // confirmed pickup day.
+  const wanted = pickupDateText(profile.requested_date);
+  if (wanted) {
+    lines.push(`Day they asked for (not yet confirmed): ${wanted}${profile.requested_window ? ` - ${profile.requested_window}` : ""}`);
+  }
   if (profile.referral_source) {
     lines.push(`Found us: ${profile.referral_source}${profile.referral_details ? ` - ${profile.referral_details}` : ""}`);
   }
@@ -809,7 +829,13 @@ Naki Whiteware Removal`;
 }
 
 function ownerNotificationText(profile, items, additionalInfo, price, bookingId) {
-  return `A new customer booking was made through the Naki Whiteware website.
+  // The day the customer asked for is the first thing Woody needs to see, and it
+  // is not the confirmed day - so it is stated as a request, never as a booking.
+  const wanted = pickupDateText(profile.requested_date);
+  const request = wanted
+    ? `\n\n⭐ THEY ASKED FOR: ${wanted}${profile.requested_window ? ` (${profile.requested_window})` : ""}`
+    : "";
+  return `A new customer booking was made through the Naki Whiteware website.${request}
 
 ${bookingDetails(profile, items, additionalInfo, price, bookingId)}
 
@@ -1567,6 +1593,18 @@ async function clearPhotos(env, bookingId, count) {
   if (!env.PHOTOS || total < 1) return;
   await Promise.all(
     Array.from({ length: total }, (_, index) => env.PHOTOS.delete(`photo:${bookingId}:${index}`))
+  );
+}
+
+// Removes only the photo slots past the ones just written, so a replacement set
+// can never delete itself. Used when a booking's photos are changed.
+async function clearPhotosFrom(env, bookingId, from, previousCount) {
+  const total = Math.min(Number(previousCount || 0), MAX_PHOTOS);
+  const start = Math.min(Number(from || 0), MAX_PHOTOS);
+  if (!env.PHOTOS || total <= start) return;
+  await Promise.all(
+    Array.from({ length: total - start }, (_, offset) =>
+      env.PHOTOS.delete(`photo:${bookingId}:${start + offset}`))
   );
 }
 
@@ -2724,9 +2762,17 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
       const defaultIndex = Math.max(0, addresses.findIndex(address => address.isDefault));
       addresses.forEach((address, index) => { address.isDefault = index === defaultIndex; });
       const primary = addresses[defaultIndex];
-      if (!firstName || !lastName || phone.replace(/\D/g, "").length < 8 || !primary ||
-          addresses.some(address => !address.streetAddress || !address.town || !Object.hasOwn(RURAL_PRICES, address.ruralOption))) {
-        return json(request, { error: "Please complete your name, phone, address, town and pickup area" }, 400);
+      // One name is enough, matching the customer form and the owner-side
+      // endpoints: plenty of people only ever give a first name, and demanding a
+      // surname blocked them from saving their profile at all. Name whatever is
+      // actually missing, so a refusal is never a puzzle.
+      if (!firstName && !lastName) return json(request, { error: "Please add your name" }, 400);
+      if (phone.replace(/\D/g, "").length < 8) return json(request, { error: "Please add a phone number we can reach you on" }, 400);
+      if (!primary || !primary.streetAddress || !primary.town || !Object.hasOwn(RURAL_PRICES, primary.ruralOption)) {
+        return json(request, { error: "Please add your pickup address, town and pickup area" }, 400);
+      }
+      if (addresses.some(address => !address.streetAddress || !address.town || !Object.hasOwn(RURAL_PRICES, address.ruralOption))) {
+        return json(request, { error: "Please complete every saved pickup address" }, 400);
       }
       if (!REFERRAL_OPTIONS.has(referralSource)) return json(request, { error: "Choose how you found us" }, 400);
       if (referralSource === "Other" && !referralDetails) return json(request, { error: "Please tell us where you found us" }, 400);
@@ -2783,8 +2829,10 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
       await env.CUSTOMER_DB.batch([
         env.CUSTOMER_DB.prepare(
           `UPDATE bookings SET items_json=?1, additional_info=?2, total_cents=?3, quote_required=?4,
-             quote_cents=0, quote_note='', quoted_at=NULL, updated_at=?5 WHERE id=?6`
-        ).bind(JSON.stringify(items), additionalInfo, price.cents, price.quoteRequired ? 1 : 0, updatedAt, bookingId),
+             quote_cents=0, quote_note='', quoted_at=NULL, updated_at=?5,
+             requested_date=?7, requested_window=?8 WHERE id=?6`
+        ).bind(JSON.stringify(items), additionalInfo, price.cents, price.quoteRequired ? 1 : 0, updatedAt, bookingId,
+          isoDate(body.requestedDate), clean(body.requestedWindow, 40)),
         env.CUSTOMER_DB.prepare(
           "INSERT INTO booking_events (id, booking_id, event_type, detail, created_at) VALUES (?1, ?2, 'CHANGED', ?3, ?4)"
         ).bind(crypto.randomUUID(), bookingId, `Customer updated the item list (${items.length} item${items.length === 1 ? "" : "s"})`, updatedAt)
@@ -2817,11 +2865,20 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
       }
       let body = {};
       try { body = await request.json(); } catch { /* handled below */ }
-      await clearPhotos(env, bookingId, booking.photo_count);
       let bookingItems = [];
       try { bookingItems = JSON.parse(booking.items_json || "[]"); } catch { bookingItems = []; }
-      const photos = Array.isArray(body.photos) ? body.photos.slice(0, bookingItems.length) : [];
+      // Only touch the stored photos when a photo list was actually supplied.
+      // Clearing the old set first and then saving meant a failed upload (or a
+      // page that never loaded the photos) destroyed them with nobody warned.
+      if (!Array.isArray(body.photos)) {
+        return json(request, { ok: true, photoCount: Number(booking.photo_count || 0) });
+      }
+      const photos = body.photos.slice(0, bookingItems.length);
       const photoCount = await savePhotos(env, bookingId, photos);
+      // savePhotos writes photo:0..n-1, so any slot the new list no longer fills
+      // still holds an old photo and has to go. Slots below the new count were
+      // just overwritten and must not be deleted.
+      await clearPhotosFrom(env, bookingId, photoCount, booking.photo_count);
       await env.CUSTOMER_DB.prepare("UPDATE bookings SET photo_count=?1, updated_at=?2 WHERE id=?3")
         .bind(photoCount, now(), bookingId).run();
       return json(request, { ok: true, photoCount });
@@ -2911,6 +2968,15 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
       const profile = await customerProfile(env, session.customer_id);
       const savedAddresses = await customerAddresses(env, session.customer_id);
       const requestedAddressId = clean(body.addressId, 100);
+      // A chosen address that no longer matches must not be quietly swapped for
+      // the default: the truck would be sent to the wrong place with no warning.
+      // Address ids are re-minted whenever the profile is saved, so a stale id is
+      // a real possibility, not a hypothetical one.
+      if (requestedAddressId && !savedAddresses.some(address => address.id === requestedAddressId)) {
+        return json(request, {
+          error: "That pickup address has changed since this page loaded. Please choose it again."
+        }, 409);
+      }
       const selectedAddress = savedAddresses.find(address => address.id === requestedAddressId) ||
         savedAddresses.find(address => address.isDefault) || savedAddresses[0] || (
           profile?.street_address && profile?.town && Object.hasOwn(RURAL_PRICES, profile?.rural_option)
@@ -2936,7 +3002,13 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
       const price = calculate(items, selectedAddress.ruralOption);
       const createdAt = now();
       const bookingId = `WEB-${createdAt}-${randomToken(6)}`;
-      const additionalInfo = clean(body.additionalInfo || selectedAddress.accessNotes, 1500);
+      // Only fall back to the saved access notes when the customer did not send
+      // the field at all. `"" || saved` treated a deliberately cleared box as
+      // "no answer" and put a stale note (an old gate code, "dog in yard") back
+      // into the booking the customer had just emptied.
+      const additionalInfo = body.additionalInfo != null
+        ? clean(body.additionalInfo, 1500)
+        : clean(selectedAddress.accessNotes, 1500);
       const share = await shareReferralFromToken(env, body.refToken, session.customer_id);
       const referralSource = share ? share.source : (profile.referral_source || "");
       const referralDetails = share ? share.details : (profile.referral_details || "");
@@ -2955,12 +3027,16 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
           `INSERT INTO bookings (
             id, customer_id, status, first_name, last_name, phone, email, street_address, town, area,
             rural_option, items_json, additional_info, referral_source, referral_details,
-            total_cents, quote_required, created_at, updated_at
-          ) VALUES (?1, ?2, 'NEW', ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?17)`
+            total_cents, quote_required, created_at, updated_at,
+            requested_date, requested_window
+          ) VALUES (?1, ?2, 'NEW', ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?17, ?18, ?19)`
         ).bind(
           bookingId, session.customer_id, profile.first_name, profile.last_name, profile.phone, profile.email,
           pickupProfile.street_address, pickupProfile.town, pickupProfile.area, pickupProfile.rural_option, JSON.stringify(items),
-          additionalInfo, referralSource, referralDetails, price.cents, price.quoteRequired ? 1 : 0, createdAt
+          additionalInfo, referralSource, referralDetails, price.cents, price.quoteRequired ? 1 : 0, createdAt,
+          // What the customer asked for. Only a plain date is accepted, never free
+          // text, so it can be shown safely in the owner app and the emails.
+          isoDate(body.requestedDate), clean(body.requestedWindow, 40)
         ),
         env.CUSTOMER_DB.prepare(
           "INSERT INTO booking_events (id, booking_id, event_type, detail, created_at) VALUES (?1, ?2, 'CREATED', 'Customer website', ?3)"
@@ -3364,11 +3440,12 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
           `INSERT INTO bookings (
             id, customer_id, status, first_name, last_name, phone, email, street_address, town, area,
             rural_option, items_json, additional_info, referral_source, referral_details,
-            total_cents, quote_required, created_at, updated_at
-          ) VALUES (?1, ?2, 'NEW', ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 'Phone', 'Taken by Woody', ?13, ?14, ?15, ?15)`
+            total_cents, quote_required, created_at, updated_at, requested_date
+          ) VALUES (?1, ?2, 'NEW', ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 'Phone', 'Taken by Woody', ?13, ?14, ?15, ?15, ?16)`
         ).bind(
           bookingId, customerId, firstName, lastName, phone, address, streetAddress, town, area,
-          ruralOption, JSON.stringify(items), additionalInfo, price.cents, price.quoteRequired ? 1 : 0, createdAt
+          ruralOption, JSON.stringify(items), additionalInfo, price.cents, price.quoteRequired ? 1 : 0, createdAt,
+          isoDate(body.requestedDate)
         ),
         env.CUSTOMER_DB.prepare(
           "INSERT INTO booking_events (id, booking_id, event_type, detail, created_at) VALUES (?1, ?2, 'CREATED', 'Taken by Woody', ?3)"
@@ -3401,7 +3478,8 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
             rural_option, items_json, additional_info, referral_source, referral_details,
             total_cents, quote_required, quote_cents, quote_note, quoted_at, photo_count,
             sheet_sync_status, 'WEBSITE' AS booking_source, '' AS external_key,
-            pickup_date, pickup_window, customer_note, cancellation_reason, cancelled_at, created_at,
+            pickup_date, pickup_window, requested_date, requested_window,
+            customer_note, cancellation_reason, cancelled_at, created_at,
             (SELECT COUNT(*) FROM booking_events e
               WHERE e.booking_id = bookings.id AND e.event_type = 'EMAIL_FAILED') AS email_failed
           FROM bookings
@@ -3410,7 +3488,8 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
             rural_option, items_json, additional_info, referral_source, referral_details,
             total_cents, quote_required, quote_cents, quote_note, quoted_at, 0 AS photo_count,
             sheet_sync_status, 'JOTFORM' AS booking_source, '' AS external_key,
-            pickup_date, pickup_window, customer_note, cancellation_reason, cancelled_at, created_at,
+            pickup_date, pickup_window, '' AS requested_date, '' AS requested_window,
+            customer_note, cancellation_reason, cancelled_at, created_at,
             0 AS email_failed
           FROM jotform_bookings
           UNION ALL
@@ -3418,7 +3497,8 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
             rural_option, items_json, additional_info, '' AS referral_source, '' AS referral_details,
             total_cents, quote_required, quote_cents, quote_note, quoted_at, 0 AS photo_count,
             'PICKUP_RUN' AS sheet_sync_status, 'PICKUP_RUN' AS booking_source, external_key,
-            pickup_date, pickup_window, customer_note, cancellation_reason, cancelled_at, created_at,
+            pickup_date, pickup_window, '' AS requested_date, '' AS requested_window,
+            customer_note, cancellation_reason, cancelled_at, created_at,
             0 AS email_failed
           FROM external_bookings
         ) WHERE (?1='' OR LOWER(COALESCE(first_name,'')||' '||COALESCE(last_name,'')||' '||COALESCE(street_address,'')||' '||COALESCE(town,'')||' '||COALESCE(email,'')||' '||COALESCE(phone,'')) LIKE ?2) ORDER BY CASE status WHEN 'NEW' THEN 0 WHEN 'CONFIRMED' THEN 1 WHEN 'ADDED_TO_RUN' THEN 1 WHEN 'CONTACTED' THEN 2 ELSE 3 END, CASE WHEN status IN ('CONFIRMED','ADDED_TO_RUN') THEN COALESCE(NULLIF(pickup_date,''),'9999') ELSE '9999' END, created_at DESC, id LIMIT 301 OFFSET ?3`,"bookings");

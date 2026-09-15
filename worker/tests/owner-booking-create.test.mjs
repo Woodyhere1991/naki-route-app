@@ -8,14 +8,12 @@ const json = (_r, data, status = 200) => Response.json(data, { status });
 
 async function setup() {
   const db = new DatabaseSync(':memory:');
-  for (const file of [
-    '0001_customer_accounts.sql',
-    '0003_pickup_run_history.sql',
-    '0004_jotform_bookings.sql',
-    '0008_quotes_photos_documents.sql',
-    '0009_saved_customer_addresses.sql'
-  ]) db.exec(fs.readFileSync(new URL('../migrations/' + file, import.meta.url), 'utf8'));
-  db.exec('ALTER TABLE booking_documents ADD COLUMN r2_key TEXT;');
+  db.exec('PRAGMA foreign_keys = ON;');
+  // The whole chain in order, as production ran it. Listing files by hand let a
+  // later migration add a column this endpoint needs without the test knowing.
+  for (const file of fs.readdirSync(new URL('../migrations/', import.meta.url)).filter(n => n.endsWith('.sql')).sort()) {
+    db.exec(fs.readFileSync(new URL('../migrations/' + file, import.meta.url), 'utf8'));
+  }
   const hash = Buffer.from(await crypto.subtle.digest('SHA-256', new TextEncoder().encode('owner-booking-test'))).toString('base64url');
   db.prepare("INSERT INTO sessions(token_hash,role,email,created_at,last_seen_at,expires_at) VALUES(?,'owner','owner@example.test',0,0,?)")
     .run(hash, Date.now() + 600000);
