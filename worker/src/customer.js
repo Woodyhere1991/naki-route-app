@@ -1170,14 +1170,18 @@ async function markSheetFailure(env, bookingId, error, table = "bookings") {
 export async function purgeExpiredAuth(env) {
   if (!env.CUSTOMER_DB) return { sessions: 0, codes: 0 };
   const cutoff = now();
-  const [sessions, codes] = await env.CUSTOMER_DB.batch([
+  const [sessions, codes, dropoffs] = await env.CUSTOMER_DB.batch([
     env.CUSTOMER_DB.prepare("DELETE FROM sessions WHERE expires_at < ?1").bind(cutoff),
     // Keep a day of expired codes so the "3 codes per 10 minutes" limit still counts them.
-    env.CUSTOMER_DB.prepare("DELETE FROM login_codes WHERE expires_at < ?1").bind(cutoff - 24 * 60 * 60 * 1000)
+    env.CUSTOMER_DB.prepare("DELETE FROM login_codes WHERE expires_at < ?1").bind(cutoff - 24 * 60 * 60 * 1000),
+    // A year of "where people got stuck" is plenty to spot a pattern, and keeps a
+    // public endpoint from growing the table forever.
+    env.CUSTOMER_DB.prepare("DELETE FROM booking_dropoffs WHERE created_at < ?1").bind(cutoff - 365 * 24 * 60 * 60 * 1000)
   ]);
   return {
     sessions: Number(sessions?.meta?.changes || 0),
-    codes: Number(codes?.meta?.changes || 0)
+    codes: Number(codes?.meta?.changes || 0),
+    dropoffs: Number(dropoffs?.meta?.changes || 0)
   };
 }
 
@@ -1684,6 +1688,17 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
     if (!stage || !DROPOFF_REASONS.has(reason)) return json(request, { error: "Unknown reason" }, 400);
     const detail = clean(body.detail, 120);
     try {
+      // A stuck customer will retry a few times, so the budget is generous. It
+      // exists only so a script cannot flood a public write endpoint.
+      const ip = request.headers.get("CF-Connecting-IP") || "unknown";
+      const slot = Math.floor(now() / 600000);
+      const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${ip}|${slot}`));
+      const bucket = `dropoff:${slot}:${Array.from(new Uint8Array(digest), v => v.toString(16).padStart(2, "0")).join("")}`;
+      const reserved = await env.CUSTOMER_DB.prepare(
+        `INSERT INTO auth_request_limits(bucket,used,expires_at) VALUES (?1,1,?2)
+         ON CONFLICT(bucket) DO UPDATE SET used=used+1 WHERE used < 60 RETURNING used`
+      ).bind(bucket, (slot + 1) * 600000).first();
+      if (!reserved) return json(request, { ok: true });
       await env.CUSTOMER_DB.prepare(
         "INSERT INTO booking_dropoffs (id, stage, reason, detail, created_at) VALUES (?1, ?2, ?3, ?4, ?5)"
       ).bind(crypto.randomUUID(), stage, reason, detail, now()).run();

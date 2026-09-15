@@ -14,6 +14,11 @@ async function setup() {
     '0004_jotform_bookings.sql',
     '0026_booking_dropoffs.sql'
   ]) db.exec(fs.readFileSync(new URL('../migrations/' + file, import.meta.url), 'utf8'));
+  // The public endpoint counts against the same fixed-window budget table the
+  // auth limits use (0024 creates it in production).
+  db.exec(`CREATE TABLE IF NOT EXISTS auth_request_limits (
+    bucket TEXT PRIMARY KEY, used INTEGER NOT NULL, expires_at INTEGER NOT NULL
+  );`);
   const ownerHash = Buffer.from(await crypto.subtle.digest('SHA-256', new TextEncoder().encode('dropoff-owner'))).toString('base64url');
   db.prepare("INSERT INTO sessions(token_hash,role,email,created_at,last_seen_at,expires_at) VALUES(?,'owner','owner@example.test',0,0,?)")
     .run(ownerHash, Date.now() + 600000);
@@ -103,5 +108,23 @@ test('the drop-off summary needs an owner sign-in', async () => {
     await post({ stage: 'booking', reason: 'no-pickup-area' });
     assert.equal((await read('')).status, 401);
     assert.equal((await read('not-a-real-token')).status, 401);
+  } finally { db.close(); }
+});
+
+test('a flood of reports is capped but still answers ok', async () => {
+  const { db, post } = await setup();
+  try {
+    // A stuck customer retrying is fine; a script hammering it is not. The cap
+    // is generous (60 per IP per 10 minutes) and beyond it the endpoint still
+    // answers ok so the page never shows an error for telemetry.
+    for (let i = 0; i < 60; i++) {
+      assert.equal((await post({ stage: 'booking', reason: 'no-pickup-area' })).status, 200);
+    }
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM booking_dropoffs').get().n, 60);
+    for (let i = 0; i < 10; i++) {
+      assert.equal((await post({ stage: 'booking', reason: 'no-pickup-area' })).status, 200);
+    }
+    // Nothing beyond the cap was stored.
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM booking_dropoffs').get().n, 60);
   } finally { db.close(); }
 });
