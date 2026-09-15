@@ -1316,9 +1316,12 @@ async function customerProfileResponse(env, customerId) {
 async function customerBookings(env, customerId) {
   const profile = await customerProfile(env, customerId);
   const [direct, pickupRun, jotform] = await Promise.all([
+    // Matched on email as well as id: a booking taken over the phone has no
+    // account to attach to, so it is only linked when that person signs in with
+    // the same email. Without this, their own booking would never appear.
     env.CUSTOMER_DB.prepare(
-      "SELECT * FROM bookings WHERE customer_id = ?1 ORDER BY created_at DESC LIMIT 50"
-    ).bind(customerId).all(),
+      "SELECT * FROM bookings WHERE customer_id = ?1 OR email = ?2 COLLATE NOCASE ORDER BY created_at DESC LIMIT 50"
+    ).bind(customerId, profile?.email || "").all(),
     env.CUSTOMER_DB.prepare(
       `SELECT id, status, first_name, last_name, phone, email, street_address, town, area,
         rural_option, items_json, additional_info, '' AS referral_source, '' AS referral_details,
@@ -1839,6 +1842,11 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
       ).bind(verified.customerId, invite.email),
       env.CUSTOMER_DB.prepare(
         "UPDATE jotform_bookings SET customer_id = ?1 WHERE email = ?2 COLLATE NOCASE AND customer_id IS NULL"
+      ).bind(verified.customerId, invite.email),
+      // Same reason as the plain sign-in: claim any booking taken by phone for
+      // this email, now that an account exists to hang it off.
+      env.CUSTOMER_DB.prepare(
+        "UPDATE bookings SET customer_id = ?1 WHERE email = ?2 COLLATE NOCASE AND customer_id IS NULL"
       ).bind(verified.customerId, invite.email)
     ]);
     const profile = await customerProfile(env, verified.customerId);
@@ -1875,6 +1883,11 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
     ).bind(verified.customerId, address).run();
     await env.CUSTOMER_DB.prepare(
       "UPDATE jotform_bookings SET customer_id = ?1 WHERE email = ?2 COLLATE NOCASE AND customer_id IS NULL"
+    ).bind(verified.customerId, address).run();
+    // A booking taken over the phone has no account at the time, so it is claimed
+    // here on first sign-in with the email the caller gave.
+    await env.CUSTOMER_DB.prepare(
+      "UPDATE bookings SET customer_id = ?1 WHERE email = ?2 COLLATE NOCASE AND customer_id IS NULL"
     ).bind(verified.customerId, address).run();
     const profile = await customerProfile(env, verified.customerId);
     if (verified.customerCreated) await notifyOwnerOfNewCustomer(env, sendMail, profile, "website");
