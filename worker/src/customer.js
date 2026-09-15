@@ -68,6 +68,17 @@ export const RURAL_PRICES = {
 };
 
 const REFERRAL_OPTIONS = new Set(["Google", "Facebook", "Neighbourly", "Find My Local", "AI", "Word of mouth", "Other", ""]);
+// The stages a customer can be blocked at, and the reasons we accept for it.
+// Fixed lists, not free text, so this stays useful to read and safe to store.
+const DROPOFF_STAGES = new Set(["booking", "profile", "signin", "unknown"]);
+const DROPOFF_REASONS = new Set([
+  "bounced-to-profile",  // tapped Request a collection, landed back on the profile
+  "profile-incomplete",  // profile would not save
+  "no-pickup-area",      // never chose a pickup area
+  "server-refused",      // the booking API rejected the request
+  "network-failed",      // the request never reached us
+  "unknown-error"
+]);
 const OWNER_STATUSES = new Set(["NEW", "ADDED_TO_RUN", "CONTACTED", "CONFIRMED", "COMPLETED", "DECLINED", "CANCELLED"]);
 // The arcade games. Anything else posting a score is rejected.
 const ARCADE_GAMES = new Set(["stack", "flap", "tower", "invade", "invade_coop", "dash", "wio", "squad", "spin", "yard", "sumo", "hot", "skip", "hoops"]);
@@ -1659,6 +1670,25 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
 
   if (path === "/jotform/submission" && request.method === "POST") {
     return handleJotformSubmission(request, env, json, sendMail);
+  }
+
+  // Where people give up. Public on purpose - someone who cannot get a booking
+  // through is exactly the person least likely to be signed in. Nothing
+  // identifying is accepted: only a short reason from a fixed list, so this
+  // cannot become a back door for storing customer text.
+  if (path === "/customer/dropoff" && request.method === "POST") {
+    let body = {};
+    try { body = await request.json(); } catch { /* handled below */ }
+    const stage = DROPOFF_STAGES.has(String(body.stage || "")) ? String(body.stage) : "";
+    const reason = clean(body.reason, 60);
+    if (!stage || !DROPOFF_REASONS.has(reason)) return json(request, { error: "Unknown reason" }, 400);
+    const detail = clean(body.detail, 120);
+    try {
+      await env.CUSTOMER_DB.prepare(
+        "INSERT INTO booking_dropoffs (id, stage, reason, detail, created_at) VALUES (?1, ?2, ?3, ?4, ?5)"
+      ).bind(crypto.randomUUID(), stage, reason, detail, now()).run();
+    } catch { /* never let telemetry break the page */ }
+    return json(request, { ok: true });
   }
 
   if (path === "/customer/profile-invite" && request.method === "POST") {
@@ -3258,6 +3288,85 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
       return json(request, { pdfBase64: btoa(bin), filename: doc.filename || "Document.pdf" });
     }
 
+    // Woody taking a booking himself - usually someone who rang because the
+    // website bounced them, or a customer who only ever deals over the phone.
+    // The booking is created exactly like a website one so it appears in their
+    // account, carries the account total and can be put on a run.
+    if (path === "/owner/bookings" && request.method === "POST") {
+      let body = {};
+      try { body = await request.json(); } catch { /* handled below */ }
+      const firstName = clean(body.firstName, 60);
+      const lastName = clean(body.lastName, 60);
+      const phone = clean(body.phone, 30);
+      const address = clean(body.email, 160).toLowerCase();
+      const streetAddress = clean(body.streetAddress, 180);
+      const town = clean(body.town, 100);
+      const area = clean(body.area, 100);
+      const ruralOption = clean(body.ruralOption, 120);
+      const additionalInfo = clean(body.additionalInfo, 1500);
+      if (!firstName && !lastName) return json(request, { error: "Enter at least a first name" }, 400);
+      if (phone.replace(/\D/g, "").length < 8) return json(request, { error: "Enter a phone number we can ring" }, 400);
+      if (!streetAddress || !town) return json(request, { error: "Enter the pickup address and town" }, 400);
+      if (!Object.hasOwn(RURAL_PRICES, ruralOption)) return json(request, { error: "Choose a pickup area" }, 400);
+      const items = Array.isArray(body.items)
+        ? body.items.map(item => clean(item, 80)).filter(Boolean).slice(0, 10)
+        : [];
+      if (!items.length || items.some(item => !Object.hasOwn(ITEM_PRICES, item))) {
+        return json(request, { error: "Choose at least one item from the list" }, 400);
+      }
+      // A booking row's customer_id is NOT NULL and its owner account is what the
+      // booking hangs off, so an owner-taken job always has a customer record.
+      // An email is how that account signs in and how every later booking is
+      // matched back to the same person - so ask for one rather than invent it.
+      if (!EMAIL_RE.test(address)) {
+        return json(request, { error: "A valid email is needed - it is how this booking reaches their account" }, 400);
+      }
+      const price = calculate(items, ruralOption);
+      const createdAt = now();
+      const bookingId = `WEB-${createdAt}-${randomToken(6)}`;
+      let customerId = await customerIdForEmail(env, address);
+      if (!customerId) {
+        customerId = crypto.randomUUID();
+        await env.CUSTOMER_DB.prepare(
+          "INSERT INTO customers (id, email, first_name, last_name, phone, street_address, town, area, rural_option, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10)"
+        ).bind(customerId, address, firstName, lastName, phone, streetAddress, town, area, ruralOption, createdAt).run();
+      }
+      await env.CUSTOMER_DB.batch([
+        env.CUSTOMER_DB.prepare(
+          `INSERT INTO bookings (
+            id, customer_id, status, first_name, last_name, phone, email, street_address, town, area,
+            rural_option, items_json, additional_info, referral_source, referral_details,
+            total_cents, quote_required, created_at, updated_at
+          ) VALUES (?1, ?2, 'NEW', ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 'Phone', 'Taken by Woody', ?13, ?14, ?15, ?15)`
+        ).bind(
+          bookingId, customerId, firstName, lastName, phone, address, streetAddress, town, area,
+          ruralOption, JSON.stringify(items), additionalInfo, price.cents, price.quoteRequired ? 1 : 0, createdAt
+        ),
+        env.CUSTOMER_DB.prepare(
+          "INSERT INTO booking_events (id, booking_id, event_type, detail, created_at) VALUES (?1, ?2, 'CREATED', 'Taken by Woody', ?3)"
+        ).bind(crypto.randomUUID(), bookingId, createdAt)
+      ]);
+      const booking = await env.CUSTOMER_DB.prepare("SELECT * FROM bookings WHERE id = ?1").bind(bookingId).first();
+      try { await syncBookingToSheet(env, booking); }
+      catch (error) { await markSheetFailure(env, bookingId, error); }
+      // A copy by email is the customer's record of the day being arranged. It is
+      // never allowed to lose the booking, so a mail failure is reported, not thrown.
+      const customerEmailed = await sendMail(env, {
+        to: address,
+        name: `${firstName} ${lastName}`.trim(),
+        subject: "Whiteware Collection",
+        text: customerConfirmationText({
+          first_name: firstName, last_name: lastName, phone, email: address,
+          street_address: streetAddress, town, area, rural_option: ruralOption
+        }, items, additionalInfo, price)
+      }).catch(() => false);
+      return json(request, {
+        ok: true,
+        booking: bookingFrom({ ...booking, booking_source: "WEBSITE" }),
+        customerEmailed
+      }, 201);
+    }
+
     if (path === "/owner/bookings" && request.method === "GET") {
       const {rows,documentRows,pagination}=await ownerListPage(request,env,`SELECT * FROM (
           SELECT id, status, first_name, last_name, phone, email, street_address, town, area,
@@ -3325,6 +3434,37 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
       if (!booking) return json(request, { error: "Booking not found" }, 404);
       const photoDetails = await readPhotoDetails(env, bookingId, booking.photo_count);
       return json(request, { photos: photoDetails.map(photo => photo.data), photoDetails });
+    }
+
+    // Where customers actually get stuck - the answer to "why do some people
+    // struggle to book". Counts by reason plus the most recent few, so Woody can
+    // see whether a fix worked without reading any raw log.
+    if (path === "/owner/dropoffs" && request.method === "GET") {
+      const [summary, recent, failures] = await Promise.all([
+        env.CUSTOMER_DB.prepare(
+          `SELECT stage, reason, COUNT(*) AS count FROM booking_dropoffs
+           WHERE created_at > ?1 GROUP BY stage, reason ORDER BY count DESC LIMIT 30`
+        ).bind(now() - 30 * 24 * 60 * 60 * 1000).all(),
+        env.CUSTOMER_DB.prepare(
+          "SELECT stage, reason, detail, created_at FROM booking_dropoffs ORDER BY created_at DESC LIMIT 20"
+        ).all(),
+        // Website bookings the customer's own copy of the email failed to send
+        // for, in the same window. Otherwise nobody notices a silent mail failure.
+        env.CUSTOMER_DB.prepare(
+          `SELECT COUNT(*) AS count FROM booking_events
+           WHERE event_type = 'EMAIL_FAILED' AND created_at > ?1`
+        ).bind(now() - 30 * 24 * 60 * 60 * 1000).first()
+      ]);
+      return json(request, {
+        summary: (summary.results || []).map(row => ({
+          stage: row.stage, reason: row.reason, count: Number(row.count || 0)
+        })),
+        recent: (recent.results || []).map(row => ({
+          stage: row.stage, reason: row.reason, detail: row.detail || "",
+          at: new Date(row.created_at).toISOString()
+        })),
+        emailFailures: Number(failures?.count || 0)
+      });
     }
 
     // Where customers actually come from - collected on every booking, now visible.

@@ -998,6 +998,10 @@ export default {
       return json(request, { error: "Not found" }, 404);
       };
       if (OWNER_ACTIONS.has(path)) {
+        // /owner/bookings is both the bookings LIST (GET) and "take a booking"
+        // (POST). Only the create needs the once-only claim, so a GET has to fall
+        // through to the list handler instead of being answered with 405.
+        if (path === "/owner/bookings" && request.method !== "POST") return await dispatch();
         const session=await sessionFor(request,env,"owner");
         if (!session) return json(request,{error:"Sign in on the Bookings tab to send email or manage reminders."},401);
         if (request.method !== "POST") return json(request,{error:"Method not allowed"},405);

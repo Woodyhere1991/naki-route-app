@@ -1,5 +1,7 @@
 // Atomic claims prevent concurrent taps and uncertain network retries sending twice.
-export const OWNER_ACTIONS = new Set(['/send-bulk','/send-receipt','/send-invoice','/set-reminder','/cancel-reminder','/owner/bookings/bulk-confirm']);
+// "/owner/bookings" is in here because a retried POST would otherwise create a
+// second booking for the same person.
+export const OWNER_ACTIONS = new Set(['/send-bulk','/send-receipt','/send-invoice','/set-reminder','/cancel-reminder','/owner/bookings/bulk-confirm','/owner/bookings']);
 async function digest(text) {
   return Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text))), b=>b.toString(16).padStart(2,'0')).join('');
 }

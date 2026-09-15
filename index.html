@@ -593,7 +593,7 @@
   <section class="view-panel view-customers" id="customerProfiles">
     <div class="view-title direct-head">
       <span>Customers</span>
-      <span><button class="ghost sm" id="addContactBtn">＋ Add contact</button> <button class="ghost sm" id="customersRefresh">Refresh</button></span>
+      <span><button class="ghost sm" id="addContactBtn">＋ Add contact</button> <button class="ghost sm" id="addBookingForBtn">＋ Take a booking</button> <button class="ghost sm" id="customersRefresh">Refresh</button></span>
     </div>
     <div class="list-toolbar" id="customerToolbar" style="display:none">
       <input id="customerSearch" class="grow" placeholder="Search name, town, address, email or phone" />
@@ -612,6 +612,10 @@
     <details class="card" id="insightsCard" style="display:none">
       <summary><b>📊 Where customers come from</b><span class="chev">›</span></summary>
       <div id="insightsBody" class="small muted" style="margin-top:8px">Loading…</div>
+    </details>
+    <details class="card" id="dropoffCard" style="display:none">
+      <summary><b>🚧 Where people get stuck</b><span class="chev">›</span></summary>
+      <div id="dropoffBody" class="small muted" style="margin-top:8px">Loading…</div>
     </details>
   </section>
 
@@ -1228,6 +1232,14 @@ function flash(msg){                       // brief green confirmation in the ac
 }
 
 /* ---------- Direct customer booking inbox ---------- */
+// Sending a booking is a once-only action: a dropped connection must not leave
+// Woody unsure whether it saved, and a retry must not create a second booking.
+// The key is made once and reused for every retry of that same booking.
+function newActionKey(){
+  const bytes=crypto.getRandomValues(new Uint8Array(16));
+  return [...bytes].map(b=>b.toString(16).padStart(2,"0")).join("");
+}
+let createBookingKey="";
 async function ownerApi(path, options={}){
   const headers = { "Content-Type":"application/json", ...(options.headers||{}) };
   if (ownerToken) headers.Authorization = `Bearer ${ownerToken}`;
@@ -2352,6 +2364,7 @@ $("#ownerLogout").onclick=()=>{ownerToken="";localStorage.removeItem(OWNER_TOKEN
 $("#directRefresh").onclick=()=>loadDirectBookings(true);
 $("#customersRefresh").onclick=()=>loadCustomers(true);
 $("#addContactBtn").onclick=()=>addCustomContact();
+$("#addBookingForBtn").onclick=()=>takeBookingFor();
 $("#customerFillBlanks").onclick=()=>fillCustomerBlanksFromJobs();
 $("#bookingSearch").addEventListener("input",event=>{ bookingSearchText=event.target.value.trim().toLowerCase(); renderDirectBookings(); queueOwnerSearch("bookings"); });
 $("#customerSearch").addEventListener("input",event=>{ customerSearchText=event.target.value.trim().toLowerCase(); renderCustomers(); });
@@ -2503,6 +2516,43 @@ async function loadInsights(){
     body.innerHTML=`${rows}
       <div style="margin-top:8px">Busiest towns: ${towns||"—"}</div>
       <div>${data.totals.customers} customer${data.totals.customers===1?"":"s"} · ${data.totals.bookings} booking${data.totals.bookings===1?"":"s"} · ${data.totals.completed} collected</div>`;
+    card.style.display="block";
+  }catch(e){ card.style.display="none"; }
+}
+
+/* ---------- Where people get stuck ---------- */
+// Plain English for the reason codes the booking page reports. Woody should not
+// have to work out what "bounced-to-profile" means.
+const DROPOFF_LABELS={
+  "bounced-to-profile":"Tapped Request a collection but landed back on their details",
+  "profile-incomplete":"Their details would not save",
+  "no-pickup-area":"Never chose a pickup area",
+  "server-refused":"The booking was refused by the server",
+  "network-failed":"Connection dropped while sending",
+  "unknown-error":"Gave up on the booking form"
+};
+async function loadDropoffs(){
+  const card=$("#dropoffCard"), body=$("#dropoffBody");
+  if (!card || !body) return;
+  if (!ownerToken){ card.style.display="none"; return; }
+  try{
+    const data=await ownerApi("/owner/dropoffs");
+    const summary=(data.summary||[]).filter(row=>row.count>0);
+    const total=summary.reduce((sum,row)=>sum+row.count,0);
+    const failures=Number(data.emailFailures||0);
+    if (!total && !failures){ card.style.display="none"; return; }
+    const rows=summary.map(row=>`<div class="row" style="justify-content:space-between;gap:10px">
+      <span>${esc(DROPOFF_LABELS[row.reason]||row.reason)}</span><b>${row.count}</b>
+    </div>`).join("");
+    const recent=(data.recent||[]).slice(0,5).map(row=>{
+      const when=new Date(row.at).toLocaleDateString("en-NZ",{day:"numeric",month:"short"});
+      const what=DROPOFF_LABELS[row.reason]||row.reason;
+      return `<div>${esc(when)} — ${esc(what)}${row.detail?` (${esc(row.detail)})`:""}</div>`;
+    }).join("");
+    body.innerHTML=`${rows}
+      ${failures?`<div style="margin-top:8px">⚠ ${failures} booking email${failures===1?"":"s"} could not be sent — tell those people another way.</div>`:""}
+      <div style="margin-top:8px">Last 30 days. ${total} stuck moment${total===1?"":"s"} — a booking taken by hand instead shows up under Bookings.</div>
+      ${recent?`<div style="margin-top:8px"><b>Most recent</b>${recent}</div>`:""}`;
     card.style.display="block";
   }catch(e){ card.style.display="none"; }
 }
@@ -2687,6 +2737,7 @@ function renderCustomers(){
           ${address?`<a class="ghost sm" target="_blank" rel="noopener" href="https://www.google.com/maps/search/?api=1&amp;query=${encodeURIComponent(safeMapsAddress(c.streetAddress,c.town,c.area))}">🧭 Navigate</a>`:""}
           ${c.bookings ? `<button class="ghost sm" data-customer-bookings="${esc(c.email)}">📋 Their bookings</button>` : ""}
           ${seenAction}
+          <button class="ghost sm" title="Take a booking for this customer" data-take-booking="${esc(c.id)}">📅 Book</button>
           <button class="ghost sm" title="Edit this customer's details" data-edit-customer="${esc(c.id)}">✎ Edit</button>
           <button class="ghost sm" title="Delete this customer" data-delete-customer="${esc(c.id)}">✕ Delete</button>
         </div>`;
@@ -2718,6 +2769,10 @@ function renderCustomers(){
   list.querySelectorAll("[data-edit-customer]").forEach(button=>button.onclick=()=>{
     const id=button.dataset.editCustomer;
     id.startsWith("CONTACT-") ? editCustomContact(id) : editCustomer(id);
+  });
+  list.querySelectorAll("[data-take-booking]").forEach(button=>button.onclick=()=>{
+    const id=button.dataset.takeBooking;
+    id.startsWith("CONTACT-") ? takeBookingForContact(id) : takeBookingForCustomer(id);
   });
   list.querySelectorAll("[data-customer-seen]").forEach(button=>button.onclick=()=>markCustomerSeen(button.dataset.customerSeen));
   rememberOpenCards(list,"details[data-customer-id]",customerCardsOpen,"data-customer-id");
@@ -2864,9 +2919,9 @@ function saveCustomContacts(){ saveJSON(CONTACTS_LS, customContacts); }
 // Same shape the server's customer rows use, so one renderer handles both.
 function customContactRows(){
   return customContacts.map(c=>({
-    id:c.id, firstName:c.firstName||"", lastName:c.lastName||"", phone:c.phone||"", email:"",
+    id:c.id, firstName:c.firstName||"", lastName:c.lastName||"", phone:c.phone||"", email:c.email||"",
     streetAddress:c.streetAddress||"", town:c.town||"", area:c.area||"",
-    ruralOption:"", accessNotes:c.accessNotes||"",
+    ruralOption:c.ruralOption||"", accessNotes:c.accessNotes||"",
     bookings:0, lastBookingAt:"", isNew:false, pwaInstalledAt:"",
     documents:[], sheetSyncStatus:"", source:"CONTACT", custom:true
   }));
@@ -2881,6 +2936,10 @@ async function addCustomContact(){
       { key:"lastName",  label:"Last name",  half:true },
       { key:"phone", label:"Phone", type:"tel", inputmode:"tel",
         validate:v=>v.trim()?"":"A phone number is the one thing worth having here." },
+      // An email is optional for a plain contact, but it is the one detail that
+      // lets a contact become a real booking, so ask for it up front.
+      { key:"email", label:"Email (optional — needed to book for them)", type:"email", inputmode:"email",
+        validate:validEmail },
       { key:"streetAddress", label:"Street address" },
       { key:"town", label:"Town", half:true },
       { key:"area", label:"Area or suburb", half:true },
@@ -2901,6 +2960,8 @@ function editCustomContact(id){
       { key:"firstName", label:"First name", value:c.firstName||"", half:true },
       { key:"lastName",  label:"Last name",  value:c.lastName||"",  half:true },
       { key:"phone", label:"Phone", value:c.phone||"", type:"tel", inputmode:"tel" },
+      { key:"email", label:"Email (needed to book for them)", type:"email", inputmode:"email",
+        value:c.email||"", validate:validEmail },
       { key:"streetAddress", label:"Street address", value:c.streetAddress||"" },
       { key:"town", label:"Town", value:c.town||"", half:true },
       { key:"area", label:"Area or suburb", value:c.area||"", half:true },
@@ -2921,6 +2982,149 @@ function deleteCustomContact(id){
   saveCustomContacts(); renderCustomers();
   flash(`${who} deleted`);
 }
+
+/* ---------- Take a booking for someone ---------- */
+// For the people who ring up because the website bounced them. This creates a
+// real website booking, so it lands in their account and can go straight onto a
+// run — it is not a separate kind of job that only lives on this phone.
+async function takeBookingFor(prefill={}){
+  const items=[];
+  const itemRowsHtml=()=>items.map((value,index)=>`
+    <div class="modal-row" data-take-item="${index}">
+      <div><label>Item ${index+1}</label>
+        <select data-take-item-select="${index}">${BOOKING_ITEMS.map(name=>
+          `<option value="${esc(name)}"${name===value?" selected":""}>${esc(name)}</option>`).join("")}</select>
+      </div>
+      <div style="display:flex;align-items:flex-end">
+        <button type="button" class="ghost sm" data-take-item-remove="${index}">Remove</button>
+      </div>
+    </div>`).join("");
+  const result = await new Promise(resolve=>{
+    const back=$("#formModal"), body=$("#formModalFields");
+    const saveBtn=$("#formModalSave"), cancelBtn=$("#formModalCancel"), errorEl=$("#formModalError");
+    $("#formModalTitle").textContent="➕ Take a booking";
+    const noteEl=$("#formModalNote");
+    noteEl.textContent="Use this when someone rings instead of booking online. It creates the same booking the website would, so it shows in their account and can go on a run.";
+    noteEl.style.display="block";
+    errorEl.style.display="none"; errorEl.textContent="";
+    const field=id=>document.getElementById(id);
+    const fixedFields=()=>[
+      { id:"tb_first", label:"First name", value:prefill.firstName||"", half:true },
+      { id:"tb_last", label:"Last name", value:prefill.lastName||"", half:true },
+      { id:"tb_phone", label:"Phone", value:prefill.phone||"", type:"tel", half:true },
+      { id:"tb_email", label:"Email (reaches their account)", value:prefill.email||"", type:"email", half:true },
+      { id:"tb_street", label:"Street address", value:prefill.streetAddress||"" },
+      { id:"tb_town", label:"Town", value:prefill.town||"", half:true },
+      { id:"tb_area", label:"Area or suburb (optional)", value:prefill.area||"", half:true }
+    ];
+    const render=()=>{
+      let html="";
+      let pending=null;
+      const emit=f=>`<label for="${f.id}">${esc(f.label)}</label><input id="${f.id}" type="${f.type||"text"}" value="${esc(f.value)}" />`;
+      fixedFields().forEach(f=>{
+        if(!f.half){ if(pending){ html+=`<div class="modal-row"><div>${emit(pending)}</div></div>`; pending=null; } html+=emit(f); return; }
+        if(pending){ html+=`<div class="modal-row"><div>${emit(pending)}</div><div>${emit(f)}</div></div>`; pending=null; }
+        else pending=f;
+      });
+      if(pending) html+=emit(pending);
+      html+=`<label for="tb_rural">Pickup area (travel fee)</label>
+        <select id="tb_rural">${TRAVEL_OPTIONS.filter(o=>o.value).map(o=>
+          `<option value="${esc(o.value)}"${o.value===prefill.ruralOption?" selected":""}>${esc(o.label)}</option>`).join("")}</select>`;
+      html+=`<label>What are we collecting?</label><div id="tb_items">${itemRowsHtml()}</div>
+        <button type="button" class="ghost sm" id="tb_addItem">+ Add another item</button>`;
+      html+=`<label for="tb_notes">Notes (access, pets, anything odd) — optional</label>
+        <textarea id="tb_notes" rows="2">${esc(prefill.additionalInfo||"")}</textarea>`;
+      body.innerHTML=html;
+      $("#tb_addItem").onclick=()=>{ if(items.length>=10) return; items.push(BOOKING_ITEMS[0]); render(); };
+      body.querySelectorAll("[data-take-item-select]").forEach(select=>{
+        select.onchange=()=>{ items[Number(select.dataset.takeItemSelect)]=select.value; };
+      });
+      body.querySelectorAll("[data-take-item-remove]").forEach(button=>{
+        button.onclick=()=>{ items.splice(Number(button.dataset.takeItemRemove),1); render(); };
+      });
+    };
+    if(!items.length) items.push(BOOKING_ITEMS[0]);
+    render();
+    saveBtn.textContent="Create booking";
+    back.style.display="flex";
+    setTimeout(()=>{ field("tb_first")?.focus(); },50);
+    const close=value=>{
+      back.style.display="none"; saveBtn.onclick=null; cancelBtn.onclick=null; back.onclick=null;
+      document.removeEventListener("keydown",onKey); resolve(value);
+    };
+    const onKey=event=>{ if(event.key==="Escape") close(null); };
+    document.addEventListener("keydown",onKey);
+    cancelBtn.onclick=()=>close(null);
+    back.onclick=event=>{ if(event.target===back) close(null); };
+    saveBtn.onclick=()=>{
+      const value={
+        firstName:field("tb_first").value.trim(), lastName:field("tb_last").value.trim(),
+        phone:field("tb_phone").value.trim(), email:field("tb_email").value.trim().toLowerCase(),
+        streetAddress:field("tb_street").value.trim(), town:field("tb_town").value.trim(),
+        area:field("tb_area").value.trim(), ruralOption:field("tb_rural").value,
+        additionalInfo:field("tb_notes").value.trim(), items:[...items]
+      };
+      // Stop them at the field that needs fixing, rather than a vague failure
+      // after the booking fails to save.
+      if(!value.firstName && !value.lastName) return fail("Enter at least a first name.", "tb_first");
+      if(value.phone.replace(/\D/g,"").length<8) return fail("Enter a phone number we can ring.", "tb_phone");
+      if(!goodEmail(value.email)) return fail("A valid email is needed — it is how this booking reaches their account.", "tb_email");
+      if(!value.streetAddress) return fail("Enter the street address.", "tb_street");
+      if(!value.town) return fail("Enter the town.", "tb_town");
+      if(!value.items.length) return fail("Add at least one item.", "tb_addItem");
+      close(value);
+      function fail(message,id){
+        errorEl.textContent=message; errorEl.style.display="block";
+        const node=field(id); if(node){ node.focus(); node.scrollIntoView({behavior:"smooth",block:"center"}); }
+      }
+    };
+  });
+  if(!result) return;
+  // One key per attempt, kept for retries so a dropped connection can't double-book.
+  if(!createBookingKey) createBookingKey=newActionKey();
+  customerStatus("Creating the booking…");
+  try{
+    const data=await ownerApi("/owner/bookings",{
+      method:"POST",
+      headers:{ "Idempotency-Key":createBookingKey },
+      body:JSON.stringify(result)
+    });
+    createBookingKey="";
+    const who=[result.firstName,result.lastName].filter(Boolean).join(" ")||"Booking";
+    // A contact saved by hand can graduate into a real customer now that we have
+    // their email, so keep the local copy in step instead of leaving a duplicate.
+    if(prefill.contactId){
+      customContacts=customContacts.filter(row=>row.id!==prefill.contactId);
+      saveCustomContacts();
+    }
+    await loadDirectBookings(false);
+    await loadCustomers(false);
+    flash(data.customerEmailed===false
+      ? `✓ ${who}'s booking is saved — the email copy did not send, so tell them another way`
+      : `✓ ${who}'s booking is saved and emailed to them`);
+  }catch(e){
+    customerStatus(`That booking did not save: ${e.message}`,true);
+  }
+}
+// Book for an existing customer (they already have an account).
+async function takeBookingForCustomer(id){
+  const record=customerRows.find(row=>row.id===id); if(!record) return;
+  const c=customerWithJobDetails(record,detailsByEmail());
+  await takeBookingFor({ ...c, email:c.email||record.email||"" });
+}
+// Book for one of the hand-saved contacts.
+async function takeBookingForContact(id){
+  const c=customContacts.find(row=>row.id===id); if(!c) return;
+  if(!c.email){
+    if(!confirm(`${[c.firstName,c.lastName].filter(Boolean).join(" ")||"This contact"} has no email yet.\n\nOpen their card to add one — it is how the booking reaches their account.\n\nAdd it now?`)) return;
+    await editCustomContact(id);
+    const updated=customContacts.find(row=>row.id===id);
+    if(!updated?.email) return;
+    return takeBookingFor({ ...updated, contactId:updated.id });
+  }
+  await takeBookingFor({ ...c, contactId:c.id });
+}
+
 async function loadCustomers(showLoading=false){
   const session=ownerToken;
   if (!ownerToken){ renderCustomers(); return; }
@@ -2933,7 +3137,18 @@ async function loadCustomers(showLoading=false){
     customerRows=nextRows;
     renderCustomers();
     $("#insightsCard").style.display="";
+    $("#dropoffCard").style.display="";
     if ($("#insightsCard").open) loadInsights();
+    if ($("#dropoffCard").open) loadDropoffs();
+    // Both panels load lazily on first open, like the insights card above.
+    if ($("#insightsCard").dataset.wired!=="1"){
+      $("#insightsCard").dataset.wired="1";
+      $("#insightsCard").addEventListener("toggle",()=>{ if($("#insightsCard").open) loadInsights(); });
+    }
+    if ($("#dropoffCard").dataset.wired!=="1"){
+      $("#dropoffCard").dataset.wired="1";
+      $("#dropoffCard").addEventListener("toggle",()=>{ if($("#dropoffCard").open) loadDropoffs(); });
+    }
   }catch(e){ if(ownerToken===session) customerStatus(e.message+" Showing the last successfully loaded list, if available.",true); }
 }
 let ownerRefreshBusy=false, ownerBookingsAt=0,ownerCustomersAt=0;
@@ -3505,6 +3720,18 @@ const ITEM_PRICES = {
   "small desktop printer":[500,500], "large scanner/printer":[1000,1000],
   "very large standing scanner/printer":[2000,2000], "heat pump or air conditioner":[2000,1000]
 };
+// The exact item names the website offers and the booking API accepts. A booking
+// taken by hand has to use these same strings or the server rejects it.
+const BOOKING_ITEMS = [
+  "Fridge or upright freezer","Fridge/freezer","Large or French-door fridge","Bar fridge",
+  "Chest freezer (small or medium)","Large chest freezer (over 1.5 m)","Oven or stove",
+  "Cooktop","Small benchtop oven","Microwave","Dishwasher","Front-loading washing machine",
+  "Top-loading washing machine","Dryer","Metal wash tub","Treadmill","Exercise bike",
+  "Elliptical or cross-trainer","Rowing machine","Stair climber or stepper","Home gym or multi-gym",
+  "Pilates reformer","Lawn mower","Push bike","BBQ (2-4 burners)","BBQ (5 or more burners)",
+  "Gas bottle","Cast-iron bath","Flat-screen TV","Old box TV (CRT)","Small desktop printer",
+  "Large scanner/printer","Very large standing scanner/printer","Heat pump or air conditioner","Other"
+];
 // The sheet and the older Jotform forms word things differently ("Refrigerator/
 // Upright Freezer", "Washing Machine (Top Loading)"), so match on what it IS
 // rather than on the exact wording. Anything unrecognised — Other, "stray
