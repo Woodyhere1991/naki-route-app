@@ -617,6 +617,14 @@
       <summary><b>🚧 Where people get stuck</b><span class="chev">›</span></summary>
       <div id="dropoffBody" class="small muted" style="margin-top:8px">Loading…</div>
     </details>
+    <!-- The kids play counts used to live here and were moved to the public Kids
+         page, reachable only by typing ?owner=1 on a different web address. That
+         made them effectively invisible to their owner. They are back here beside
+         the other owner reports, without removing the Kids-page copy. -->
+    <details class="card" id="kidsCard" style="display:none">
+      <summary><b>🎮 Kids game activity</b><span class="chev">›</span></summary>
+      <div id="kidsBody" class="small muted" style="margin-top:8px">Loading…</div>
+    </details>
   </section>
 
   <!-- WEATHER -->
@@ -2596,6 +2604,37 @@ async function loadDropoffs(){
   }catch(e){ card.style.display="none"; }
 }
 
+/* ---------- Kids game activity ---------- */
+// The same numbers the public Kids page can show, brought back beside the other
+// owner reports so they are actually findable.
+const KIDS_GAME_LABELS={
+  numbers:"Number Garden", patterns:"Pattern Detective", bridge:"Number Bridge",
+  pack:"Pocket Packer", robot:"Route Robot", share:"Fair Share Picnic",
+  round:"The Kind Round", sorter:"Stop, Think, Load"
+};
+async function loadKidsActivity(){
+  const card=$("#kidsCard"), body=$("#kidsBody");
+  if (!card || !body) return;
+  if (!ownerToken){ card.style.display="none"; return; }
+  try{
+    const data=await ownerApi("/owner/kids-activity?days=7");
+    const starts=Number(data.totals&&data.totals.starts||0);
+    const finishes=Number(data.totals&&data.totals.finishes||0);
+    // Biggest first, so the games children actually play are at the top.
+    const rows=(data.games||[])
+      .filter(row=>KIDS_GAME_LABELS[row.game] && (Number(row.starts)||Number(row.finishes)))
+      .sort((a,b)=>Number(b.starts||0)-Number(a.starts||0))
+      .map(row=>`<div class="row" style="justify-content:space-between;gap:10px">
+        <span>${esc(KIDS_GAME_LABELS[row.game])}</span>
+        <b>${Number(row.starts||0)} played · ${Number(row.finishes||0)} finished</b>
+      </div>`).join("");
+    body.innerHTML=`<div style="font-weight:800">${starts} play${starts===1?"":"s"} started · ${finishes} round${finishes===1?"":"s"} completed</div>
+      ${rows||"<div>No counted plays yet.</div>"}
+      <div style="margin-top:8px">Counts of game starts and finished rounds from the Naki Kids page — not individual children. Offline plays are not counted.</div>`;
+    card.style.display="block";
+  }catch(e){ card.style.display="none"; }
+}
+
 /* ---------- Customer profiles (all website customers) ---------- */
 let customerRows = [];
 function customerStatus(message, error=false){
@@ -3177,23 +3216,29 @@ async function loadCustomers(showLoading=false){
     const data=await loadCompleteCustomers();
     if(ownerToken!==session) return;
     const nextRows=Array.isArray(data.customers) ? data.customers : [];
+    // The report panels are set up regardless of whether the customer list itself
+    // changed. Returning early first meant they stayed hidden and unwired on every
+    // reload where the list happened to match what was already on screen.
+    setupCustomerPanels();
     if (!showLoading && JSON.stringify(nextRows)===JSON.stringify(customerRows)) return;
     customerRows=nextRows;
     renderCustomers();
-    $("#insightsCard").style.display="";
-    $("#dropoffCard").style.display="";
-    if ($("#insightsCard").open) loadInsights();
-    if ($("#dropoffCard").open) loadDropoffs();
-    // Both panels load lazily on first open, like the insights card above.
-    if ($("#insightsCard").dataset.wired!=="1"){
-      $("#insightsCard").dataset.wired="1";
-      $("#insightsCard").addEventListener("toggle",()=>{ if($("#insightsCard").open) loadInsights(); });
-    }
-    if ($("#dropoffCard").dataset.wired!=="1"){
-      $("#dropoffCard").dataset.wired="1";
-      $("#dropoffCard").addEventListener("toggle",()=>{ if($("#dropoffCard").open) loadDropoffs(); });
-    }
   }catch(e){ if(ownerToken===session) customerStatus(e.message+" Showing the last successfully loaded list, if available.",true); }
+}
+// Wires the three collapsible owner reports under the Customers list. Safe to
+// call repeatedly.
+function setupCustomerPanels(){
+  const cards=[["insightsCard","insightsBody",loadInsights],["dropoffCard","dropoffBody",loadDropoffs],["kidsCard","kidsBody",loadKidsActivity]];
+  cards.forEach(([cardId,_bodyId,load])=>{
+    const card=$("#"+cardId);
+    if (!card) return;
+    card.style.display="";
+    if (card.dataset.wired!=="1"){
+      card.dataset.wired="1";
+      card.addEventListener("toggle",()=>{ if(card.open) load(); });
+    }
+    if (card.open) load();
+  });
 }
 let ownerRefreshBusy=false, ownerBookingsAt=0,ownerCustomersAt=0;
 async function refreshOwnerData(){
