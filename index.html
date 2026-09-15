@@ -2455,18 +2455,21 @@ async function editDirectBooking(id){
   }catch(e){ directStatus(e.message,true); }
 }
 
-// Photos the customer attached when they booked.
-async function showBookingPhotos(id){
-  directStatus("Loading photos…");
+// Photos the customer attached when they booked. Used from the Bookings tab and
+// from Scheduled: the customer's photo is most useful standing at the address,
+// deciding what the load actually is.
+async function showBookingPhotos(id, source="bookings"){
+  const say=(message,error)=>source==="run" ? flash(message) : directStatus(message,error);
+  say("Loading photos…");
   let photos=[];
   try{
     const data=await ownerApi(`/owner/bookings/${encodeURIComponent(id)}/photos`);
     photos=Array.isArray(data.photoDetails) && data.photoDetails.length
       ? data.photoDetails
       : (Array.isArray(data.photos) ? data.photos.map(src=>({item:"",data:src})) : []);
-  }catch(e){ return directStatus(e.message,true); }
-  if (!photos.length) return directStatus("No photos saved for that booking.",true);
-  directStatus("");
+  }catch(e){ return say(e.message,true); }
+  if (!photos.length) return say("No photos saved for that booking.",true);
+  say("");
   const wrap=document.createElement("div");
   // z-index has to clear the bottom nav bar (2000) or its buttons paint right over
   // the Close button below - that's what was hiding it. 10000 matches the app's
@@ -2495,6 +2498,42 @@ async function showBookingPhotos(id){
   wrap.onclick=event=>{ if(event.target===wrap) wrap.remove(); };
   document.body.append(wrap);
 }
+// A scheduled stop only knows its booking id, so ask the server how many photos
+// that booking has. Cached per booking so re-rendering the list does not re-ask.
+const stopPhotoCounts=new Map();
+function stopPhotoCount(stop){
+  const id=String(stop && stop.submission_id || "");
+  return stopPhotoCounts.has(id) ? stopPhotoCounts.get(id) : null;
+}
+async function countPhotosForStops(stops){
+  if (!ownerToken) return false;
+  const wanted=[...new Set((stops||[])
+    .map(stop=>String(stop && stop.submission_id || ""))
+    .filter(id=>/^WEB-/i.test(id) && !stopPhotoCounts.has(id)))];
+  if (!wanted.length) return false;
+  const results=await Promise.all(wanted.map(async id=>{
+    try{
+      const data=await ownerApi(`/owner/bookings/${encodeURIComponent(id)}/photos`);
+      const details=Array.isArray(data.photoDetails) ? data.photoDetails : [];
+      return [id, details.length || (Array.isArray(data.photos) ? data.photos.length : 0)];
+    }catch{ return [id,0]; }
+  }));
+  let changed=false;
+  results.forEach(([id,count])=>{
+    if (stopPhotoCounts.get(id)!==count) changed=true;
+    stopPhotoCounts.set(id,count);
+  });
+  return changed;
+}
+
+// A scheduled stop is shown when the customer's photos are opened from there.
+window.openStopPhotos = id => {
+  const stop=findStop(id);
+  if (!stop) return;
+  const bookingId=String(stop.submission_id||"");
+  if (!/^WEB-/i.test(bookingId)) return flash("That pickup did not come from the website, so it has no customer photos.");
+  showBookingPhotos(bookingId,"run");
+};
 
 // "How did you find us" - collected on every booking, finally visible.
 async function loadInsights(){
@@ -4327,6 +4366,12 @@ function renderList(){
     return;
   }
 
+  // Which scheduled pickups have customer photos is not on the stop (it comes
+  // from the booking), so ask once per booking and redraw if that found anything.
+  // Deliberately after the list is painted - the list must never wait on the
+  // network to appear.
+  countPhotosForStops(state.stops).then(changed=>{ if (changed) renderList(); }).catch(()=>{});
+
   const pending = state.stops.filter(s => s.status!=="DONE");
   const done    = state.stops.filter(s => s.status==="DONE");
   // First not-done stop = the "next" highlight.
@@ -4378,10 +4423,17 @@ function renderList(){
       ? `<button class="good sm" onclick="openInvoicePreview('${s.id}')">👁 Invoice preview</button><button class="ghost sm" title="Cancel this invoice and start again" onclick="cancelInvoice('${s.id}')">↺ Redo</button>`
       : `<button class="ghost sm" onclick="invoiceStop('${s.id}')">📄 ${s.invoiceSent?'Invoice ✓':'Invoice'}</button>`;
     const prioBtn  = isDone ? "" : `<button class="${asap?'bad':'ghost'} sm" onclick="togglePriority('${s.id}')" title="Make this an ASAP stop">${asap?'⭐ ASAP':'☆ ASAP'}</button>`;
+    // The customer's photos belong here, not only on the Bookings tab: this is the
+    // screen Woody is on when he is standing at the address. Only shown once we
+    // know the booking actually has photos, so the card stays uncluttered.
+    const photoCount = stopPhotoCount(s);
+    const photoBtn = (photoCount && !isDone)
+      ? `<button class="ghost sm" title="${photoCount} photo${photoCount===1?"":"s"} from the customer — tap to view" onclick="openStopPhotos('${s.id}')">📷 ${photoCount} photo${photoCount===1?"":"s"}</button>`
+      : "";
     const navBtn   = (!isDone && s.lat!=null) ? `<button class="sm nav-action" onclick="navStop('${s.id}')">🧭 Navigate</button>` : "";
     const doneBtn  = `<button class="${isDone?'warn':'good'} sm" onclick="toggleDone('${s.id}')">${isDone?'↺ Undo':'✓ Done'}</button>`;
     const del      = `<button class="ghost sm" title="Remove this stop" onclick="delStop('${s.id}')">✕</button>`;
-    const btns = `<div class="stopbtns primary-actions">${isDone?receiptBtn:navBtn+receiptBtn+textBtn}</div><details class="stop-more"><summary>More actions</summary><div class="stopbtns">${isDone?doneBtn+invoiceBtn+editBtn+emailBtn+del:doneBtn+phone+emailBtn+prioBtn+editBtn+invoiceBtn+del}</div></details>`;
+    const btns = `<div class="stopbtns primary-actions">${isDone?receiptBtn:navBtn+photoBtn+receiptBtn+textBtn}</div><details class="stop-more"><summary>More actions</summary><div class="stopbtns">${isDone?doneBtn+invoiceBtn+editBtn+emailBtn+del:doneBtn+phone+emailBtn+prioBtn+editBtn+invoiceBtn+del}</div></details>`;
     return `<div class="stop ${isDone?'done':''} ${asap&&!isDone?'asap':''} ${s.id===nextId&&!isDone?'next':''}"
         data-id="${s.id}" style="border-left-color:${AREA_COLORS[area]||AREA_COLORS['']}">
       <div class="num">${num}</div>
