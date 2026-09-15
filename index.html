@@ -3030,6 +3030,10 @@ async function takeBookingFor(prefill={}){
       html+=`<label for="tb_rural">Pickup area (travel fee)</label>
         <select id="tb_rural">${TRAVEL_OPTIONS.filter(o=>o.value).map(o=>
           `<option value="${esc(o.value)}"${o.value===prefill.ruralOption?" selected":""}>${esc(o.label)}</option>`).join("")}</select>`;
+      // The day they asked for on the phone. Kept separate from the pickup day,
+      // which is only set once Woody confirms it.
+      html+=`<label for="tb_requested">Day they asked for (optional)</label>
+        <input id="tb_requested" type="date" value="${esc(prefill.requestedDate||"")}" />`;
       html+=`<label>What are we collecting?</label><div id="tb_items">${itemRowsHtml()}</div>
         <button type="button" class="ghost sm" id="tb_addItem">+ Add another item</button>`;
       html+=`<label for="tb_notes">Notes (access, pets, anything odd) — optional</label>
@@ -3062,6 +3066,7 @@ async function takeBookingFor(prefill={}){
         phone:field("tb_phone").value.trim(), email:field("tb_email").value.trim().toLowerCase(),
         streetAddress:field("tb_street").value.trim(), town:field("tb_town").value.trim(),
         area:field("tb_area").value.trim(), ruralOption:field("tb_rural").value,
+        requestedDate:field("tb_requested") ? field("tb_requested").value : "",
         additionalInfo:field("tb_notes").value.trim(), items:[...items]
       };
       // Stop them at the field that needs fixing, rather than a vague failure
