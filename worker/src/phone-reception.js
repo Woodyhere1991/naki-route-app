@@ -521,6 +521,17 @@ export class ReceptionCall {
     const quote = quoteFor(args.items, args.rural);
     const id = `WEB-PHONE-${Date.now().toString(36)}-${crypto.randomUUID().slice(0, 8)}`;
     const at = Date.now();
+    // A caller often gives no email, so there is no account to attach this to.
+    // bookings.customer_id is nullable (migration 0027) and the booking still
+    // shows on the owner's Bookings list and can go on a run. When the caller's
+    // email already has an account, attach it so it appears in their account.
+    let customerId = null;
+    if (email) {
+      const existing = await this.env.CUSTOMER_DB.prepare(
+        "SELECT id FROM customers WHERE email = ?1 COLLATE NOCASE"
+      ).bind(email).first();
+      customerId = existing?.id || null;
+    }
     const said = [
       `Taken by the phone receptionist on ${nzNow().spoken}.`,
       `Caller rang from ${this.from || "a withheld number"}.`,
@@ -537,9 +548,9 @@ export class ReceptionCall {
          id, customer_id, status, first_name, last_name, phone, email, street_address, town, area,
          rural_option, items_json, additional_info, referral_source, referral_details,
          total_cents, quote_required, created_at, updated_at
-       ) VALUES (?1, NULL, 'NEW', ?2, ?3, ?4, ?5, ?6, ?7, '', ?8, ?9, ?10, 'Phone', 'Phone receptionist', ?11, ?12, ?13, ?13)`
+       ) VALUES (?1, ?2, 'NEW', ?3, ?4, ?5, ?6, ?7, ?8, '', ?9, ?10, ?11, 'Phone', 'Phone receptionist', ?12, ?13, ?14, ?14)`
     ).bind(
-      id, firstName, lastName, phone, email, street, town,
+      id, customerId, firstName, lastName, phone, email, street, town,
       quote.ruralOption, JSON.stringify(quote.known.concat(quote.unknown).slice(0, 10)), said,
       quote.cents, quote.quoteRequired ? 1 : 0, at
     ).run();
