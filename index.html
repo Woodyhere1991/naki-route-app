@@ -5910,12 +5910,22 @@ window.sendReceipt = async id => {
     flash("Couldn't email it right now — sharing instead.");
   }
   // No email (or the send failed): hand the PDF to the share sheet / a download.
+  // Nothing here has actually SENT anything: the share sheet can be dismissed and
+  // a Gmail compose draft has no attachment. Marking the job paid and completed
+  // from this point told Woody the customer had a receipt and had paid when
+  // neither was known - and it cancelled the payment reminder to match. Ask
+  // instead, and only settle it when he confirms it really went.
   if (goodEmail(s.email)) copyPlainText(s.email.trim());   // ready to paste into "To"
   if (navigator.canShare && navigator.canShare({ files:[file] })){
     try{
       await navigator.share({ files:[file], title:"Naki Whiteware Removal receipt" });
-      await done();
-      flash("✓ Receipt sent · marked paid and completed.");
+      // The sheet resolved. "Resolved" is not "sent", so confirm before settling.
+      if (confirm("Did the receipt actually send?\n\nTap OK only if it went.\nOtherwise tap Cancel and use Send when you're ready.")){
+        await done();
+        flash("✓ Receipt sent · marked paid and completed.");
+      }else{
+        flash("Receipt not marked as sent — tap 🧾 Receipt to try again.");
+      }
       return;
     }catch(e){ if (e && e.name==="AbortError") return; /* keep the Send button */ }
   }
@@ -5924,8 +5934,9 @@ window.sendReceipt = async id => {
   window.open(blobUrl, "_blank");
   setTimeout(()=>URL.revokeObjectURL(blobUrl), 60000);
   if (goodEmail(s.email)) openGmail({ to:s.email.trim(), subject:"Receipt - Whiteware collection" });
-  await done();
-  flash("✓ Receipt done · marked paid and completed.");
+  // The Gmail link only opens a COMPOSE window with no attachment. This is a
+  // prepared receipt, not a sent one, so it is never marked paid here.
+  flash("📄 Receipt prepared — attach the PDF and send it, then tap ✓ Done to mark it paid.");
 };
 
 /* ---------- Invoices (unpaid pickups) ---------- */
@@ -6169,12 +6180,20 @@ window.sendInvoice = async id => {
     flash("Couldn't email it right now — sharing instead.");
   }
   // No email (or send failed): share sheet / download. No auto-reminder this way.
+  // markSent() records the invoice as issued and moves it into the unpaid ledger,
+  // which is what drives "who owes me". Nothing here has been sent yet, so it is
+  // only recorded once Woody confirms the share sheet really delivered it - an
+  // unresolved fallback must not invent a debt.
   if (goodEmail(s.email)) copyPlainText(s.email.trim());
   if (navigator.canShare && navigator.canShare({ files:[file] })){
     try{
       await navigator.share({ files:[file], title:"Naki Whiteware Removal invoice" });
-      markSent("");
-      if (goodEmail(s.email)) flash("✓ Their email is copied — paste it into To.");
+      if (confirm("Did the invoice actually send?\n\nTap OK only if it went — it will then be recorded as sent and appear under Owing.\nOtherwise tap Cancel and use Send when you're ready.")){
+        markSent("");
+        if (goodEmail(s.email)) flash("✓ Invoice sent · recorded under Bookings → Owing.");
+      }else{
+        flash("Invoice not recorded as sent — tap 📄 Invoice to try again.");
+      }
       return;
     }catch(e){ if (e && e.name==="AbortError") return; }
   }
@@ -6182,8 +6201,9 @@ window.sendInvoice = async id => {
   window.open(blobUrl, "_blank");
   setTimeout(()=>URL.revokeObjectURL(blobUrl), 60000);
   if (goodEmail(s.email)) openGmail({ to:s.email.trim(), subject:"Invoice - Whiteware collection" });
-  markSent("");
-  flash("✓ PDF opened — attach it to the email.");
+  // The Gmail link only opens a compose window with no attachment, so this is a
+  // prepared invoice. Do not record a debt from it.
+  flash("📄 Invoice prepared — attach the PDF and send it, then tap 💰 Mark paid / re-send to record it.");
 };
 // Stop a waiting "you still owe us" email once the money has landed.
 async function cancelReminderFor(s){
@@ -6767,7 +6787,12 @@ function backupStatus(message, bad=false){
 // never look settled and would upload forever.
 const SYNC_KEY="naki_cloud_sync_v1";
 function nakiStorageKeys(){
-  return Object.keys(localStorage).filter(key=>key.startsWith("naki_") && !key.startsWith("naki_action_") && key!=="naki_weather_cache_v1" && key!==OWNER_TOKEN_KEY && key!==SYNC_KEY);
+  // The geocode cache is deliberately excluded. It is a derived cache that can be
+  // rebuilt by looking the address up again, and it grows with every address ever
+  // searched. Including it meant the cloud backup crept towards the server's 4 MB
+  // limit, and past it every save was refused — so the account copy silently
+  // stopped updating while the app only ever said "waiting to sync".
+  return Object.keys(localStorage).filter(key=>key.startsWith("naki_") && !key.startsWith("naki_action_") && key!=="naki_weather_cache_v1" && key!==GEO && key!==OWNER_TOKEN_KEY && key!==SYNC_KEY);
 }
 $("#backupSave").onclick=()=>{
   try{
@@ -6859,8 +6884,16 @@ async function pushCloudBackup(quiet=true){
     else {paintCloudState("Saved on phone · newer changes waiting to sync",true);clearTimeout(cloudBackupTimer);cloudBackupTimer=setTimeout(()=>pushCloudBackup(true),1000);}
     if (!quiet) backupStatus("Saved to your account.");
   }catch(e){
-    paintCloudState("Saved on phone · waiting to sync. Tap here to retry.",true);
-    if (!quiet) backupStatus("Couldn't save to your account: "+e.message, true);
+    // A backup the server refuses as too big will be refused forever, so saying
+    // "waiting to sync" made it look like a temporary hiccup and hid a permanent
+    // failure. Say what is actually wrong.
+    if (/too big/i.test(e.message||"")){
+      paintCloudState("⚠ Your backup is too big to save to your account — use Export backup instead.",true);
+      if (!quiet) backupStatus("That backup is too big for the account (over 4 MB). Use “Save a backup file”.", true);
+    }else{
+      paintCloudState("Saved on phone · waiting to sync. Tap here to retry.",true);
+      if (!quiet) backupStatus("Couldn't save to your account: "+e.message, true);
+    }
   }finally{ cloudBackupBusy=false; }
 }
 // Called from save(); waits for things to settle so a drag isn't 20 uploads.

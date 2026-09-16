@@ -488,10 +488,25 @@ export async function sessionFor(request, env, role) {
   if (!token) return null;
   if (!env.CUSTOMER_DB) return null;
   const tokenHash = await hashToken(token);
+  const nowMs = now();
   const row = await env.CUSTOMER_DB.prepare(
     "SELECT token_hash, customer_id, role, email, expires_at FROM sessions WHERE token_hash = ?1 AND role = ?2 AND expires_at > ?3"
-  ).bind(tokenHash, role, now()).first();
-  return row || null;
+  ).bind(tokenHash, role, nowMs).first();
+  if (!row) return null;
+  // Slide the owner's session forward while he is actually using it. A fixed
+  // 30-day expiry meant it died mid-run on day 30, with work still queued — and
+  // the app's only way back in was a fresh emailed code. Extending on use means a
+  // phone in regular use never expires under him. Only written once a day, so
+  // ordinary requests do not pay for a database write.
+  if (role === "owner" && Number(row.expires_at) - nowMs < SESSION_TTL_MS - 24 * 60 * 60 * 1000) {
+    const extended = nowMs + SESSION_TTL_MS;
+    try {
+      await env.CUSTOMER_DB.prepare("UPDATE sessions SET expires_at = ?1, last_seen_at = ?2 WHERE token_hash = ?3")
+        .bind(extended, nowMs, tokenHash).run();
+      row.expires_at = extended;
+    } catch { /* a failed extension must never break the request */ }
+  }
+  return row;
 }
 
 function addressFrom(row) {
@@ -992,7 +1007,9 @@ async function notifyOwnerOfNewCustomer(env, sendMail, profile, source) {
 }
 
 export async function sendCode(env, sendMail, address, role, ip) {
-  await reserveAuthRequest(env, ip);
+  // The role decides which abuse budget this counts against: the owner has his
+  // own, so customer sign-ins on the same connection cannot spend it.
+  await reserveAuthRequest(env, ip, Date.now(), role);
   const code = String(crypto.getRandomValues(new Uint32Array(1))[0] % 1000000).padStart(6, "0");
   const createdAt = now();
   const id = crypto.randomUUID();
@@ -1032,11 +1049,31 @@ export async function sendCode(env, sendMail, address, role, ip) {
   return true;
 }
 
+// True when the newest sent code has used up its five tries, so even the correct
+// code can no longer be claimed. Lets the sign-in step say "ask for a new code"
+// instead of the misleading "incorrect or expired".
+async function latestCodeIsSpent(env, address, role) {
+  const row = await env.CUSTOMER_DB.prepare(
+    `SELECT attempts, expires_at, consumed_at FROM login_codes
+     WHERE email=?1 AND role=?2 AND delivery_status='sent'
+     ORDER BY created_at DESC, id DESC LIMIT 1`
+  ).bind(address, role).first();
+  if (!row) return false;
+  if (Number(row.attempts) >= 5) return true;
+  return false;
+}
+
 export async function verifyCode(env, address, role, code, refToken = "") {
   const expected = await hashCode(env, role, address, code);
   const createdAt = now();
   // Claim the latest sent code and reserve an attempt in the same atomic write.
   // A racing verifier cannot reuse the code or bypass the five-attempt limit.
+  //
+  // The inner selection deliberately does NOT filter out an exhausted row. Doing
+  // so would make the query fall back to an older, still-unconsumed code, which
+  // would resurrect a code the customer has already moved past - the exact
+  // property auth-reliability guards. An exhausted latest row simply matches
+  // nothing, which is correct: they need a fresh code.
   const row = await env.CUSTOMER_DB.prepare(`UPDATE login_codes SET attempts=attempts+1,
     consumed_at=CASE WHEN code_hash=?1 THEN ?2 ELSE consumed_at END
     WHERE id=(SELECT id FROM login_codes WHERE email=?3 AND role=?4 AND delivery_status='sent'
@@ -1914,7 +1951,19 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
     const code = clean(body.code, 6);
     if (!EMAIL_RE.test(address) || !/^\d{6}$/.test(code)) return json(request, { error: "Enter the 6-digit code" }, 400);
     const verified = await verifyCode(env, address, "customer", code, clean(body.refToken, 64));
-    if (!verified) return json(request, { error: "That code is incorrect or has expired" }, 401);
+    if (!verified) {
+      // Tell the difference between a typo and an exhausted code. Once five tries
+      // are spent the correct code can never work again, and "incorrect or
+      // expired" leaves the person retyping a code that is already dead - at the
+      // very first step of signing up.
+      const spent = await latestCodeIsSpent(env, address, "customer");
+      return json(request, {
+        error: spent
+          ? "That code has had too many tries. Tap “Resend code” for a new one and use the newest email."
+          : "That code is incorrect or has expired",
+        codeSpent: spent
+      }, 401);
+    }
     await applyShareReferralToCustomer(env, body.refToken, verified.customerId);
     await env.CUSTOMER_DB.prepare(
       "UPDATE external_bookings SET customer_id = ?1 WHERE email = ?2 COLLATE NOCASE AND customer_id IS NULL"
@@ -2968,16 +3017,23 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
       const profile = await customerProfile(env, session.customer_id);
       const savedAddresses = await customerAddresses(env, session.customer_id);
       const requestedAddressId = clean(body.addressId, 100);
-      // A chosen address that no longer matches must not be quietly swapped for
-      // the default: the truck would be sent to the wrong place with no warning.
-      // Address ids are re-minted whenever the profile is saved, so a stale id is
-      // a real possibility, not a hypothetical one.
-      if (requestedAddressId && !savedAddresses.some(address => address.id === requestedAddressId)) {
+      // "saved" and "" are the page's own words for "use my profile's saved
+      // address" - they are not ids, so they must fall through to the default
+      // branch below rather than being treated as a stale address. A customer
+      // whose profile has a street address but no customer_addresses rows (any
+      // account created by taking a booking over the phone) sends exactly this.
+      const isPlaceholder = requestedAddressId === "" || requestedAddressId === "saved" || requestedAddressId === "keep";
+      // A real chosen address that no longer matches must not be quietly swapped
+      // for the default: the truck would be sent to the wrong place with no
+      // warning. Address ids are re-minted whenever the profile is saved, so a
+      // stale id is a real possibility, not a hypothetical one.
+      if (!isPlaceholder && !savedAddresses.some(address => address.id === requestedAddressId)) {
         return json(request, {
           error: "That pickup address has changed since this page loaded. Please choose it again."
         }, 409);
       }
-      const selectedAddress = savedAddresses.find(address => address.id === requestedAddressId) ||
+      const chosenAddress = isPlaceholder ? null : requestedAddressId;
+      const selectedAddress = savedAddresses.find(address => address.id === chosenAddress) ||
         savedAddresses.find(address => address.isDefault) || savedAddresses[0] || (
           profile?.street_address && profile?.town && Object.hasOwn(RURAL_PRICES, profile?.rural_option)
             ? {
