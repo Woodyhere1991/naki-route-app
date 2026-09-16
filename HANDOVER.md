@@ -3,6 +3,33 @@
 Booking/account backend (`naki-route-api` Worker + D1) and the owner "Naki Pickup
 Run" app. The customer website is a **separate** project (`customer-site`).
 
+## The rule that keeps being broken: never claim something happened
+
+Audits on 16 September 2026 found the same class of bug repeatedly — the app
+telling Woody work was done when it was not. **Whenever a send or a save has a
+result, capture it and word the message from that result.** The correct pattern
+already exists in the codebase (the quote email at `index.html`, which flashes
+"the price email did not send"). Fixed so far:
+
+- A receipt or invoice is **not** marked sent/paid on the share-sheet or Gmail
+  fallback — those only *prepare* it. `done()` is called only after Woody
+  confirms. A Gmail link opens a compose window with **no attachment**.
+- The confirmation email result is captured (`confirmationEmailed`), so
+  "confirmed and emailed" is never shown on a failed send.
+- Bulk-send warnings are joined, not overwritten, and each failed confirmation
+  writes an `EMAIL_FAILED` booking event so it survives the banner.
+- The cloud backup no longer includes the geocode cache (`GEO`), which grows
+  forever and was pushing the payload past the server's 4 MB limit — past that,
+  every save was refused while the UI said "waiting to sync".
+
+Two traps to remember when touching this app:
+
+- `flagField()` (customer page) must not bail when a control has no `.field`
+  wrapper — the pickup-area `<select>` has none, and that was the field customers
+  most often left blank.
+- Never let a customer's edit zero `quote_cents`/`quoted_at`. That silently threw
+  away a price Woody had agreed.
+
 ## Deploy order (do it in this order)
 
 1. **Migration first** — `wrangler d1 execute naki-customer-bookings --remote --file=migrations/NNNN_x.sql`
