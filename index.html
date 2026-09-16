@@ -188,6 +188,9 @@
   .weather-alert{color:var(--warn)!important;font-weight:700}
   @media(prefers-reduced-motion:no-preference){.wx-icon circle[fill="#ffc447"]{animation:wxglow 3s ease-in-out infinite}}
   @keyframes wxglow{0%,100%{opacity:1}50%{opacity:.82}}
+  .pin.unload{background:#4a5568 !important;border-color:#cbd5e0}
+  .stop.unload{border-left-color:#7a869a !important;background:#0e2233}
+  .stop.unload .num{background:#4a5568;color:#fff}
   .gms-panel[data-level="danger"]{border-color:var(--bad)}
   .gms-panel[data-level="warning"]{border-color:var(--warn)}
   .gms-days{display:grid;gap:7px}
@@ -547,6 +550,10 @@
       <button id="optimiseHere" class="ghost grow">Optimise from where I am</button>
 
     </div>
+    <div class="row" style="margin-top:10px">
+      <button id="addUnload" class="ghost grow">♻️ Add unload at GMS</button>
+    </div>
+    <p class="small muted" style="margin:8px 0 0">Too much for one load? Drop a GMS trip in between two pickups. Optimise keeps the pickups either side of it where they are.</p>
   </div></section>
 
   <!-- BULK MESSAGE CONTACTS -->
@@ -3911,6 +3918,28 @@ function stopPrice(s){
   return estimateStopPrice(s);
 }
 
+/* ---------- Unload stops (empty the truck at GMS part-way through a run) ---------- */
+// A New Plymouth day is often more than one truckload. Woody collects a portion,
+// tips it at the scrap yard, then carries on for the rest. An unload stop is a
+// real stop on the route but it is not a customer: no price, no phone, no
+// receipt. It also pins the running order - pickups on the near side of the yard
+// trip stay on that side, and each leg is optimised on its own instead of the
+// drop-off being shuffled into the middle of the collections.
+const GMS_YARD = { street:"146 Connett Road East", town:"Bell Block",
+                   lat:-39.0323484, lng:174.1650931 };
+function isUnload(s){ return !!s && s.kind==="unload"; }
+// Everywhere that means "a customer we are collecting from" - counts, messages,
+// weather towns, address backfill - asks for this rather than for every stop.
+function pickupsOnly(list){ return (list||state.stops).filter(s=>!isUnload(s)); }
+function newUnloadStop(){
+  return { id:uid(), kind:"unload", src:"unload", status:"NEW",
+           first_name:"", last_name:"", phone:"", email:"",
+           street:GMS_YARD.street, town:GMS_YARD.town,
+           geoLabel:`${GMS_YARD.street}, ${GMS_YARD.town}`,
+           lat:GMS_YARD.lat, lng:GMS_YARD.lng,
+           area:"", appliances:[], amount:null, priority:false };
+}
+
 /* ---------- Route optimisation (road-time matrix + multi-start search) ---------- */
 function routeStops(){
   // Pending stops with coords, in current order.
@@ -4024,9 +4053,15 @@ function exactRoadOrder(nodes,matrix,startIndex,endIndex){
   }
   return order.reverse();
 }
-function smartestRoadOrder(all,matrix,startIndex,endIndex){
-  const nodes=all.map((stop,i)=>({index:i+1,priority:!!stop.priority}));
-  if(nodes.length<=13) return exactRoadOrder(nodes,matrix,startIndex,endIndex).map(index=>all[index-1]);
+function smartestRoadOrder(all,matrix,startIndex,endIndex,columns){
+  // `columns[i]` is all[i]'s column in the road-time table. It defaults to i+1
+  // (column 0 is the start), which is the whole-run case. Passing it lets one
+  // leg between unload stops be ordered against the same shared table.
+  const cols=columns||all.map((_,i)=>i+1);
+  const nodes=all.map((stop,i)=>({index:cols[i],priority:!!stop.priority}));
+  const byColumn=new Map(nodes.map((node,i)=>[node.index,all[i]]));
+  const pick=order=>order.map(index=>byColumn.get(index));
+  if(nodes.length<=13) return pick(exactRoadOrder(nodes,matrix,startIndex,endIndex));
   const firstGroup=nodes.filter(n=>n.priority).length ? nodes.filter(n=>n.priority) : nodes;
   const ranked=firstGroup.slice().sort((a,b)=>matrix[startIndex][a.index]-matrix[startIndex][b.index]);
   const seeds=ranked.length<=10 ? ranked : ranked.filter((_,i)=>i<5 || i%Math.ceil(ranked.length/5)===0).slice(0,10);
@@ -4036,7 +4071,30 @@ function smartestRoadOrder(all,matrix,startIndex,endIndex){
     const improved=improveRoadOrder(greedy,nodes.filter(n=>n.priority).length,matrix,startIndex,endIndex);
     if(!winner || improved.cost<winner.cost) winner=improved;
   });
-  return (winner?.order||nodes.map(n=>n.index)).map(index=>all[index-1]);
+  return pick(winner?.order||nodes.map(n=>n.index));
+}
+// Split the run at every unload stop and order each leg on its own, chaining
+// start -> leg -> yard -> leg -> ... -> end. Without this the optimiser would
+// move the drop-off to wherever it saved the most driving, which is the one
+// thing it must not do: the point of the yard trip is that it happens after a
+// particular batch of pickups, not at the tidiest moment.
+function orderRunAroundUnloads(all,matrix,startIndex,endIndex){
+  if(!all.some(isUnload)) return smartestRoadOrder(all,matrix,startIndex,endIndex);
+  const columnOf=new Map(all.map((stop,i)=>[stop.id,i+1]));
+  const legs=[[]], yards=[];
+  all.forEach(stop=>{
+    if(isUnload(stop)){ yards.push(stop); legs.push([]); }
+    else legs[legs.length-1].push(stop);
+  });
+  const ordered=[];
+  let from=startIndex;
+  legs.forEach((leg,i)=>{
+    const yard=yards[i]||null;                    // the drop-off this leg ends at, if any
+    const to=yard ? columnOf.get(yard.id) : endIndex;
+    if(leg.length) ordered.push(...smartestRoadOrder(leg,matrix,from,to,leg.map(s=>columnOf.get(s.id))));
+    if(yard){ ordered.push(yard); from=columnOf.get(yard.id); }
+  });
+  return ordered;
 }
 function setRouteOptimiseBusy(isBusy,message=""){
   routeOptimiseBusy=isBusy;
@@ -4062,7 +4120,7 @@ async function optimise(){
     catch(e){matrix=routeMatrixFallback(points);usedRoadTimes=false;}
     const currentIds=routeStops().map(s=>s.id).join("|");
     if(currentIds!==all.map(s=>s.id).join("|")) return false;
-    const best=smartestRoadOrder(all,matrix,0,endIndex);
+    const best=orderRunAroundUnloads(all,matrix,0,endIndex);
     // Re-seat optimised stops at the front of state.stops, keep DONE + others after.
     const ids = best.map(s=>s.id);
     const rest = state.stops.filter(s => !ids.includes(s.id));
@@ -4097,6 +4155,10 @@ function initMap(){
     paintMapButtons();
   });
 }
+function unloadIcon(label){
+  return L.divIcon({ className:"", html:`<div class="pin unload"><span>${label}</span></div>`,
+    iconSize:[30,30], iconAnchor:[15,28] });
+}
 function pinIcon(label, area, isStart){
   const bg = isStart ? "#fff" : (AREA_HEX[area]||AREA_HEX[""]);
   const cls = "pin" + (isStart ? " start" : "");
@@ -4117,8 +4179,10 @@ async function drawRoute(){
   bounds.push([start.lat,start.lng]);
   // Numbered stop markers.
   pts.forEach((s,i)=>{
-    L.marker([s.lat,s.lng], { icon: pinIcon(i+1, s.area, false) })
-      .bindPopup(`<b>${i+1}. ${esc(fullName(s)||fullAddr(s))}</b><br>${esc(fullAddr(s))}`)
+    L.marker([s.lat,s.lng], { icon: isUnload(s) ? unloadIcon(i+1) : pinIcon(i+1, s.area, false) })
+      .bindPopup(isUnload(s)
+        ? `<b>${i+1}. Unload at GMS</b><br>${esc(fullAddr(s))}`
+        : `<b>${i+1}. ${esc(fullName(s)||fullAddr(s))}</b><br>${esc(fullAddr(s))}`)
       .addTo(markerLayer);
     bounds.push([s.lat,s.lng]);
   });
@@ -4204,7 +4268,7 @@ function fmtClockShort(totalMin){
   return m ? `${h12}:${String(m).padStart(2,"0")}${ap}` : `${h12}${ap}`;
 }
 function scheduleStopsInOrder(){
-  return state.stops
+  return pickupsOnly(state.stops)
     .filter(s => s.status!=="DONE" && routeTiming[s.id])
     .sort((a,b)=>routeTiming[a.id].order - routeTiming[b.id].order);
 }
@@ -4251,7 +4315,7 @@ function reminderTowns(){
     if (!seen.has(key)){ seen.add(key); out.push({ town, key }); }
   };
   scheduleStopsInOrder().forEach(push);
-  state.stops.filter(s=>s.status!=="DONE").forEach(push);
+  pickupsOnly(state.stops).filter(s=>s.status!=="DONE").forEach(push);
   return out;
 }
 // Reminder groups follow townships, not driving-time blocks. New Plymouth and
@@ -4260,7 +4324,7 @@ function reminderTowns(){
 // the rest are done later on the way through to Bell Block.
 function reminderStopsInRouteOrder(){
   const ordered=scheduleStopsInOrder(), seen=new Set(ordered.map(s=>s.id));
-  return ordered.concat(state.stops.filter(s=>s.status!=="DONE" && !seen.has(s.id)));
+  return ordered.concat(pickupsOnly(state.stops).filter(s=>s.status!=="DONE" && !seen.has(s.id)));
 }
 function messageAreaKey(stop){
   const town=townKey(stop?.town||stop?.area) || "your area";
@@ -4376,7 +4440,7 @@ function reminderBulkMessage(){
 function fullName(s){ return [s.first_name,s.last_name].filter(Boolean).join(" ").trim(); }
 
 function updateStats(km, mins){
-  const pending = state.stops.filter(s=>s.status!=="DONE");
+  const pending = pickupsOnly(state.stops.filter(s=>s.status!=="DONE"));
   $("#stCount").textContent = pending.length;
   $("#stApp").textContent = pending.reduce((n,s)=>n + (s.appliances?s.appliances.length:0), 0);
   if (km==null){ $("#stKm").textContent = "–"; return; }
@@ -4394,6 +4458,53 @@ function render(){
   renderGms();
   updateStats(null);
   $("#roundTrip").checked = !!state.roundTrip;
+}
+
+// Where the yard trip goes is Woody's call, not the optimiser's - he knows what
+// will fill the truck. So adding one asks which pickup to drop off after rather
+// than guessing a spot, and he can still drag it somewhere else afterwards.
+function addUnloadStop(){
+  const pending = state.stops.filter(s => s.status!=="DONE");
+  const pickups = pickupsOnly(pending).filter(s => isFinite(s.lat) && isFinite(s.lng));
+  if (!pickups.length) return flash("Add some pickups first, then drop a GMS trip in between them.");
+
+  const wrap = document.createElement("div");
+  // Same z-index as the app's other full-screen overlays, so the bottom nav
+  // does not paint over the buttons.
+  wrap.style.cssText = "position:fixed;inset:0;z-index:10000;background:rgba(3,16,26,.96);padding:14px;padding-bottom:max(14px, env(safe-area-inset-bottom));overflow:auto";
+  const close = () => wrap.remove();
+  const insertAfter = stop => {
+    const unload = newUnloadStop();
+    const at = stop ? state.stops.findIndex(x => x.id===stop.id) + 1 : state.stops.indexOf(pickups[0]);
+    state.stops.splice(Math.max(at, 0), 0, unload);
+    state.manual = true;            // his split, kept until he asks for a re-plan
+    close(); save(); render(); drawRoute();
+    flash(stop ? `\u2713 GMS drop-off added after ${fullName(stop)||fullAddr(stop)}` : "\u2713 GMS drop-off added at the start");
+  };
+
+  const heading = document.createElement("div");
+  heading.innerHTML = `<b style="font-size:17px">Unload at GMS after which pickup?</b>
+    <p class="small muted" style="margin:6px 0 12px">146 Connett Road East, Bell Block. Everything above the drop-off gets collected first.</p>`;
+  wrap.append(heading);
+
+  const row = (label, sub, stop) => {
+    const button = document.createElement("button");
+    button.className = "ghost";
+    button.style.cssText = "width:100%;text-align:left;margin-bottom:8px;padding:11px 12px;min-height:56px";
+    button.innerHTML = `<b>${esc(label)}</b>${sub?`<br><span class="small muted">${esc(sub)}</span>`:""}`;
+    button.onclick = () => insertAfter(stop);
+    wrap.append(button);
+  };
+  row("Before the first pickup", "Empty the truck on the way out", null);
+  pickups.forEach((stop, i) => row(`After ${i+1}. ${fullName(stop)||fullAddr(stop)}`, fullAddr(stop), stop));
+
+  const cancel = document.createElement("button");
+  cancel.className = "warn";
+  cancel.textContent = "Cancel";
+  cancel.style.cssText = "width:100%;margin-top:6px";
+  cancel.onclick = close;
+  wrap.append(cancel);
+  document.body.append(wrap);
 }
 
 function jumpToScheduled(id){
@@ -4423,7 +4534,7 @@ function renderList(){
   // from the booking), so ask once per booking and redraw if that found anything.
   // Deliberately after the list is painted - the list must never wait on the
   // network to appear.
-  countPhotosForStops(state.stops).then(changed=>{ if (changed) renderList(); }).catch(()=>{});
+  countPhotosForStops(pickupsOnly(state.stops)).then(changed=>{ if (changed) renderList(); }).catch(()=>{});
 
   const pending = state.stops.filter(s => s.status!=="DONE");
   const done    = state.stops.filter(s => s.status==="DONE");
@@ -4434,6 +4545,21 @@ function renderList(){
   const card = (s, isDone) => {
     if (!isDone && s.lat!=null) order++;
     const num = isDone ? "✓" : (s.lat!=null ? order : "!");
+    // A yard trip has no customer, price, phone or paperwork. Showing those
+    // fields empty would only read as missing details on a real pickup.
+    if (isUnload(s)) return `<div class="stop unload ${isDone?'done':''} ${s.id===nextId&&!isDone?'next':''}" data-id="${s.id}">
+      <div class="num">${isDone ? "✓" : "↓"}</div>
+      <div class="stopbody">
+        ${s.id===nextId&&!isDone?'<div class="next-label">NEXT STOP</div>':""}
+        <div class="name">♻️ Unload at GMS <span class="areatag" style="background:#7a869a">DROP OFF</span></div>
+        <div class="addr">${esc(fullAddr(s))}</div>
+        <div class="stopbtns primary-actions">
+          ${(!isDone && s.lat!=null) ? `<button class="sm nav-action" onclick="navStop('${s.id}')">🧭 Navigate</button>` : ""}
+          <button class="${isDone?'warn':'good'} sm" onclick="toggleDone('${s.id}')">${isDone?"↺ Undo":"✓ Unloaded"}</button>
+          <button class="ghost sm" title="Remove this drop-off" onclick="delStop('${s.id}')">✕</button>
+        </div>
+      </div>
+    </div>`;
     const area = s.area||"";
     // Sits on the address line, not up by the name: the area is usually part of
     // finding the place ("Flat 1"), so it belongs where the address is read.
@@ -4509,7 +4635,7 @@ function renderList(){
   const doneRows = done.map(s=>card(s,true)).join("");
 
   wrap.innerHTML =
-    `<div class="sectitle">${pending.length} pickups left · ${esc(activeRunName())} ${state.manual?'· manual order':''} · hold &amp; drag to reorder</div>
+    `<div class="sectitle">${pickupsOnly(pending).length} pickups left${pending.length-pickupsOnly(pending).length ? ` · ${pending.length-pickupsOnly(pending).length} GMS drop-off${pending.length-pickupsOnly(pending).length===1?"":"s"}` : ""} · ${esc(activeRunName())} ${state.manual?'· manual order':''} · hold &amp; drag to reorder</div>
      <div id="pendingList">${pendRows || `<div class="empty" style="padding:16px 8px">Nothing pending — all picked up 🎉</div>`}</div>` +
     (done.length ? `<details class="card completed-pickups"${completedOpen?" open":""}><summary>Completed (${done.length})</summary>
       <div class="row" style="margin:10px 0 12px"><button class="ghost grow" onclick="clearCompletedStops()">🧹 Clear completed off this run</button></div>
@@ -4868,13 +4994,13 @@ function selectedRecipientIds(){
   const bucket = messageBucket();
   if (state.messageSelectionDay !== bucket){
     state.messageSelectionDay = bucket;
-    state.messageSelectedIds = state.stops.filter(s => s.status!=="DONE" && !isContacted(s)).map(s=>s.id);
+    state.messageSelectedIds = pickupsOnly(state.stops).filter(s => s.status!=="DONE" && !isContacted(s)).map(s=>s.id);
   }
   return new Set(state.messageSelectedIds||[]);
 }
 function selectedRecipients(){
   const selected = selectedRecipientIds();
-  return state.stops.filter(s => s.status!=="DONE" && selected.has(s.id));
+  return pickupsOnly(state.stops).filter(s => s.status!=="DONE" && selected.has(s.id));
 }
 function bulkBookingRecipient(s){
   return {
@@ -5025,7 +5151,7 @@ function renderContacts(){
   // Rebuilding this card then destroys the input and the picker slams shut
   // before the tick/Done button. Keep the same field on screen until blur.
   if (messagesPickerOpen()){ pickerNeedsRedraw = true; return; }
-  const pend = state.stops.filter(s => s.status!=="DONE");
+  const pend = pickupsOnly(state.stops.filter(s => s.status!=="DONE"));
   if (!pend.length){ wrap.innerHTML = `<div class="view-title">Messages</div><div class="card empty"><b>No customers yet</b><p>Add pickups first, then come back here to message them.</p><button onclick="setAppView('add')">Add pickups</button></div>`; return; }
   const selected = selectedRecipientIds();
   const selCount = selectedRecipients().length; // count only stops that still exist, not stale ids
@@ -5241,7 +5367,7 @@ window.setRecipientSelected = (id, checked) => {
   state.messageSelectedIds = [...selected]; save(); updateSelectedCustomerCount();
 };
 window.selectRecipients = mode => {
-  const candidates = state.stops.filter(s => s.status!=="DONE");
+  const candidates = pickupsOnly(state.stops).filter(s => s.status!=="DONE");
   state.messageSelectedIds = mode==="all" ? candidates.map(s=>s.id)
     : mode==="new" ? candidates.filter(s=>!isContacted(s)).map(s=>s.id)
     : [];
@@ -6511,7 +6637,7 @@ window.navStop = id => {
 // street-level answers ("Tawa Street" for "2A Tawa Street") fix themselves.
 const navRetried = new Set();   // once per stop per session — a permanently vague address must not re-lookup on every open
 async function backfillNavLabels(){
-  const pending = state.stops.filter(s =>
+  const pending = pickupsOnly(state.stops).filter(s =>
     s.street && !navRetried.has(s.id) && (!s.geoLabel || labelDroppedNumber(s.street, s.geoLabel)));
   if (!pending.length || importBusy) return;
   let changed = false;
@@ -7083,6 +7209,7 @@ $("#optimise").onclick = async () => {
   document.getElementById("map").scrollIntoView({behavior:"smooth",block:"start"});
 };
 // Re-plan from your current GPS position (for stops phoned in mid-route).
+$("#addUnload").onclick = () => addUnloadStop();
 $("#optimiseHere").onclick = () => {
   if (!routeStops().length){ alert("Add some stops first."); return; }
   if (!navigator.geolocation){ alert("Location isn't available — using your set start instead."); optimise(); return; }
@@ -7120,7 +7247,7 @@ function setBanner(sel, msg){
 const LIVE_REFRESH_MS = 3 * 60 * 60 * 1000;
 function weatherLocations(){
   const seen = new Set(), out=[];
-  state.stops.filter(s=>s.status!=="DONE" && isFinite(s.lat) && isFinite(s.lng)).forEach(s=>{
+  pickupsOnly(state.stops).filter(s=>s.status!=="DONE" && isFinite(s.lat) && isFinite(s.lng)).forEach(s=>{
     const name=String(s.town||"").trim();
     const key=name.toLowerCase();
     if (name && !seen.has(key) && out.length<10){ seen.add(key); out.push({name,lat:+s.lat,lng:+s.lng}); }
