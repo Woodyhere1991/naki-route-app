@@ -695,6 +695,10 @@
           <button class="ghost grow" id="cloudRestore">↺ Restore from my account</button>
         </div>
         <p class="small muted" style="margin:6px 0 0">Replaces what's on this phone with the account copy.</p>
+        <div class="row" style="margin-top:8px">
+          <button class="ghost grow" onclick="restorePrePullSnapshot()">↩ Undo the last automatic restore</button>
+        </div>
+        <p class="small muted" style="margin:6px 0 0">If your runs came back or changed on their own, this puts them back to just before that happened.</p>
         <details style="margin-top:12px">
           <summary class="small muted">More backup options <span class="chev">›</span></summary>
           <div class="row" style="margin-top:8px">
@@ -6918,7 +6922,30 @@ function localHasWork(){
   const store=loadJSON(RUNS_LS,{});
   return (store.runs||[]).some(run=>(run.data?.stops||[]).length) || Boolean((store.shared?.unpaid||[]).length);
 }
+// Keeps one copy of the runs as they were immediately before an automatic pull
+// replaced them. The pull below is deliberately automatic (a second phone should
+// just show the same runs), but it used to be blind: clearing a finished run and
+// then backgrounding the app could bring the whole thing back, or replace newer
+// work, with no way back. This is the undo.
+const PRE_PULL_KEY="naki_pre_pull_snapshot_v1";
+function snapshotBeforePull(){
+  try{
+    const current=localStorage.getItem(RUNS_LS);
+    if (!current) return false;
+    saveJSON(PRE_PULL_KEY,{at:Date.now(),runs:current});
+    return true;
+  }catch{ return false; }
+}
+window.restorePrePullSnapshot = () => {
+  const saved=loadJSON(PRE_PULL_KEY,null);
+  if (!saved || !saved.runs) return alert("There is no earlier copy of your runs to go back to.");
+  if (!confirm(`Put your runs back to how they were ${whenText(saved.at)}?\n\nWhat is here now will be replaced.`)) return;
+  try{ localStorage.setItem(RUNS_LS, saved.runs); }catch{ return alert("Could not restore on this phone."); }
+  location.reload();
+};
 async function applyCloudBackup(saved){
+  // Snapshot first, so an automatic pull can always be undone.
+  snapshotBeforePull();
   Object.entries(saved.data||{}).forEach(([key,value])=>{ if (typeof value==="string") localStorage.setItem(key,value); });
   // Stamped from what actually landed, so the next check sees a settled phone.
   setSyncMark(saved.savedAt, JSON.stringify(backupPayload()));
