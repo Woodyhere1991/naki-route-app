@@ -2284,7 +2284,11 @@ async function confirmDirectPickup(id){
     const index=directBookingRows.findIndex(row=>row.id===id);
     if(index>=0) directBookingRows[index]=data.booking;
     renderDirectBookings();
-    flash(`✓ Pickup day confirmed and emailed to ${b.firstName||"customer"}`);
+    // Only claim the customer was told when the send actually succeeded. The app
+    // already does this for prices; confirmations were flashing success either way.
+    flash(data.confirmationEmailed===false
+      ? `Pickup day saved for ${b.firstName||"customer"} — but the email did not send, so tell them another way.`
+      : `✓ Pickup day confirmed and emailed to ${b.firstName||"customer"}`);
   }catch(e){ directStatus(e.message,true); }
 }
 async function completeDirectBooking(id){
@@ -6415,8 +6419,14 @@ window.bulkSend = async (groupId) => {
         const accepted=new Set(result.emailedTo||[]),failed=new Set(result.emailFailed||[]);
         recordMessageDelivery(recipients.filter(s=>accepted.has(s.email?.trim().toLowerCase())),{email:true,emailFailed:false,emailMessage:message});
         recordMessageDelivery(recipients.filter(s=>failed.has(s.email?.trim().toLowerCase())),{emailFailed:true});
-        if(failed.size)problem=`${failed.size} emails need retry`;
-        if(result.unmatched?.length)problem=`${result.unmatched.length} pickups could not be matched to an account; check their details`;
+        // Both warnings have to survive together. Reassigning `problem` meant a
+        // failure to match 3 bookings hid the fact that 12 confirmation emails
+        // never sent - the worst possible time to lose that, because those
+        // customers were never told their day.
+        const warnings=[];
+        if(failed.size)warnings.push(`${failed.size} email${failed.size===1?"":"s"} need retry`);
+        if(result.unmatched?.length)warnings.push(`${result.unmatched.length} pickup${result.unmatched.length===1?"":"s"} could not be matched to an account; check their details`);
+        if(warnings.length)problem=warnings.join(" · ");
 
       }catch(e){ problem=e.message; }
     } else if (mailable.length){

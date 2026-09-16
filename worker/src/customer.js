@@ -194,7 +194,7 @@ ${name} sent you a friend request in Naki Arcade.
 Open Naki Arcade, sign in, then accept or decline it under Arcade friends:
 ${CUSTOMER_ACCOUNT_URL.replace("account.html", "game.html")}
 
-Your email address stays private. Your arcade name can change whenever you like — the friendship is safely tied to your Naki account.
+Your email address stays private. Your arcade name can change whenever you like â€” the friendship is safely tied to your Naki account.
 
 Naki Whiteware Removal`;
 }
@@ -494,7 +494,7 @@ export async function sessionFor(request, env, role) {
   ).bind(tokenHash, role, nowMs).first();
   if (!row) return null;
   // Slide the owner's session forward while he is actually using it. A fixed
-  // 30-day expiry meant it died mid-run on day 30, with work still queued — and
+  // 30-day expiry meant it died mid-run on day 30, with work still queued â€” and
   // the app's only way back in was a fresh emailed code. Extending on use means a
   // phone in regular use never expires under him. Only written once a day, so
   // ordinary requests do not pay for a database write.
@@ -764,7 +764,7 @@ async function handleJotformSubmission(request, env, json, sendMail) {
     }
   }
   // Jotform's own submission alert stopped showing the customer's email, so the
-  // worker sends the same full owner alert website bookings get — with every
+  // worker sends the same full owner alert website bookings get â€” with every
   // detail, email included. Only for genuinely new submissions, so a webhook
   // retry never spams a second copy.
   if (!existing && booking) {
@@ -772,10 +772,10 @@ async function handleJotformSubmission(request, env, json, sendMail) {
     try {
       let alertText = ownerNotificationText(booking, items,
         clean(jotformValue(raw, 18, "additionalInformationenquires"), 1500), price, booking.id);
-      // A numberless address can't be pinned or found — flag it while it is
+      // A numberless address can't be pinned or found â€” flag it while it is
       // still just a booking, not a truck driving up and down the street.
       if (!/\d/.test(String(booking.street_address || ""))) {
-        alertText += "\n\n⚠ This one has NO street number — worth a quick text to them before it goes on a run.";
+        alertText += "\n\nâš  This one has NO street number â€” worth a quick text to them before it goes on a run.";
       }
       await sendMail(env, {
         to: OWNER_EMAIL,
@@ -832,11 +832,11 @@ function bookingDetails(profile, items, additionalInfo, price, bookingId = "") {
 function customerConfirmationText(profile, items, additionalInfo, price) {
   return `Thank you! We have received your form submission and will get in touch as soon as possible to confirm a pickup day.
 
-Collections in Hāwera, Eltham, Stratford, Inglewood, New Plymouth, Bell Block and Waitara are usually within 5-10 working days (sooner if possible), with at least 1-2 days' notice. Pickups outside these areas can take longer because we group nearby collections together.
+Collections in HÄwera, Eltham, Stratford, Inglewood, New Plymouth, Bell Block and Waitara are usually within 5-10 working days (sooner if possible), with at least 1-2 days' notice. Pickups outside these areas can take longer because we group nearby collections together.
 
 No one is required to be home during pickup, but we need adequate access to the appliance(s). If possible, please leave them inside your property line with the payment inside.
 
-Please make sure any furry friends are securely put away if needed. Please ensure no food is left inside any appliances, but no cleaning is required. Thank you! 😊
+Please make sure any furry friends are securely put away if needed. Please ensure no food is left inside any appliances, but no cleaning is required. Thank you! ðŸ˜Š
 
 ${bookingDetails(profile, items, additionalInfo, price)}
 
@@ -848,7 +848,7 @@ function ownerNotificationText(profile, items, additionalInfo, price, bookingId)
   // is not the confirmed day - so it is stated as a request, never as a booking.
   const wanted = pickupDateText(profile.requested_date);
   const request = wanted
-    ? `\n\n⭐ THEY ASKED FOR: ${wanted}${profile.requested_window ? ` (${profile.requested_window})` : ""}`
+    ? `\n\nâ­ THEY ASKED FOR: ${wanted}${profile.requested_window ? ` (${profile.requested_window})` : ""}`
     : "";
   return `A new customer booking was made through the Naki Whiteware website.${request}
 
@@ -880,7 +880,7 @@ Pickup day: ${day}${pickupWindow ? `\nTime: ${pickupWindow}` : ""}${customerNote
 
 Pickup day: ${day}
 ${pickupWindow ? `Time: ${pickupWindow}\n` : ""}${customerNote ? `Note: ${customerNote}\n` : ""}
-Can you please make sure the appliance(s) are accessible and any furry friends are safely secured, if need be? You don't need to be home for the pickup — can you please just leave the items and $ safely inside your property line? 😊`;
+Can you please make sure the appliance(s) are accessible and any furry friends are safely secured, if need be? You don't need to be home for the pickup â€” can you please just leave the items and $ safely inside your property line? ðŸ˜Š`;
   return `${opening}
 
 You can view or cancel your active booking here:
@@ -1959,7 +1959,7 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
       const spent = await latestCodeIsSpent(env, address, "customer");
       return json(request, {
         error: spent
-          ? "That code has had too many tries. Tap “Resend code” for a new one and use the newest email."
+          ? "That code has had too many tries. Tap â€œResend codeâ€ for a new one and use the newest email."
           : "That code is incorrect or has expired",
         codeSpent: spent
       }, 401);
@@ -2416,7 +2416,7 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
         return json(request, { error: `Please wait ${seconds}s before sending another invite` }, 429);
       }
       if (sentToday >= ARCADE_INVITE_MAX_PER_DAY) {
-        return json(request, { error: "You have reached today’s limit of 10 Arcade invites" }, 429);
+        return json(request, { error: "You have reached todayâ€™s limit of 10 Arcade invites" }, 429);
       }
       }
       await env.CUSTOMER_DB.batch([
@@ -2875,10 +2875,18 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
       const additionalInfo = clean(body.additionalInfo, 1500);
       const price = calculate(items, booking.rural_option);
       const updatedAt = now();
+      // A price Woody has already quoted must not be thrown away because the
+      // customer tweaked their list. It used to be zeroed on every edit, so an
+      // agreed figure silently reverted to the list total. The quote survives, and
+      // if the items have changed he is told it may need re-quoting.
+      const hadQuote = Boolean(booking.quoted_at);
+      const itemsChanged = String(booking.items_json || "") !== JSON.stringify(items);
       await env.CUSTOMER_DB.batch([
         env.CUSTOMER_DB.prepare(
           `UPDATE bookings SET items_json=?1, additional_info=?2, total_cents=?3, quote_required=?4,
-             quote_cents=0, quote_note='', quoted_at=NULL, updated_at=?5,
+             quote_cents=CASE WHEN quoted_at IS NULL THEN 0 ELSE quote_cents END,
+             quote_note=CASE WHEN quoted_at IS NULL THEN '' ELSE quote_note END,
+             quoted_at=quoted_at, updated_at=?5,
              requested_date=?7, requested_window=?8 WHERE id=?6`
         ).bind(JSON.stringify(items), additionalInfo, price.cents, price.quoteRequired ? 1 : 0, updatedAt, bookingId,
           isoDate(body.requestedDate), clean(body.requestedWindow, 40)),
@@ -2887,14 +2895,19 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
         ).bind(crypto.randomUUID(), bookingId, `Customer updated the item list (${items.length} item${items.length === 1 ? "" : "s"})`, updatedAt)
       ]);
       const updated = await env.CUSTOMER_DB.prepare("SELECT * FROM bookings WHERE id = ?1").bind(bookingId).first();
-      // Woody has to know, especially if this pickup is already on a run.
+      // Woody has to know, especially if this pickup is already on a run - and
+      // especially if the change affects a price he had already agreed.
+      let changeText = ownerBookingChangeText(updated, items, additionalInfo, price);
+      if (hadQuote && itemsChanged) {
+        changeText += `\n\nâš  You had already quoted this one. The quoted price is kept, but the items changed â€” worth checking the price is still right.`;
+      }
       const ownerEmailed = await sendMail(env, {
         to: OWNER_EMAIL,
         name: "Woody",
         subject: `Booking changed - ${booking.first_name || booking.town || booking.id}`,
-        text: ownerBookingChangeText(updated, items, additionalInfo, price)
+        text: changeText
       }).catch(() => false);
-      return json(request, { ok: true, booking: bookingFrom(updated), ownerEmailed });
+      return json(request, { ok: true, booking: bookingFrom(updated), ownerEmailed, quoteKept: hadQuote });
     }
 
     const photoMatch = path.match(/^\/customer\/bookings\/([^/]+)\/photos$/);
@@ -3121,10 +3134,10 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
         text: customerConfirmationText(pickupProfile, items, additionalInfo, price)
       }).catch(() => false);
       // Old profiles saved before the street-number check can still be
-      // numberless — flag those in the alert so they get fixed at the source.
+      // numberless â€” flag those in the alert so they get fixed at the source.
       let ownerAlertText = ownerNotificationText(pickupProfile, items, additionalInfo, price, bookingId);
       if (!/\d/.test(String(pickupProfile.street_address || ""))) {
-        ownerAlertText += "\n\n⚠ This one has NO street number — worth a quick text to them before it goes on a run.";
+        ownerAlertText += "\n\nâš  This one has NO street number â€” worth a quick text to them before it goes on a run.";
       }
       const ownerEmailed = await sendMail(env, {
         to: OWNER_EMAIL,
@@ -3183,7 +3196,12 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
       if (!parsed || typeof parsed !== "object" || !parsed.data) {
         return json(request, { error: "Backup has no data in it" }, 400);
       }
-      const key = `backup:${session.email.toLowerCase()}`;
+      // One key for the business, not one per signed-in address. Woody may sign in
+      // with either of his own addresses; keying on the session email meant the
+      // second address read an empty slot while the first quietly filled a
+      // different one, so "My runs on other phones" looked broken depending on
+      // which inbox he used that day.
+      const key = `backup:${OWNER_EMAIL}`;
       const savedAt = now();
       const record = JSON.stringify({ savedAt, runCount: Number(parsed.runCount) || 0, data: parsed.data });
       // Roll the current copy back one slot before overwriting it.
@@ -3199,7 +3217,7 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
     }
 
     if (path === "/owner/backup" && request.method === "GET") {
-      const key = `backup:${session.email.toLowerCase()}`;
+      const key = `backup:${OWNER_EMAIL}`;
       const which = new URL(request.url).searchParams.get("which") === "prev" ? `${key}:prev` : key;
       const stored = await env.REMINDERS.get(which, "json");
       if (!stored) return json(request, { error: "No backup saved yet" }, 404);
@@ -3207,7 +3225,7 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
     }
 
     if (path === "/owner/backup/info" && request.method === "GET") {
-      const key = `backup:${session.email.toLowerCase()}`;
+      const key = `backup:${OWNER_EMAIL}`;
       const [latest, prev] = await Promise.all([env.REMINDERS.get(key), env.REMINDERS.get(`${key}:prev`)]);
       const peek = raw => { try { const v = JSON.parse(raw); return { savedAt: v.savedAt, runCount: v.runCount }; } catch { return null; } };
       return json(request, { latest: latest ? peek(latest) : null, previous: prev ? peek(prev) : null });
@@ -3280,7 +3298,7 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
     }
 
     const customerMatch = path.match(/^\/owner\/customers\/([^/]+)$/);
-    // Woody fixing a typo'd phone number or address from the Customers tab —
+    // Woody fixing a typo'd phone number or address from the Customers tab â€”
     // email stays put since bookings, invites and sign-in are all matched on it.
     if (customerMatch && request.method === "PUT") {
       const customerId = decodeURIComponent(customerMatch[1]);
@@ -3303,7 +3321,7 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
       if (ruralOption && !Object.hasOwn(RURAL_PRICES, ruralOption)) {
         return json(request, { error: "Choose a valid pickup area" }, 400);
       }
-      // Plenty of customers only ever give a first name, so one name is enough —
+      // Plenty of customers only ever give a first name, so one name is enough â€”
       // rejecting the whole save over a missing surname just lost the edit.
       if (!firstName && !lastName) return json(request, { error: "Enter at least a first name" }, 400);
       await env.CUSTOMER_DB.prepare(
@@ -3383,6 +3401,7 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
       const seen = new Set();
       const matched = [];
       const unmatched = [];
+      const emailFailedIds = [];
       let emailed = 0;
       const emailedTo=[], emailFailed=[];
       for (const recipient of recipients) {
@@ -3426,10 +3445,23 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
               text: pickupConfirmationText(target.row, pickupDate, pickupWindow, finalNote, greeted)
             });
             if (sent) { emailed++; emailedTo.push(target.row.email.toLowerCase()); }
-            else emailFailed.push(target.row.email.toLowerCase());
-          } catch { emailFailed.push(target.row.email.toLowerCase()); }
+            else { emailFailed.push(target.row.email.toLowerCase()); emailFailedIds.push(target.table === "bookings" ? target.row.id : ""); }
+          } catch { emailFailed.push(target.row.email.toLowerCase()); emailFailedIds.push(target.table === "bookings" ? target.row.id : ""); }
         }
         matched.push(target.row.id);
+      }
+      // Record each failed confirmation against its booking, the same way the
+      // website path does. Returning them in the response only helped while the
+      // banner was on screen; after that, a customer who was never told their day
+      // left no trace at all - the booking card's red "email failed" warning reads
+      // exactly these events. Only rows in the bookings table have events.
+      const failedIds = [...new Set(emailFailedIds.filter(Boolean))];
+      if (failedIds.length) {
+        try {
+          await env.CUSTOMER_DB.batch(failedIds.map(id => env.CUSTOMER_DB.prepare(
+            "INSERT INTO booking_events (id, booking_id, event_type, detail, created_at) VALUES (?1, ?2, 'EMAIL_FAILED', ?3, ?4)"
+          ).bind(crypto.randomUUID(), id, "Confirmation email failed", Date.now())));
+        } catch { /* the send result is still returned to the app */ }
       }
       return json(request, { ok: true, updated: matched.length, emailed, emailedTo, emailFailed, matched, unmatched });
     }
@@ -3835,6 +3867,7 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
       }
       const updated = await env.CUSTOMER_DB.prepare(`SELECT * FROM ${table} WHERE id=?1`).bind(bookingId).first();
       let quoteEmailed = null;
+      let confirmationEmailed = null;
       if (hasQuote && body.notifyCustomer !== false) {
         quoteEmailed = await sendMail(env, {
           to: updated.email,
@@ -3844,15 +3877,19 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
         }).catch(() => false);
       }
       if (body.notifyCustomer && status === "CONFIRMED") {
-        await sendMail(env, {
+        // Capture the result: sendMail returns false when Gmail and Brevo both
+        // fail. Discarding it made the app flash "Pickup day confirmed and emailed"
+        // for a customer who was never told - on every confirmation, and exactly
+        // when the send had failed.
+        confirmationEmailed = await sendMail(env, {
           to: updated.email,
           name: `${updated.first_name || ""} ${updated.last_name || ""}`.trim(),
           subject: `Whiteware pickup confirmed - ${pickupDateText(pickupDate)}`,
           text: pickupConfirmationText(updated, pickupDate, pickupWindow, customerNote)
-        });
+        }).catch(() => false);
       }
       updated.booking_source = jotform ? "JOTFORM" : pickupRun ? "PICKUP_RUN" : "WEBSITE";
-      return json(request, { ok: true, booking: bookingFrom(updated), quoteEmailed, customerSynced });
+      return json(request, { ok: true, booking: bookingFrom(updated), quoteEmailed, confirmationEmailed, customerSynced });
     }
   }
 
