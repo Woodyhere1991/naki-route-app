@@ -3356,8 +3356,109 @@ async function geocode(addr){
     const hit = await geocode(simpler);
     if (hit){ geocache[key] = hit; saveGeo(); return hit; }
   }
+  // Truly last go: the address may be right but spelt wrong. This runs only
+  // after every real lookup has already missed, so the worst a bad guess can do
+  // is turn a dead end into a pin Woody can see and correct - and the card
+  // shows "Navigates to ..." whenever the confirmed address differs.
+  const respelt = addressWithSpellingFixed(addr);
+  if (respelt){
+    const hit = await geocode(respelt);
+    if (hit){
+      geocache[key] = hit; saveGeo();
+      flash(`\u2713 Found it as "${respelt}" \u2014 check the spelling on the pickup`);
+      return hit;
+    }
+  }
   return null;
 }
+/* ---------- Spelling repair for addresses ---------- */
+// A street type spelt wrong ("18 Dixon Aveune") is a miss at Google and at OSM
+// alike, even though the number, the street and the town are all correct. Only
+// two parts of an address have a fixed vocabulary - the street type and the
+// town - so only those get corrected. A street NAME is never touched: "Cove
+// Street" must not quietly become "Grove Street".
+const STREET_TYPES = ["street","road","avenue","drive","place","crescent","terrace",
+  "lane","close","grove","way","parade","court","highway","boulevard","rise","view",
+  "heights","quay","esplanade","track","line","mews","glade","grange","promenade"];
+// Spellings we must not "fix" - the full words plus the abbreviations people
+// actually write. Anything in here is already a street type, so it is left be.
+const STREET_TYPE_OK = new Set(STREET_TYPES.concat(
+  ["st","rd","ave","av","dr","pl","cres","cr","tce","ter","ln","hwy","pde","ct",
+   "blvd","cl","qy","esp","sh","north","south","east","west","extension"]));
+// The towns and suburbs a Taranaki run actually reaches.
+const RUN_TOWNS = ["new plymouth","inglewood","waitara","bell block","oakura","okato",
+  "stratford","hawera","eltham","opunake","urenui","egmont village","lepperton",
+  "tariki","midhirst","normanby","manaia","kaponga","patea","waverley","rahotu",
+  "onaero","tikorangi","spotswood","moturoa","fitzroy","merrilands","vogeltown",
+  "welbourn","westown","strandon","highlands park","glen avon","marfell","ferndale",
+  "frankleigh park","brixton","waiwhakaiho","whalers gate","hurdon","blagdon",
+  "mangorei","omata","ratapiko","toko","douglas","mokau","awakino","uruti","tataraimaka"];
+
+// Optimal string alignment distance: Levenshtein plus swapped neighbours, so
+// "raod" is one typo from "road" rather than two. Bails out as soon as the
+// whole row is past `cap`, which keeps a long word list cheap.
+function typoDistance(a, b, cap){
+  if (Math.abs(a.length - b.length) > cap) return cap + 1;
+  let twoBack = null, prev = Array.from({length:b.length+1}, (_,i)=>i);
+  for (let i=1; i<=a.length; i++){
+    const row = new Array(b.length+1);
+    row[0] = i;
+    let best = i;
+    for (let j=1; j<=b.length; j++){
+      const cost = a[i-1]===b[j-1] ? 0 : 1;
+      row[j] = Math.min(prev[j]+1, row[j-1]+1, prev[j-1]+cost);
+      if (i>1 && j>1 && a[i-1]===b[j-2] && a[i-2]===b[j-1]) row[j] = Math.min(row[j], twoBack[j-2]+1);
+      if (row[j] < best) best = row[j];
+    }
+    if (best > cap) return cap + 1;
+    twoBack = prev; prev = row;
+  }
+  return prev[b.length];
+}
+// The one word in `options` a typo was most likely meant to be, or null when
+// nothing is close enough. Short words get one typo of slack, longer ones two,
+// because two edits on a four-letter word is a different word, not a slip.
+function closestSpelling(word, options){
+  const w = normKey(word);
+  if (!w) return null;
+  const cap = w.length <= 4 ? 1 : 2;
+  let best = null, bestDistance = cap + 1;
+  options.forEach(option => {
+    const d = typoDistance(w, option, cap);
+    if (d < bestDistance){ bestDistance = d; best = option; }
+  });
+  return bestDistance <= cap ? best : null;
+}
+function titleCaseWords(text){
+  return String(text).replace(/\b[a-z]/g, c => c.toUpperCase());
+}
+// "18 Dixon Aveune, New Plymout" -> "18 Dixon Avenue, New Plymouth".
+// "" when nothing needed fixing, which is what stops a second identical lookup.
+function addressWithSpellingFixed(addr){
+  const raw = String(addr==null ? "" : addr);
+  const parts = raw.split(",").map(part => part.trim()).filter(Boolean);
+  if (!parts.length) return "";
+  let changed = false;
+
+  // The street type is the last word of the street, and only there - that is
+  // the position where a type belongs, so a name in any other spot is safe.
+  const words = parts[0].split(/\s+/);
+  const last = words[words.length-1] || "";
+  if (words.length >= 2 && /^[a-z]+$/i.test(last) && !STREET_TYPE_OK.has(last.toLowerCase())){
+    const fixed = closestSpelling(last, STREET_TYPES);
+    if (fixed){ words[words.length-1] = titleCaseWords(fixed); parts[0] = words.join(" "); changed = true; }
+  }
+  // Anything after the street is a town or suburb.
+  for (let i=1; i<parts.length; i++){
+    if (RUN_TOWNS.includes(normKey(parts[i]))) continue;
+    if (/\d/.test(parts[i])) continue;                 // a postcode or "RD 3", not a town
+    const fixed = closestSpelling(parts[i], RUN_TOWNS);
+    if (fixed){ parts[i] = titleCaseWords(fixed); changed = true; }
+  }
+  const out = parts.join(", ");
+  return changed && normKey(out) !== normKey(raw) ? out : "";
+}
+
 // "Flat 1, 18 Dixon Ave" -> "18 Dixon Ave".  "" when there was nothing to drop,
 // which is what stops it looking the same address up twice.
 function addressWithoutUnit(addr){
