@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   addressMatchScore,
+  expandStreetAbbreviations,
   houseNumberOf,
   linzAddressResults,
   linzCqlFor,
@@ -91,4 +92,48 @@ test("LINZ results never include a neighbouring unit or letter suffix", async ()
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+/* Woody, 18 Sept: "201 Lincoln road, Inglewood pickup when I pressed navigate sent me to
+   Waitariki school a few minutes on the road."
+
+   Reproduced against the live service, and the cause was an ABBREVIATION:
+
+     "201 Lincoln Road, Inglewood"   -> 201 Lincoln Road, Inglewood    CORRECT
+     "201 Lincoln Rd, Inglewood"     -> 201, Lincoln Road, Waitoriki   WRONG
+
+   The authoritative register stores "Lincoln Road", so "Lincoln Rd" matched nothing, fell
+   through to the map, and the map's first hit was the OTHER Lincoln Road - Inglewood has
+   two, and the wrong one is by Waitoriki School, about 2.8km away. */
+test("a trailing street abbreviation is expanded so the register is asked properly", () => {
+  const cases = [
+    ["201 Lincoln Rd, Inglewood", "201 Lincoln Road, Inglewood"],
+    ["12 Rata St, Inglewood", "12 Rata Street, Inglewood"],
+    ["5a Devon Ave, New Plymouth", "5a Devon Avenue, New Plymouth"],
+    ["9 Coronation Dr, Waitara", "9 Coronation Drive, Waitara"],
+    ["23 Huatoki Pl, New Plymouth", "23 Huatoki Place, New Plymouth"],
+    ["45 South Rd, Manaia", "45 South Road, Manaia"],
+    ["201 LINCOLN RD, INGLEWOOD", "201 LINCOLN ROAD, INGLEWOOD"]
+  ];
+  for (const [entered, expanded] of cases) {
+    assert.equal(expandStreetAbbreviations(entered), expanded, entered);
+  }
+});
+
+test("only the street line is expanded, and real names are never mangled", () => {
+  for (const untouched of [
+    "201 Lincoln Road, Inglewood",
+    "St Marys Road, New Plymouth",     // "St" here is part of the name
+    "1/34 Waimea Street, Westown, New Plymouth",
+    "1230 Mokau Road, Urenui",
+    "State Highway 3, Waitara",
+    "Lincoln Road",
+    "12 Rata Street, Inglewood"
+  ]) {
+    assert.equal(expandStreetAbbreviations(untouched), untouched, untouched);
+  }
+  /* The town must survive byte-for-byte: an earlier version of this rebuilt every
+     comma-separated segment and inserted a stray space into the town name. */
+  assert.equal(expandStreetAbbreviations("201 Lincoln Rd, Inglewood"), "201 Lincoln Road, Inglewood");
+  assert.equal(expandStreetAbbreviations("9 Coronation Dr,Waitara"), "9 Coronation Drive,Waitara");
 });

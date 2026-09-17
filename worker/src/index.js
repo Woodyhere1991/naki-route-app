@@ -353,6 +353,54 @@ function labelInTown(label, town) {
   return looseKey(label).includes(looseKey(town));
 }
 
+// The last real place name in a query before the region, e.g.
+//   "201 Lincoln Road, Waitoriki"        -> "Waitoriki"
+//   "201 Lincoln Road, Inglewood"        -> "Inglewood"
+// Region-only parts are ignored, so "Inglewood, Taranaki, New Zealand" yields "Inglewood".
+function suburbFromQuery(q) {
+  const parts = String(q || "").split(",").map(part => part.trim()).filter(Boolean);
+  for (let i = parts.length - 1; i >= 1; i -= 1) {
+    const value = parts[i].replace(/\b\d{4}\b/g, "").trim();
+    if (!value) continue;
+    if (/^(taranaki|new zealand|nz|aotearoa)$/i.test(value)) continue;
+    return value;
+  }
+  return "";
+}
+
+/* Does this label name a suburb the caller did not ask for?
+
+   Inglewood holds TWO Lincoln Roads, so the town match cannot separate them:
+
+     "Lincoln Road, Waitoriki, Inglewood, ..."   <- unexpected suburb
+     "Lincoln Road, Inglewood, ..."              <- no extra suburb
+
+   Only a suspect is flagged; a good match is never hidden. When the caller DID name the
+   suburb ("... Waitoriki"), it is expected and nothing is flagged. */
+function suburbUnexpected(label, wantSuburb, town) {
+  if (!town) return false;
+  const key = looseKey(label);
+  const townKey = looseKey(town);
+  const wantKey = looseKey(wantSuburb);
+  // If the caller named the suburb and the label agrees, this is exactly what they asked for.
+  if (wantKey && wantKey !== townKey && key.includes(wantKey)) return false;
+  // Otherwise: any known Taranaki locality in the label is an unexpected narrowing.
+  return TARANAKI_LOCALITIES.some(place => place !== townKey && key.includes(place));
+}
+
+/* Taranaki localities that appear inside a road label.
+   Deliberately a short, high-confidence list of places a driver could actually be sent to,
+   not an exhaustive gazetteer: this only ever marks a doubtful match for a warning. */
+const TARANAKI_LOCALITIES = Object.freeze([
+  "waitoriki", "waitara", "urenui", "lepperton", "bellblock", "tikorangi", "motunui",
+  "onaero", "brixton", "waitariki", "egmontvillage", "norfolk", "ratapiko", "kaimata",
+  "tarata", "purangi", "toko", "midhirst", "stratford", "eltham", "kaponga", "manaia",
+  "opunake", "okato", "pungarehu", "rahotu", "tukapa", "spotswood", "westown",
+  "merrilands", "fitzroy", "moturoa", "blagdon", "ferndale", "highlands", "welbourn",
+  "lynmouth", "brooklands", "strandon", "whalersgate", "marfell", "omata", "hurdon",
+  "vogeltown", "mangorei", "taumaru", "hillsborough", "barrett", "wrights", "innglewood",
+]);
+
 // Split the unit from the physical street number. In NZ, "1/34" means unit 1
 // at street number 34; treating the first 1 as the street number is how map
 // searches end up at a completely different property.
@@ -408,6 +456,69 @@ const LINZ_ADDRESSES_LAYER = "data.linz.govt.nz:layer-123113";
 // are a preference, not a rule — customers write their postal town while LINZ
 // knows the locality ("Mimi") — and a written unit letter ("2A") sometimes turns
 // out to be a plain "2" in the register, so both get relaxed step by step.
+/* ---------- Street-type abbreviations ----------
+   Woody, 18 Sept: "201 Lincoln road, Inglewood pickup when I pressed navigate sent me to
+   Waitariki school a few minutes on the road."
+
+   The cause was an ABBREVIATION, proven against the live service:
+
+     "201 Lincoln Road, Inglewood"     -> 201 Lincoln Road, Inglewood        CORRECT
+     "201 Lincoln Rd, Inglewood"       -> 201, Lincoln Road, Waitoriki ...   WRONG
+
+   The authoritative register (LINZ) stores "Lincoln Road". Asking it for "Lincoln Rd"
+   matches nothing, so the lookup fell through to the map - and Inglewood has TWO Lincoln
+   Roads, so the fallback's first hit was the one by Waitoriki School, about 2.8km away.
+
+   The fix is to expand the abbreviation BEFORE the lookup, so an abbreviated address
+   reaches the authoritative register (which has the house number) instead of the map.
+   Only the LAST word of the street line is expanded, so a genuine name keeps its spelling:
+   "St Marys Road" keeps its Saint, and "Rd" at the end becomes "Road". */
+const ROAD_ABBREVIATIONS = Object.freeze({
+  rd: 'road', st: 'street', ave: 'avenue', av: 'avenue', dr: 'drive', drv: 'drive',
+  cres: 'crescent', crs: 'crescent', pl: 'place', tce: 'terrace', terr: 'terrace',
+  hwy: 'highway', ln: 'lane', ct: 'court', gr: 'grove', pde: 'parade',
+  bvd: 'boulevard', blvd: 'boulevard', hts: 'heights', hgts: 'heights',
+  gdn: 'garden', gdns: 'gardens', esp: 'esplanade', qy: 'quay', cl: 'close',
+  bnd: 'bend', hbr: 'harbour', vly: 'valley', gln: 'glen', mwy: 'motorway',
+  mtwy: 'motorway', rte: 'route', tpk: 'turnpike', ext: 'extension',
+  n: 'north', s: 'south'
+});
+
+// Keep whatever case the caller typed: RD -> ROAD, Rd -> Road, rd -> road.
+function matchCase(source, target) {
+  const word = String(source || '');
+  if (word && word === word.toUpperCase()) return target.toUpperCase();
+  if (word && word[0] === word[0].toUpperCase()) return target[0].toUpperCase() + target.slice(1);
+  return target;
+}
+
+/* Expand a trailing street-type abbreviation on the STREET line only.
+   Towns and regions are left exactly as typed. Anything already spelled out is untouched. */
+/* Expand the last word of a single street segment. */
+function expandStreetToken(segment) {
+  const part = String(segment == null ? '' : segment);
+  const leading = part.match(/^\s*/)[0];
+  const trailing = part.match(/\s*$/)[0];
+  const tokens = part.trim().split(/\s+/).filter(Boolean);
+  if (!tokens.length) return part;
+  const last = tokens[tokens.length - 1];
+  const bare = last.replace(/[^A-Za-z]/g, '');
+  const expansion = ROAD_ABBREVIATIONS[bare.toLowerCase()];
+  if (!expansion || bare.length > 4) return part;
+  tokens[tokens.length - 1] = last.replace(bare, matchCase(bare, expansion));
+  return leading + tokens.join(' ') + trailing;
+}
+
+function expandStreetAbbreviations(text) {
+  const value = String(text == null ? '' : text);
+  if (!value) return value;
+  /* Rebuild ONLY the street segment; every later segment is passed through untouched, so a
+     stray space can never appear in a town name. */
+  const comma = value.indexOf(',');
+  if (comma < 0) return expandStreetToken(value);
+  return expandStreetToken(value.slice(0, comma)) + value.slice(comma);
+}
+
 function linzCqlFor(q, includeTown, dropSuffix, dropUnit = false) {
   const cleaned = String(q || "").replace(/\b(?:rd|rural delivery)\s*\d+\b/gi, " ")
     .replace(/\s+/g, " ").trim();
@@ -523,7 +634,10 @@ async function handleAddress(request, env) {
   if (q.length < 3) return json(request, { results: [] });
   const key = cacheRequest(request, "address-v11", [q.toLowerCase(), String(limit)]);
   return cached(request, key, 2592000, async () => {
-    const physicalQuery = physicalAddressQuery(q);
+    /* Expand a trailing street abbreviation ("Rd" -> "Road") BEFORE any lookup. Without
+     this an abbreviated address misses the authoritative register and falls through to the
+     map, which is how a pickup was sent to the wrong road of the same name. */
+    const physicalQuery = expandStreetAbbreviations(physicalAddressQuery(q));
     const address = /new zealand|\bnz\b/i.test(physicalQuery) ? physicalQuery : `${physicalQuery}, Taranaki, New Zealand`;
     const town = townFromQuery(q);
     const street = String(physicalQuery).split(",")[0].trim();
@@ -599,7 +713,41 @@ async function handleAddress(request, env) {
           results.sort((a, b) =>
             addressMatchScore(physicalQuery, b.label) - addressMatchScore(physicalQuery, a.label));
         }
-        return json(request, { results, source: "OpenStreetMap fallback" }, 200, "public, max-age=2592000");
+        /* TOWN FIRST, because a road name can exist TWICE inside one district.
+
+           Woody, 18 Sept: "201 Lincoln road, Inglewood pickup when I pressed navigate sent me
+           to Waitariki school a few minutes on the road."
+
+           Proven against the live service: Inglewood has TWO Lincoln Roads -
+
+             Lincoln Road, Waitoriki, Inglewood   [-39.1248, 174.2576]  <- by the school
+             Lincoln Road, Inglewood              [-39.1458, 174.2213]  <- the real one
+
+           Asking for the bare road returns the Waitoriki one FIRST, and because the app takes
+           results[0] that became the pin. The Google branch above already sorts town matches
+           first; this OpenStreetMap branch never did, so the same query could give a different
+           answer depending on which provider replied.
+
+           Array.sort is stable, so sorting on the town match alone keeps each group's
+           existing order - including the house-number ordering applied just above. */
+        if (town && results.length) {
+          results.sort((a, b) => Number(labelInTown(b.label, town)) - Number(labelInTown(a.label, town)));
+        }
+        /* Flag a road query whose best answer sits in an unexpected locality.
+
+           Only for a query with NO house number, which is the case that actually went wrong:
+           a bare "Lincoln Road" cannot be told apart from its namesake, and both sit in
+           Inglewood, so the town alone is not enough. With a house number the answer is
+           specific, and the house-number sorting above already governs it - flagging there
+           would fire on perfectly good addresses, which is why it does not.
+
+           This never changes which pin is used. It only tells the app the road name was
+           ambiguous so the driver is warned rather than silently sent. */
+        const houseNumberWanted = houseNumberOf(physicalQuery);
+        const wantSuburb = suburbFromQuery(q);
+        const ambiguousRoad = Boolean(!houseNumberWanted && town && results.length
+          && suburbUnexpected(results[0].label, wantSuburb, town));
+        return json(request, { results, source: "OpenStreetMap fallback", town, ambiguousRoad }, 200, "public, max-age=2592000");
       }
     } catch { /* return a clean miss below */ }
     return json(request, { results: [], source: "fallback unavailable" }, 200, "public, max-age=900");
@@ -1035,4 +1183,4 @@ export default {
 };
 
 export { ReceptionCall };
-export { addressMatchScore, houseNumberOf, linzAddressResults, linzCqlFor, physicalAddressQuery };
+export { addressMatchScore, houseNumberOf, linzAddressResults, linzCqlFor, physicalAddressQuery, expandStreetAbbreviations };
