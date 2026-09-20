@@ -12,7 +12,7 @@ const bookingFields = createFields.filter(x => x !== 'requestedDate').concat(['s
 const customerFields = ['firstName','lastName','phone','streetAddress','town','area','ruralOption','accessNotes'];
 
 function reply(data, status = 200, headers = {}) {
-  return Response.json(data, {status, headers: {'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', ...headers}});
+  return Response.json(data, {status, headers: {'Cache-Control': 'no-store, no-transform', 'X-Content-Type-Options': 'nosniff', ...headers}});
 }
 const fail = (message, status = 400) => { throw Object.assign(new Error(message), {status}); };
 const etag = row => '"' + row.updated_at + '"';
@@ -140,7 +140,9 @@ export async function handleIntegrationApi(request, environment) {
       if (!row) fail('Record not found.', 404);
       const expected = request.headers.get('If-Match');
       if (!expected) fail('Read this record first and send its ETag in If-Match.', 428);
-      if (expected !== etag(row)) fail('This record changed. Read it again before editing.', 412);
+      // Cloudflare may prefix an ETag with W/ when it compresses JSON. This
+      // validator represents the database revision, independent of encoding.
+      if (expected.replace(/^W\//, '') !== etag(row)) fail('This record changed. Read it again before editing.', 412);
       if (kind === 'bookings') {
         return portal('/owner/bookings/' + id, 'PATCH', {...body, status: body.status || row.status, notifyCustomer: false}, row.updated_at);
       }

@@ -115,6 +115,14 @@ test('customer PATCH preserves omitted details and rejects unsupported email cha
   assert.equal((await api(path,'PATCH',{email:'other@example.test'},{'If-Match':tag,'Idempotency-Key':'customer-email'})).status,400);
 });
 
+test('a CDN-weakened ETag still identifies the same revision and rejects stale writes',async t=>{
+  const {api,create}=await setup(t);const booking=await create();const path='/bookings/'+booking.id;
+  const read=await api(path);assert.match(read.headers.get('Cache-Control'),/no-transform/);
+  const tag='W/'+read.headers.get('ETag');
+  assert.equal((await api(path,'PATCH',{customerNote:'Saved through compressed response'},{'If-Match':tag,'Idempotency-Key':'weak-etag-first'})).status,200);
+  assert.equal((await api(path,'PATCH',{customerNote:'Stale overwrite'},{'If-Match':tag,'Idempotency-Key':'weak-etag-stale'})).status,412);
+});
+
 test('Jotform and imported pickups can both be read and changed',async t=>{
   const {db,api}=await setup(t);
   db.prepare("INSERT INTO jotform_bookings(id,submission_id,form_id,email,created_at,updated_at) VALUES('JOTFORM-test','test','form','j@example.test',1,1)").run();
