@@ -1,3 +1,4 @@
+import { readRunBackup } from "./run-backup.js";
 import {apiBody, apiDigest} from './api-keys.js';
 import {handlePortalRequest, bookingFrom, profileFrom, ITEM_PRICES, RURAL_PRICES, OWNER_EMAIL} from './customer.js';
 import {apiSchema} from './integration-schema.js';
@@ -119,7 +120,7 @@ export async function handleIntegrationApi(request, environment) {
         return reply({[kind === 'bookings' ? 'booking' : 'customer']: kind === 'bookings' ? bookingView(row) : {id: row.id, ...profileFrom(row), updatedAt: row.updated_at}}, 200, {ETag: etag(row)});
       }
       if (path === '/runs') {
-        const saved = await env.REMINDERS.get('backup:' + OWNER_EMAIL, 'json');
+        const saved = await readRunBackup(env, 'backup:' + OWNER_EMAIL);
         let store = {};
         if (saved?.data?.naki_pickup_runs_v1) {
           try { store = JSON.parse(saved.data.naki_pickup_runs_v1); } catch { fail('The saved run copy could not be read.', 503); }

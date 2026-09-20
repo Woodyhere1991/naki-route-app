@@ -7061,7 +7061,7 @@ function nakiStorageKeys(){
   // searched. Including it meant the cloud backup crept towards the server's 4 MB
   // limit, and past it every save was refused — so the account copy silently
   // stopped updating while the app only ever said "waiting to sync".
-  return Object.keys(localStorage).filter(key=>key.startsWith("naki_") && !key.startsWith("naki_action_") && key!=="naki_weather_cache_v1" && key!==GEO && key!==OWNER_TOKEN_KEY && key!==SYNC_KEY);
+  return Object.keys(localStorage).filter(key=>key.startsWith("naki_") && !key.startsWith("naki_action_") && key!=="naki_weather_cache_v1" && key!==GEO && key!==OWNER_TOKEN_KEY && key!==SYNC_KEY && key!=="naki_pre_pull_snapshot_v1" && !key.startsWith("naki_recovery_"));
 }
 $("#backupSave").onclick=()=>{
   try{
@@ -7145,7 +7145,7 @@ async function pushCloudBackup(quiet=true){
   if (quiet && stamp===lastCloudPush) return;         // nothing actually changed
   cloudBackupBusy=true;
   try{
-    const result=await ownerApi("/owner/backup",{ method:"PUT", body:stamp });
+    const result=await ownerApi("/owner/backup",{ method:"PUT", body:JSON.stringify({...payload,baseSavedAt:syncMark().serverAt}) });
     lastCloudPush=stamp;
     setSyncMark(result.savedAt||Date.now(), stamp);
     fieldLastSave=result.savedAt||Date.now();
@@ -7156,7 +7156,10 @@ async function pushCloudBackup(quiet=true){
     // A backup the server refuses as too big will be refused forever, so saying
     // "waiting to sync" made it look like a temporary hiccup and hid a permanent
     // failure. Say what is actually wrong.
-    if (/too big/i.test(e.message||"")){
+    if (/newer runs|needs refreshing/i.test(e.message||"")){
+      paintCloudState(e.message,true);
+      backupStatus(e.message,true);
+    }else if (/too big/i.test(e.message||"")){
       paintCloudState("⚠ Your backup is too big to save to your account — use Export backup instead.",true);
       if (!quiet) backupStatus("That backup is too big for the account (over 4 MB). Use “Save a backup file”.", true);
     }else{
@@ -7211,7 +7214,7 @@ window.restorePrePullSnapshot = () => {
 async function applyCloudBackup(saved){
   // Snapshot first, so an automatic pull can always be undone.
   snapshotBeforePull();
-  Object.entries(saved.data||{}).forEach(([key,value])=>{ if (typeof value==="string") localStorage.setItem(key,value); });
+  Object.entries(saved.data||{}).forEach(([key,value])=>{ if (typeof value==="string" && key!==PRE_PULL_KEY && key!==SYNC_KEY && key!==OWNER_TOKEN_KEY && !key.startsWith("naki_recovery_")) localStorage.setItem(key,value); });
   // Stamped from what actually landed, so the next check sees a settled phone.
   setSyncMark(saved.savedAt, JSON.stringify(backupPayload()));
   backupStatus("Brought your runs down from your account. Reloading…");
@@ -7229,13 +7232,8 @@ async function syncFromCloud(force=false){
   if (info.latest.savedAt <= mark.serverAt) return;           // this phone is level or ahead
   const changedHere=JSON.stringify(backupPayload())!==mark.payload;
   if (changedHere && localHasWork()){
-    // This used to stop everything and ask which copy to keep. It's one phone and
-    // one person, so there is no other copy to weigh up - the account is a spare
-    // in case the phone is lost, not a second desk. The phone in his hand wins and
-    // goes straight up; nothing on it is ever replaced without him tapping Restore.
-    // Forced, not quiet, so the sync mark settles - a skipped push would leave the
-    // clash unresolved and land right back here on the next check.
-    pushCloudBackup(false);
+    paintCloudState("Your account has newer runs. Both copies are kept. Export this phone copy before restoring from account.",true);
+    backupStatus("Sync paused to protect both copies. Use Add & setup → My runs on other phones to export and restore.",true);
     return;
   }
   try{ await applyCloudBackup(await ownerApi("/owner/backup")); }catch(e){ /* offline — try again later */ }
@@ -7293,7 +7291,7 @@ $("#backupFile").onchange=async event=>{
     const incoming=JSON.parse(data[RUNS_LS]||"{}").runs||[];
     const current=(loadJSON(RUNS_LS,{}).runs||[]).length;
     if (!confirm(`Restore ${incoming.length} run${incoming.length===1?"":"s"} from this backup?\n\nThis replaces the ${current} run${current===1?"":"s"} on this phone.`)) return;
-    Object.entries(data).forEach(([key,value])=>{ if (typeof value==="string") localStorage.setItem(key,value); });
+    Object.entries(data).forEach(([key,value])=>{ if (typeof value==="string" && key!==PRE_PULL_KEY && key!==SYNC_KEY && key!==OWNER_TOKEN_KEY && !key.startsWith("naki_recovery_")) localStorage.setItem(key,value); });
     backupStatus("Restored. Reloading…");
     setTimeout(()=>location.reload(), 700);
   }catch(e){ backupStatus("Couldn't read that backup: "+e.message, true); }
