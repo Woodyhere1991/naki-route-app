@@ -6,6 +6,7 @@
   "workers_dev": true,
   "preview_urls": false,
   "ratelimits": [
+    { "name": "BOT_RATE_LIMIT", "namespace_id": "1009", "simple": { "limit": 120, "period": 60 } },
     { "name": "KIDS_RATE_LIMIT", "namespace_id": "1008", "simple": { "limit": 120, "period": 60 } }
   ],
   "durable_objects": {

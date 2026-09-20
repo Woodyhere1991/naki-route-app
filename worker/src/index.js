@@ -1,4 +1,5 @@
 import { OWNER_ACTIONS, ownerAction } from "./owner-actions.js";
+import { handleIntegrationApi, purgeApiRequests } from "./integration-api.js";
 import { recordKidsActivity, purgeKidsActivity } from "./kids-activity.js";
 import { loginSender } from "./login-mail.js";
 import { AuthMailError } from "./auth-limits.js";
@@ -1110,6 +1111,7 @@ export default {
   async fetch(request, env) {
     if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: cors(request) });
     const url = new URL(request.url);
+    if (url.pathname.startsWith("/api/v1/")) return handleIntegrationApi(request, env);
     const path = url.pathname.replace(/^\/v2/, "");
     // Twilio and Jotform are servers, not browsers - neither sends an Origin.
     // They prove themselves with a signature instead, inside their handlers.
@@ -1175,6 +1177,7 @@ export default {
     ctx.waitUntil(env.CUSTOMER_DB.prepare("DELETE FROM auth_request_limits WHERE expires_at<?1").bind(Date.now()).run());
     // Only on the daily trigger - the 15-minute one has other work to do.
     if (event.cron === "0 21 * * *") {
+      ctx.waitUntil(purgeApiRequests(env));
       ctx.waitUntil(env.CUSTOMER_DB.prepare('DELETE FROM owner_action_receipts WHERE status IS NOT NULL AND created_at<?1').bind(Date.now()-30*86400000).run());
       ctx.waitUntil(snapshotDatabase(env));
       ctx.waitUntil(purgeOldPhotos(env));

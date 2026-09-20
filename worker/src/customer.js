@@ -1,6 +1,7 @@
 import { AuthMailError, reserveAuthRequest } from "./auth-limits.js";
 import { kidsActivityReport } from "./kids-activity.js";
 import { scoreReviewReason } from "./score-validation.js";
+import { handleApiKeys } from "./api-keys.js";
 export const OWNER_EMAIL = "nakiwreckremoval@gmail.com";
 // Addresses allowed to sign in as the owner. OWNER_EMAIL stays the one that
 // receives booking alerts; this list is only about who can log in, so Woody can
@@ -1279,7 +1280,7 @@ export async function purgeOldPhotos(env) {
    there is always something to rebuild from. Sign-in codes and live sessions are
    deliberately left out - they are secrets, and they are worthless a day later. */
 const SNAPSHOT_SKIP = new Set([
-  "_cf_KV", "d1_migrations", "sqlite_sequence", "sessions", "login_codes", "auth_request_limits"
+  "_cf_KV", "d1_migrations", "sqlite_sequence", "sessions", "login_codes", "auth_request_limits", "bot_api_keys", "bot_api_requests"
 ]);
 const SNAPSHOT_PREFIX = "db-backups/";
 const SNAPSHOT_KEEP_DAYS = 30;
@@ -1746,7 +1747,7 @@ async function customerDocuments(env, address) {
   return (rows.results || []).map(bookingDocumentFrom);
 }
 
-export async function handlePortalRequest({ request, env, path, json, sendMail }) {
+export async function handlePortalRequest({ request, env, path, json, sendMail, integrationSession = null }) {
   if (!path.startsWith("/customer/") && !path.startsWith("/owner/") && path !== "/jotform/submission") return null;
   if (!env.CUSTOMER_DB) return json(request, { error: "Customer accounts are not ready yet" }, 503);
 
@@ -3172,8 +3173,14 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
   }
 
   if (path.startsWith("/owner/")) {
-    const session = await sessionFor(request, env, "owner");
+    const session = integrationSession || await sessionFor(request, env, "owner");
     if (!session) return json(request, { error: "Owner login required" }, 401);
+    // Bot dispatch is an explicit allowlist in integration-api.js. Keys never
+    // become owner sessions and cannot manage keys, exports, messages or backups.
+    if (!integrationSession) {
+      const keysResponse = await handleApiKeys({request, env, path, json});
+      if (keysResponse) return keysResponse;
+    }
     if (path === "/owner/kids-activity" && request.method === "GET") return await kidsActivityReport(request,env,json);
 
     if (path === "/owner/arcade/score-flags" && request.method === "GET") {
@@ -3324,10 +3331,12 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
       // Plenty of customers only ever give a first name, so one name is enough â€”
       // rejecting the whole save over a missing surname just lost the edit.
       if (!firstName && !lastName) return json(request, { error: "Enter at least a first name" }, 400);
-      await env.CUSTOMER_DB.prepare(
+      const changed = await env.CUSTOMER_DB.prepare(
         `UPDATE customers SET first_name=?1, last_name=?2, phone=?3, street_address=?4, town=?5,
-          area=?6, access_notes=?7, rural_option=?8, updated_at=?9 WHERE id=?10`
-      ).bind(firstName, lastName, phone, streetAddress, town, area, accessNotes, ruralOption, now(), customerId).run();
+          area=?6, access_notes=?7, rural_option=?8, updated_at=?9 WHERE id=?10 AND (?11 IS NULL OR updated_at=?11)`
+      ).bind(firstName, lastName, phone, streetAddress, town, area, accessNotes, ruralOption,
+        Math.max(now(), Number(integrationSession?.expectedUpdatedAt || 0) + 1), customerId, integrationSession?.expectedUpdatedAt ?? null).run();
+      if (integrationSession && !changed.meta?.changes) return json(request, {error: "This customer changed. Read it again before editing."}, 412);
       const row = await env.CUSTOMER_DB.prepare(
         `SELECT c.*,
            ((SELECT COUNT(*) FROM bookings b WHERE b.customer_id = c.id) +
@@ -3529,22 +3538,22 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
             id, customer_id, status, first_name, last_name, phone, email, street_address, town, area,
             rural_option, items_json, additional_info, referral_source, referral_details,
             total_cents, quote_required, created_at, updated_at, requested_date
-          ) VALUES (?1, ?2, 'NEW', ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 'Phone', 'Taken by Woody', ?13, ?14, ?15, ?15, ?16)`
+          ) VALUES (?1, ?2, 'NEW', ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 'Phone', ?17, ?13, ?14, ?15, ?15, ?16)`
         ).bind(
           bookingId, customerId, firstName, lastName, phone, address, streetAddress, town, area,
           ruralOption, JSON.stringify(items), additionalInfo, price.cents, price.quoteRequired ? 1 : 0, createdAt,
-          isoDate(body.requestedDate)
+          isoDate(body.requestedDate), integrationSession ? 'Taken by bot API' : 'Taken by Woody'
         ),
         env.CUSTOMER_DB.prepare(
-          "INSERT INTO booking_events (id, booking_id, event_type, detail, created_at) VALUES (?1, ?2, 'CREATED', 'Taken by Woody', ?3)"
-        ).bind(crypto.randomUUID(), bookingId, createdAt)
+          "INSERT INTO booking_events (id, booking_id, event_type, detail, created_at) VALUES (?1, ?2, 'CREATED', ?4, ?3)"
+        ).bind(crypto.randomUUID(), bookingId, createdAt, integrationSession ? 'Taken by bot API' : 'Taken by Woody')
       ]);
       const booking = await env.CUSTOMER_DB.prepare("SELECT * FROM bookings WHERE id = ?1").bind(bookingId).first();
       try { await syncBookingToSheet(env, booking); }
       catch (error) { await markSheetFailure(env, bookingId, error); }
       // A copy by email is the customer's record of the day being arranged. It is
       // never allowed to lose the booking, so a mail failure is reported, not thrown.
-      const customerEmailed = await sendMail(env, {
+      const customerEmailed = integrationSession ? false : await sendMail(env, {
         to: address,
         name: `${firstName} ${lastName}`.trim(),
         subject: "Whiteware Collection",
@@ -3772,7 +3781,7 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
       if (hasQuote && !(Number.isFinite(rawQuote) && rawQuote >= 0 && rawQuote <= 100000)) {
         return json(request, { error: "Enter the quoted price as a number" }, 400);
       }
-      const updatedAt = now();
+      const updatedAt = Math.max(now(), Number(existing.updated_at || 0) + 1);
       const quoteCents = hasQuote ? Math.round(rawQuote * 100) : Number(existing.quote_cents || 0);
       const quoteNote = body.quoteNote == null ? existing.quote_note || "" : clean(body.quoteNote, 300);
       const quotedAt = hasQuote ? updatedAt : (existing.quoted_at || null);
@@ -3815,10 +3824,11 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
           first_name=?10, last_name=?11, phone=?12, email=?13, street_address=?14, town=?15,
           area=?16, rural_option=?21, additional_info=?17, items_json=?18, total_cents=?19, quote_required=?20,
           updated_at=?5${jotform || pickupRun ? ", completed_at = CASE WHEN ?1='COMPLETED' THEN COALESCE(completed_at, ?5) ELSE NULL END" : ""}
-         WHERE id=?6`
+         WHERE id=?6 AND (?22 IS NULL OR updated_at=?22)`
       ).bind(status, pickupDate, pickupWindow, customerNote, updatedAt, bookingId, quoteCents, quoteNote, quotedAt,
         firstName, lastName, phone, address, streetAddress, town, area, additionalInfo, itemsJson,
-        totalCents, quoteRequired, ruralOption).run();
+        totalCents, quoteRequired, ruralOption, integrationSession?.expectedUpdatedAt ?? null).run();
+      if (integrationSession && !result.meta?.changes) return json(request, {error: "This booking changed. Read it again before editing."}, 412);
       if (!result.meta || !result.meta.changes) return json(request, { error: "Booking not found" }, 404);
       // Fixing someone's details on one of their bookings should fix it
       // everywhere: push contact/address/travel changes back onto the customer
@@ -3898,7 +3908,7 @@ export async function handlePortalRequest({ request, env, path, json, sendMail }
 
 // Exported only for the focused permission-policy test; the Worker routes
 // above remain the public API.
-export { arcadeContactAllowed, directChatAllowed, handleJotformSubmission, jotformAddress };
+export { arcadeContactAllowed, directChatAllowed, handleJotformSubmission, jotformAddress, bookingFrom, profileFrom };
 
 async function ownerListPage(request, env, query, kind) {
   const url=new URL(request.url), search=clean(url.searchParams.get("q"),120).toLowerCase();
