@@ -184,3 +184,9 @@ test('rate limiting blocks work and key creation rejects invalid permissions and
   const r=await api('/me');assert.equal(r.status,429);assert.equal(r.headers.get('Retry-After'),'60');
   for(const body of [{name:'key',permission:'admin',expiresInDays:90},{name:'key',permission:'write',expiresInDays:0}]) assert.equal((await owner('/owner/api-keys','POST',body)).status,400);
 });
+test('caller price guard refuses mismatched creation without creating a booking',async t=>{
+ const f=await setup(t);const catalog=await(await f.api('/catalog')).json();assert.equal(catalog.itemPrices.Dryer[0],2000);assert.equal(catalog.ruralPrices[sample.ruralOption],0);
+ const before=f.db.prepare('SELECT count(*) AS n FROM bookings').get().n;
+ const wrong=await f.api('/bookings','POST',{...sample,expectedTotalCents:9999,expectedQuoteRequired:false},{'Idempotency-Key':crypto.randomUUID()});assert.equal(wrong.status,422);assert.equal(f.db.prepare('SELECT count(*) AS n FROM bookings').get().n,before);
+ const right=await f.api('/bookings','POST',{...sample,expectedTotalCents:1000,expectedQuoteRequired:false},{'Idempotency-Key':crypto.randomUUID()});assert.equal(right.status,201);assert.equal((await right.json()).booking.total,10);
+});
