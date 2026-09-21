@@ -860,7 +860,8 @@
 const NP = { lat: -39.0556, lng: 174.0752 };          // New Plymouth default centre
 const LS = "naki_route_v1";                            // old single-run key (kept as a safety backup)
 const RUNS_LS = "naki_pickup_runs_v1";                 // named runs + shared unpaid ledger
-const GEO = "naki_geocache_v5";                        // address -> {lat,lng,label}; v5 refreshes corrected units, suffixes and ranges
+const GEO = "naki_geocache_v10";                        // v9 drops refused rural RAPID pins that had no Navigate button
+const PIN_FIX = 8;                                     // bump to re-pin saved stops after a geocode fix
 const UA  = "NakiPickupRun/1.0 (whiteware pickup route planner; nakiwreckremoval@gmail.com)";
 const API = "https://naki-route-api.nakiwreckremoval.workers.dev/v2";
 const OWNER_TOKEN_KEY = "naki_owner_token_v1";
@@ -3333,25 +3334,33 @@ async function geocode(addr){
   lastGeoMismatch = false;
   const key = normKey(addr);
   if (!key) return null;
-  if (geocache[key] && !labelDroppedNumber(addr, geocache[key].label)) return geocache[key];
-  if (geocache[key]) delete geocache[key];                 // discard an old wrong-number guess
+  if (geocache[key] && !labelDroppedNumber(addr, geocache[key].label) && !cachedHitSuspect(addr, geocache[key])) return geocache[key];
+  if (geocache[key]) delete geocache[key];                 // discard an old wrong-number or wrong-suburb guess
   const knownKey = Object.keys(KNOWN_ADDRESSES).find(k => key.includes(k));
   if (knownKey){
     const hit = KNOWN_ADDRESSES[knownKey];
     geocache[key] = hit; saveGeo();
     return hit;
   }
-  const google = await addressLookup(addr, 1);
-  lastGeoMismatch = google.townMismatch;   // the pin is real, it just sits in a different town than typed
-  if (google.results.length){
-    const top = google.results[0];
+  const google = await addressLookup(addr, 6);
+  let top = pickAddressResult(google.results, addr);
+  if (!top && houseNumberOf(addr) && townFromQuery(addr)){
+    const road = String(addr).split(",")[0].replace(/^\s*\d+[a-z]?(?:\s*-\s*\d+[a-z]?)?\s*/i, "").trim();
+    const town = townFromQuery(addr);
+    if (road){
+      const retry = await addressLookup(`${road}, ${town}`, 6);
+      top = pickAddressResult(retry.results, `${road}, ${town}`);
+    }
+  }
+  lastGeoMismatch = Boolean(top && townFromQuery(addr) && !labelInTown(top.label, townFromQuery(addr)));
+  if (top){
     // A street-level answer ("Tawa Street, Inglewood…") for a numbered question
     // ("2A Tawa Street") is not the address. The rough pin still gets used for
     // the map and route order, but no label is saved - so Navigate hands Google
     // Maps the full typed address instead of parking Woody on the wrong street.
     const want = houseNumberOf(addr);
     const label = want && houseNumberOf(top.label) !== want ? "" : (top.label || "");
-    const hit = { lat:+top.lat, lng:+top.lng, label, mismatch:Boolean(google.townMismatch) };
+    const hit = { lat:+top.lat, lng:+top.lng, label, mismatch:lastGeoMismatch };
     geocache[key] = hit; saveGeo();
     return hit;
   }
@@ -3359,18 +3368,21 @@ async function geocode(addr){
   if (wait > 0) await sleep(wait);
   lastGeo = Date.now();
   const q = encodeURIComponent(addr + (/taranaki|new zealand|nz/i.test(addr) ? "" : ", Taranaki, New Zealand"));
-  const url = `https://nominatim.openstreetmap.org/search?format=json&countrycodes=nz&limit=1&q=${q}`;
+  const url = `https://nominatim.openstreetmap.org/search?format=json&countrycodes=nz&limit=6&q=${q}`;
   try{
     const res = await fetch(url, { headers:{ "Accept":"application/json" } });
     const data = await res.json();
-    if (data && data.length){
+    const osmRows = (data||[]).map(row => ({
+      lat:+row.lat, lng:+row.lon,
+      label: String(row.display_name || "").split(",").slice(0, 4).join(",").trim()
+    }));
+    const row = pickAddressResult(osmRows, addr);
+    if (row){
       // Same house-number rule as the Google path: a street-level OSM answer
       // keeps its rough pin but never gets saved as the confirmed address.
-      const row = data[0];
-      const osmLabel = String(row.display_name || "").split(",").slice(0, 4).join(",").trim();
       const want = houseNumberOf(addr);
-      const label = want && houseNumberOf(osmLabel) !== want ? "" : osmLabel;
-      const hit = { lat:+row.lat, lng:+row.lon, label };
+      const label = want && houseNumberOf(row.label) !== want ? "" : (row.label || "");
+      const hit = { lat:+row.lat, lng:+row.lng, label };
       geocache[key] = hit; saveGeo();
       return hit;
     }
@@ -3476,6 +3488,8 @@ function addressWithSpellingFixed(addr){
     const fixed = closestSpelling(last, STREET_TYPES);
     if (fixed){ words[words.length-1] = titleCaseWords(fixed); parts[0] = words.join(" "); changed = true; }
   }
+  const collapsed = parts[0].replace(/([A-Za-z])\1{2,}/g, "$1$1");
+  if (collapsed !== parts[0]){ parts[0] = collapsed; changed = true; }
   // Anything after the street is a town or suburb.
   for (let i=1; i<parts.length; i++){
     if (RUN_TOWNS.includes(normKey(parts[i]))) continue;
@@ -3491,7 +3505,7 @@ function addressWithSpellingFixed(addr){
 // which is what stops it looking the same address up twice.
 function addressWithoutUnit(addr){
   const simpler = String(addr==null?"":addr)
-    .replace(/^\s*(?:(?:flat|unit|apartment|apt|shop|villa|room|rm|u)\s*\.?\s*|#\s*)\d+\s*[a-z]?\s*(?:[,/\-]\s*|at\s+|\s+)/i, "")
+    .replace(/^\s*(?:(?:townhouse|town house|th|flat|unit|apartment|apt|shop|villa|room|rm|u)\s*\.?\s*|#\s*)\d+\s*[a-z]?\s*(?:[,/\-]\s*|at\s+|\s+)/i, "")
     .replace(/^\s*rear\s*(?:of\s+)?[,\-]?\s*/i, "")
     .replace(/^\s*\d+\s*[a-z]?\s*\/\s*(?=\d)/i, "")
     .trim();
@@ -3502,9 +3516,9 @@ function addressWithoutUnit(addr){
 // This prevents Google treating the unit 1 as house 1 or changing it to 34A.
 function houseNumberOf(text){
   const value=String(text==null?"":text).trim();
-  let m=value.match(/^(?:(?:flat|unit|apartment|apt|shop|villa|room|rm|u)\s*\.?\s*|#\s*)?\d+[a-z]?\s*\/\s*(\d+[a-z]?(?:\s*-\s*\d+[a-z]?)?)(?=\b|[\s,])/i);
+  let m=value.match(/^(?:(?:townhouse|town house|th|flat|unit|apartment|apt|shop|villa|room|rm|u)\s*\.?\s*|#\s*)?\d+[a-z]?\s*\/\s*(\d+[a-z]?(?:\s*-\s*\d+[a-z]?)?)(?=\b|[\s,])/i);
   if (m) return normKey(m[1]).replace(/\s+/g,"");
-  m=value.match(/^(?:flat|unit|apartment|apt|shop|villa|room|rm|u)\s*\.?\s*\d+[a-z]?\s*(?:[,\-]\s*|at\s+|\s+)(\d+[a-z]?(?:\s*-\s*\d+[a-z]?)?)(?=\b|[\s,])/i);
+  m=value.match(/^(?:townhouse|town house|th|flat|unit|apartment|apt|shop|villa|room|rm|u)\s*\.?\s*\d+[a-z]?\s*(?:[,\-]\s*|at\s+|\s+)(\d+[a-z]?(?:\s*-\s*\d+[a-z]?)?)(?=\b|[\s,])/i);
   if (m) return normKey(m[1]).replace(/\s+/g,"");
   m=value.match(/^(\d+[a-z]?\s*-\s*\d+[a-z]?)(?=\b|[\s,])/i);
   if (m) return normKey(m[1]).replace(/\s+/g,"");
@@ -3525,18 +3539,174 @@ function coordsFromText(text){
 }
 // True when a confirmed address lost the number we asked for — the tell-tale of
 // a street-level match ("2A Tawa Street" answered as plain "Tawa Street").
+function addressUnitOf(text){
+  const m=String(text||"").trim().match(/^(?:(?:townhouse|town house|th|flat|unit|apartment|apt|shop|villa|room|rm|u)\s*\.?\s*|#\s*)?(\d+[a-z]?)\s*\//i);
+  return m ? m[1].toLowerCase() : "";
+}
 function labelDroppedNumber(street, label){
   const want = houseNumberOf(street);
-  return Boolean(want) && houseNumberOf(label) !== want;
+  return Boolean(want) && (houseNumberOf(label) !== want || Boolean(addressUnitOf(label) && addressUnitOf(label) !== addressUnitOf(street)));
+}
+
+function looseKey(text){
+  return String(text||"").toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+function townFromQuery(q){
+  const parts = String(q||"").split(",").map(part => part.trim()).filter(Boolean);
+  for (const part of parts.slice(1)){
+    const town = part.replace(/\b\d{4}\b/g, "").trim();
+    if (!town) continue;
+    if (/^(taranaki|new zealand|nz|aotearoa)$/i.test(town)) continue;
+    return town;
+  }
+  return "";
+}
+function suburbFromQuery(q){
+  const parts = String(q||"").split(",").map(part => part.trim()).filter(Boolean);
+  for (let i = parts.length - 1; i >= 1; i -= 1){
+    const value = parts[i].replace(/\b\d{4}\b/g, "").trim();
+    if (!value) continue;
+    if (/^(taranaki|new zealand|nz|aotearoa)$/i.test(value)) continue;
+    return value;
+  }
+  return "";
+}
+function labelInTown(label, town){
+  if (!town) return true;
+  return looseKey(label).includes(looseKey(town));
+}
+const TARANAKI_PIN_LOCALITIES = Object.freeze([
+  "patea", "alton", "waverley", "hawera", "normanby", "eltham", "stratford",
+  "kaponga", "manaia", "opunake", "waitara", "urenui", "bellblock", "newplymouth",
+  "oakura", "okato", "inglewood", "innglewood", "waitoriki", "waitariki",
+  "midhirst", "toko", "ngaere", "douglas", "motunui", "lepperton", "tikorangi"
+]);
+function suburbUnexpected(label, wantSuburb, town){
+  if (!town) return false;
+  const key = looseKey(label);
+  const townKey = looseKey(town);
+  const wantKey = looseKey(wantSuburb);
+  if (wantKey && wantKey !== townKey && key.includes(wantKey)) return false;
+  const parent = { oakura:["newplymouth"], inglewood:["newplymouth"], waitara:["newplymouth"],
+    bellblock:["newplymouth"], okato:["newplymouth"], omata:["newplymouth"],
+    urenui:["newplymouth"], lepperton:["newplymouth"], tikorangi:["newplymouth"],
+    motunui:["newplymouth"], onaero:["newplymouth"], pitone:["newplymouth"],
+    tarurutangi:["newplymouth"], koru:["newplymouth"], tataraimaka:["newplymouth"] }[townKey] || [];
+  return TARANAKI_PIN_LOCALITIES.some(place => {
+    if (place === townKey || parent.includes(place)) return false;
+    return key.includes(place);
+  });
+}
+function inTaranakiPoint(p){
+  const lat = Number(p && p.lat), lng = Number(p && p.lng);
+  return lat < -38.35 && lat > -40.15 && lng > 173.45 && lng < 175.35;
+}
+function kmBetween(a, b){
+  if (!a || !b) return Infinity;
+  const R = 6371, toR = d => d * Math.PI / 180;
+  const dLat = toR(b.lat - a.lat), dLng = toR(b.lng - a.lng);
+  const x = Math.sin(dLat/2)**2 + Math.cos(toR(a.lat))*Math.cos(toR(b.lat))*Math.sin(dLng/2)**2;
+  return R * 2 * Math.atan2(Math.sqrt(x), Math.sqrt(1-x));
+}
+const TOWN_CENTRES = {
+  inglewood:{lat:-39.161,lng:174.207}, hawera:{lat:-39.591,lng:174.284},
+  patea:{lat:-39.757,lng:174.476}, oakura:{lat:-39.117,lng:173.953},
+  newplymouth:{lat:-39.056,lng:174.075}, waitara:{lat:-39.001,lng:174.238},
+  stratford:{lat:-39.337,lng:174.284}, eltham:{lat:-39.429,lng:174.299},
+  bellblock:{lat:-39.032,lng:174.148}, okato:{lat:-39.195,lng:173.880}
+};
+function townCentre(town){ return TOWN_CENTRES[looseKey(town)] || null; }
+function addressResultUsable(result, q){
+  if (!result) return false;
+  if (!Number.isFinite(+result.lat) || !Number.isFinite(+result.lng)) return false;
+  const town = townFromQuery(q);
+  const wantSuburb = suburbFromQuery(q);
+  const want = houseNumberOf(q);
+  const label = result.label || "";
+  if (want && houseNumberOf(label) && labelDroppedNumber(q, label)) return false;
+  if (town && suburbUnexpected(label, wantSuburb, town)) return false;
+  return true;
+}
+function pickAddressResult(results, q){
+  const rows = (results||[]).filter(result => result && Number.isFinite(+result.lat) && Number.isFinite(+result.lng));
+  const local = rows.filter(inTaranakiPoint);
+  const pool = local.length ? local : rows;
+  if (!pool.length) return null;
+  const town = townFromQuery(q);
+  const wantSuburb = suburbFromQuery(q);
+  const want = houseNumberOf(q);
+  const score = result => {
+    const label = result.label || "";
+    let n = 0;
+    if (want && houseNumberOf(label) === want) n += 16;
+    if (town && !suburbUnexpected(label, wantSuburb, town)) n += 8;
+    if (town && labelInTown(label, town)) n += 4;
+    return n;
+  };
+  pool.sort((a, b) => score(b) - score(a));
+  const usable = pool.filter(result => addressResultUsable(result, q));
+  if (usable.length) return usable[0];
+  const numbered = want ? pool.filter(result => houseNumberOf(result.label) === want && !labelDroppedNumber(q, result.label)) : [];
+  if (numbered.length === 1) return numbered[0];
+  if (numbered.length){
+    const centre = townCentre(town);
+    if (!centre) return numbered[0];
+    const nearby = numbered.filter(result => kmBetween(result, centre) <= 40);
+    return nearby[0] || null;
+  }
+  return null;
+}
+function cachedHitSuspect(addr, hit){
+  if (!hit) return true;
+  const town = townFromQuery(addr);
+  const want = houseNumberOf(addr);
+  const numberedLocal = want && houseNumberOf(hit.label || "") === want && inTaranakiPoint(hit);
+  if (hit.mismatch && !numberedLocal) return true;
+  if (town && suburbUnexpected(hit.label || "", suburbFromQuery(addr), town) && !numberedLocal) return true;
+  if (!inTaranakiPoint(hit)) return true;
+  const centre = townCentre(town);
+  if (centre && !numberedLocal && kmBetween(hit, centre) > 40) return true;
+  return false;
+}
+function pinNeedsRelookup(s){
+  if (!s || !s.street) return false;
+  if (s.pinFix !== PIN_FIX) return true;
+  if (!s.geoLabel || labelDroppedNumber(s.street, s.geoLabel)) return true;
+  const q = [s.street, s.town].filter(Boolean).join(", ");
+  const town = s.town || townFromQuery(q);
+  const numberedLocal = houseNumberOf(s.street) && houseNumberOf(s.geoLabel) === houseNumberOf(s.street)
+    && inTaranakiPoint(s);
+  if (town && suburbUnexpected(s.geoLabel, suburbFromQuery(q), town) && !numberedLocal) return true;
+  const centre = townCentre(town);
+  if (centre && !numberedLocal && Number.isFinite(+s.lat) && Number.isFinite(+s.lng) && kmBetween(s, centre) > 40) return true;
+  return false;
 }
 
 // Save a lookup onto a stop: coords, the address Google actually confirmed, and
 // whether that address sits in a different town than the one on the booking.
 function applyGeo(s, hit){
   if (!s || !hit) return;
+  // A later lookup must not drag an already-placed Taranaki pin to another
+  // city's street of the same name. That is what made Optimise look random:
+  // the stop list still said Waitara, but the map had jumped to Dunedin.
+  // Pulling a stray pin back into Taranaki is the opposite case — allow it.
+  if (isFinite(s.lat) && isFinite(s.lng) && isFinite(hit.lat) && isFinite(hit.lng)
+      && haversine(s, hit) > 30){
+    const inTaranaki = p => p.lat < -38.4 && p.lat > -40.1 && p.lng > 173.5 && p.lng < 175.3;
+    if (inTaranaki(s) && !inTaranaki(hit)) return;
+    if (!inTaranaki(hit)) return;
+  }
+  const town = s.town || "";
+  if (town && hit.label && suburbUnexpected(hit.label, suburbFromQuery([s.street, s.town].join(", ")), town)){
+    const want = houseNumberOf(s.street);
+    const numberedLocal = want && houseNumberOf(hit.label) === want && inTaranakiPoint(hit);
+    const centre = townCentre(town);
+    if (!numberedLocal && (!centre || kmBetween(hit, centre) > 40)) return;
+  }
   s.lat = hit.lat; s.lng = hit.lng;
   s.geoLabel = hit.label || "";
   s.addrDiffers = Boolean(hit.mismatch);
+  s.pinFix = PIN_FIX;
 }
 
 // True when Google's confirmed address isn't the one on the booking — a different
@@ -4683,7 +4853,7 @@ function renderList(){
         <div class="name">♻️ Unload at GMS <span class="areatag" style="background:#7a869a">DROP OFF</span></div>
         <div class="addr">${esc(fullAddr(s))}</div>
         <div class="stopbtns primary-actions">
-          ${(!isDone && s.lat!=null) ? `<button class="sm nav-action" onclick="navStop('${s.id}')">🧭 Navigate</button>` : ""}
+          ${(!isDone && mapsDirUrl(s)) ? `<button class="sm nav-action" onclick="navStop('${s.id}')">🧭 Navigate</button>` : ""}
           <button class="${isDone?'warn':'good'} sm" onclick="toggleDone('${s.id}')">${isDone?"↺ Undo":"✓ Unloaded"}</button>
           <button class="ghost sm" title="Remove this drop-off" onclick="delStop('${s.id}')">✕</button>
         </div>
@@ -4738,7 +4908,7 @@ function renderList(){
     const photoBtn = (photoCount && !isDone)
       ? `<button class="ghost sm" title="${photoCount} photo${photoCount===1?"":"s"} from the customer — tap to view" onclick="openStopPhotos('${s.id}')">📷 ${photoCount} photo${photoCount===1?"":"s"}</button>`
       : "";
-    const navBtn   = (!isDone && s.lat!=null) ? `<button class="sm nav-action" onclick="navStop('${s.id}')">🧭 Navigate</button>` : "";
+    const navBtn   = (!isDone && mapsDirUrl(s)) ? `<button class="sm nav-action" onclick="navStop('${s.id}')">🧭 Navigate</button>` : "";
     const doneBtn  = `<button class="${isDone?'warn':'good'} sm" onclick="toggleDone('${s.id}')">${isDone?'↺ Undo':'✓ Done'}</button>`;
     const del      = `<button class="ghost sm" title="Remove this stop" onclick="delStop('${s.id}')">✕</button>`;
     const btns = `<div class="stopbtns primary-actions">${isDone?receiptBtn:navBtn+photoBtn+receiptBtn+textBtn}</div><details class="stop-more"><summary>More actions</summary><div class="stopbtns">${isDone?doneBtn+invoiceBtn+editBtn+emailBtn+del:doneBtn+phone+emailBtn+prioBtn+editBtn+invoiceBtn+del}</div></details>`;
@@ -6729,7 +6899,7 @@ function navAddress(s){
   if (physical){
     // Keep the unit on the pickup card, but send Maps the registered physical
     // street number. Google misreads slash units such as 1/34.
-    if (s.geoLabel && !labelDroppedNumber(physical, s.geoLabel))
+    if (s.geoLabel && !labelDroppedNumber(s.street, s.geoLabel))
       return /new zealand|\bnz\b/i.test(s.geoLabel) ? s.geoLabel : `${s.geoLabel}, New Zealand`;
     return safeMapsAddress(physical,s.town,"");
   }
@@ -6744,7 +6914,7 @@ function navAddress(s){
 function mapsDirUrl(s){
   const addr = navAddress(s);
   const physical=addressWithoutUnit(s?.street);
-  const confirmedUnitPoint=physical && s?.geoLabel && !labelDroppedNumber(physical,s.geoLabel)
+  const confirmedUnitPoint=physical && s?.geoLabel && !labelDroppedNumber(s.street,s.geoLabel)
     && isFinite(s?.lat) && isFinite(s?.lng);
   // Coordinates avoid Google reinterpreting a valid NZ slash-unit address.
   const dest = confirmedUnitPoint ? `${s.lat},${s.lng}` : addr ? encodeURIComponent(addr)
@@ -6767,7 +6937,7 @@ window.navStop = id => {
 const navRetried = new Set();   // once per stop per session — a permanently vague address must not re-lookup on every open
 async function backfillNavLabels(){
   const pending = pickupsOnly(state.stops).filter(s =>
-    s.street && !navRetried.has(s.id) && (!s.geoLabel || labelDroppedNumber(s.street, s.geoLabel)));
+    !navRetried.has(s.id) && pinNeedsRelookup(s));
   if (!pending.length || importBusy) return;
   let changed = false;
   for (const s of pending){
@@ -7623,10 +7793,13 @@ setInterval(refreshOwnerData,15000);
 document.addEventListener("visibilitychange",()=>{ if(document.visibilityState==="visible") refreshOwnerData(); });
 window.addEventListener("focus",refreshOwnerData);
 setTimeout(syncSavedProfileBookings, 1500);
-setTimeout(backfillNavLabels, 2500);
+setTimeout(backfillNavLabels, 400);
 $("#mapPanel").ontoggle = () => {
   // Opening the map fresh is a good moment to show the whole run again.
-  if ($("#mapPanel").open) ensureMap().then(ok=>{if(ok){mapUserMoved=false;paintMapButtons();map.invalidateSize();drawRoute();}});
+  if ($("#mapPanel").open){
+    backfillNavLabels();
+    ensureMap().then(ok=>{if(ok){mapUserMoved=false;paintMapButtons();map.invalidateSize();drawRoute();}});
+  }
 };
 attachAutocomplete($("#oneAddr"), $("#acOne"), r => { oneAddrPicked = { lat:r.lat, lng:r.lng, label:r.label }; });
 attachAutocomplete($("#startAddr"), $("#acStart"), r => {

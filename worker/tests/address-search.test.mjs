@@ -7,7 +7,9 @@ import {
   houseNumberOf,
   linzAddressResults,
   linzCqlFor,
-  physicalAddressQuery
+  physicalAddressQuery,
+  preferLocalAddressResults,
+  suburbUnexpected
 } from "../src/index.js";
 
 test("a slash address keeps its unit but searches the physical street number", () => {
@@ -45,6 +47,7 @@ test("LINZ lookup uses street number 34 and the unit separately", () => {
   assert.match(exact, /address_number=34/);
   assert.match(exact, /full_road_name_ascii ILIKE 'Waimea Street%'/);
   assert.match(exact, /lower\(unit_value\)='1'/);
+  assert.match(exact, /territorial_authority_ascii ILIKE '%New Plymouth%'/);
 
   const physicalFallback = linzCqlFor("1/34 Waimea Street, Westown, New Plymouth", true, false, true);
   assert.doesNotMatch(physicalFallback, /unit_value/);
@@ -136,4 +139,56 @@ test("only the street line is expanded, and real names are never mangled", () =>
      comma-separated segment and inserted a stray space into the town name. */
   assert.equal(expandStreetAbbreviations("201 Lincoln Rd, Inglewood"), "201 Lincoln Road, Inglewood");
   assert.equal(expandStreetAbbreviations("9 Coronation Dr,Waitara"), "9 Coronation Drive,Waitara");
+});
+
+test("the township Lincoln Road beats the Waitoriki one when both come back", () => {
+  const waitoriki = {
+    label: "Lincoln Road, Waitoriki, Inglewood",
+    lat: -39.1248, lng: 174.2576
+  };
+  const township = {
+    label: "201 Lincoln Road, Inglewood",
+    lat: -39.1458, lng: 174.2213
+  };
+  const query = "201 Lincoln Rd, Inglewood";
+  assert.equal(suburbUnexpected(waitoriki.label, "Inglewood", "Inglewood"), true);
+  assert.equal(suburbUnexpected(township.label, "Inglewood", "Inglewood"), false);
+  const picked = preferLocalAddressResults([waitoriki, township], query);
+  assert.equal(picked[0].label, township.label);
+  assert.equal(picked[0].lat, township.lat);
+  assert.deepEqual(preferLocalAddressResults([waitoriki], "123 Unique Road, Inglewood"), []);
+});
+
+test("a rural RAPID is kept when LINZ names the district, not the postal town", () => {
+  const pitone = {
+    label: "217 Greenwood Road, Pitone, New Plymouth",
+    lat: -39.132116, lng: 173.89912
+  };
+  assert.equal(suburbUnexpected(pitone.label, "Oakura", "Oakura"), false);
+  assert.equal(suburbUnexpected(pitone.label, "Pitone", "Pitone"), false);
+  assert.equal(preferLocalAddressResults([pitone], "217 Greenwood Road, Oakura")[0].label, pitone.label);
+  assert.equal(preferLocalAddressResults([pitone], "217 Greenwood Road, Inglewood")[0].label, pitone.label);
+  assert.equal(preferLocalAddressResults([pitone], "217 Greenwood Road, Pitone")[0].label, pitone.label);
+  assert.equal(preferLocalAddressResults([pitone], "217 Greenwood Road, Hawera")[0].label, pitone.label);
+  const leigh = { label: "217 Greenwood Road, Leigh", lat: -36.2906, lng: 174.8008 };
+  assert.equal(preferLocalAddressResults([leigh, pitone], "217 Greenwood Road, Oakura")[0].label, pitone.label);
+  assert.deepEqual(preferLocalAddressResults([leigh], "217 Greenwood Road, Oakura"), []);
+});
+
+test("an Inglewood street is not pinned on the Patea road of the same name", () => {
+  const patea = { label: "Hursthouse Road, Alton, Patea", lat: -39.6728, lng: 174.4545 };
+  const inglewood = { label: "Hursthouse Road, Inglewood", lat: -39.154, lng: 174.221 };
+  const query = "Hursthouse Road, Inglewood";
+  assert.equal(suburbUnexpected(patea.label, "Inglewood", "Inglewood"), true);
+  const picked = preferLocalAddressResults([patea, inglewood], query);
+  assert.equal(picked[0].label, inglewood.label);
+  assert.deepEqual(preferLocalAddressResults([patea], query), []);
+});
+
+test("townhouses search their exact unit and never accept neighbouring units", () => {
+  assert.equal(physicalAddressQuery("TH78/71 Barrett Road"), "71 Barrett Road");
+  assert.match(linzCqlFor("TH78/71 Barrett Road", false, false), /unit_value\)='78'/);
+  const wrong = {label:"79/71 Barrett Road, New Plymouth", lat:-39.0845, lng:174.037};
+  assert.deepEqual(preferLocalAddressResults([wrong], "TH78/71 Barrett Road, New Plymouth"), []);
+  assert.deepEqual(preferLocalAddressResults([wrong], "71 Barrett Road, New Plymouth"), []);
 });

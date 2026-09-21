@@ -79,9 +79,16 @@ async function cached(request, key, seconds, producer) {
   if (hit) return noStore(hit);
   const response = await producer();
   if (response.ok) {
-    const headers = new Headers(response.headers);
-    headers.set("Cache-Control", `public, max-age=${seconds}`);
-    await store.put(key, new Response(response.clone().body, { status: response.status, statusText: response.statusText, headers }));
+    let keep = true;
+    try {
+      const data = await response.clone().json();
+      if (data && Array.isArray(data.results) && data.results.length === 0) keep = false;
+    } catch { /* not an address payload */ }
+    if (keep) {
+      const headers = new Headers(response.headers);
+      headers.set("Cache-Control", `public, max-age=${seconds}`);
+      await store.put(key, new Response(response.clone().body, { status: response.status, statusText: response.statusText, headers }));
+    }
   }
   return noStore(response);
 }
@@ -383,23 +390,135 @@ function suburbUnexpected(label, wantSuburb, town) {
   const key = looseKey(label);
   const townKey = looseKey(town);
   const wantKey = looseKey(wantSuburb);
-  // If the caller named the suburb and the label agrees, this is exactly what they asked for.
   if (wantKey && wantKey !== townKey && key.includes(wantKey)) return false;
-  // Otherwise: any known Taranaki locality in the label is an unexpected narrowing.
-  return TARANAKI_LOCALITIES.some(place => place !== townKey && key.includes(place));
+  const parent = DISTRICT_PARENT[townKey] || [];
+  return TARANAKI_LOCALITIES.some(place => {
+    if (place === townKey || parent.includes(place)) return false;
+    return key.includes(place);
+  });
+}
+
+/* New Plymouth district covers Oakura, Inglewood, Waitara. LINZ often prints
+   the district, not the coastal locality, so "Pitone, New Plymouth" is the
+   right letterbox for an Oakura rural RAPID — not an unexpected town. */
+const DISTRICT_PARENT = Object.freeze({
+  oakura: ["newplymouth"], inglewood: ["newplymouth"], waitara: ["newplymouth"],
+  bellblock: ["newplymouth"], okato: ["newplymouth"], omata: ["newplymouth"],
+  urenui: ["newplymouth"], lepperton: ["newplymouth"], tikorangi: ["newplymouth"],
+  motunui: ["newplymouth"], onaero: ["newplymouth"], pitone: ["newplymouth"],
+  tarurutangi: ["newplymouth"], koru: ["newplymouth"], tataraimaka: ["newplymouth"]
+});
+
+function collapseExtraRepeats(text) {
+  return String(text == null ? "" : text).replace(/([A-Za-z])\1{2,}/g, "$1$1");
+}
+
+function inTaranakiPoint(p) {
+  const lat = Number(p && p.lat), lng = Number(p && p.lng);
+  return lat < -38.35 && lat > -40.15 && lng > 173.45 && lng < 175.35;
+}
+
+function kmBetween(a, b) {
+  if (!a || !b) return Infinity;
+  const R = 6371, toR = d => d * Math.PI / 180;
+  const dLat = toR(b.lat - a.lat), dLng = toR(b.lng - a.lng);
+  const x = Math.sin(dLat / 2) ** 2 +
+    Math.cos(toR(a.lat)) * Math.cos(toR(b.lat)) * Math.sin(dLng / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(x), Math.sqrt(1 - x));
+}
+
+const TOWN_CENTRES = Object.freeze({
+  inglewood: { lat: -39.161, lng: 174.207 }, hawera: { lat: -39.591, lng: 174.284 },
+  patea: { lat: -39.757, lng: 174.476 }, oakura: { lat: -39.117, lng: 173.953 },
+  newplymouth: { lat: -39.056, lng: 174.075 }, waitara: { lat: -39.001, lng: 174.238 },
+  stratford: { lat: -39.337, lng: 174.284 }, eltham: { lat: -39.429, lng: 174.299 },
+  bellblock: { lat: -39.032, lng: 174.148 }, okato: { lat: -39.195, lng: 173.880 },
+  waverley: { lat: -39.769, lng: 174.614 }, normanby: { lat: -39.541, lng: 174.287 },
+  manaia: { lat: -39.551, lng: 174.125 }, opunake: { lat: -39.455, lng: 173.858 },
+  urenui: { lat: -38.995, lng: 174.390 }
+});
+
+function townCentre(town) {
+  return TOWN_CENTRES[looseKey(town)] || null;
+}
+
+/* Rank lookup rows so a single-result caller gets the road in the town they typed.
+
+   Inglewood has two Lincoln Roads. Google/OSM often put the Waitoriki one first.
+   Navigate already sends the typed address (Google Maps then lands on the township
+   road). The in-app pin used results[0], so stop 9 could sit by the school while
+   Navigate was correct. Prefer a letterbox without an unexpected suburb when one
+   exists; if the only hit is that suburb, keep it. */
+function addressResultScore(result, q) {
+  const label = result && result.label || "";
+  const town = townFromQuery(q);
+  const wantSuburb = suburbFromQuery(q);
+  const physical = physicalAddressQuery(q);
+  const want = houseNumberOf(physical);
+  let n = 0;
+  if (want && addressMatchScore(physical, label) > 0) n += 16;
+  if (town && !suburbUnexpected(label, wantSuburb, town)) n += 8;
+  if (town && labelInTown(label, town)) n += 4;
+  if (result && result.exact) n += 2;
+  return n;
+}
+
+function sortAddressResults(results, q) {
+  return (Array.isArray(results) ? results.slice() : []).sort(
+    (a, b) => addressResultScore(b, q) - addressResultScore(a, q));
+}
+
+function addressResultUsable(result, q) {
+  if (!result) return false;
+  if (!Number.isFinite(Number(result.lat)) || !Number.isFinite(Number(result.lng))) return false;
+  const town = townFromQuery(q);
+  const wantSuburb = suburbFromQuery(q);
+  const physical = physicalAddressQuery(q);
+  const want = houseNumberOf(physical);
+  const label = result.label || "";
+  if (want && houseNumberOf(label) && addressMatchScore(physical, label) === 0) return false;
+  const requested = addressNumberParts(q), candidate = addressNumberParts(label);
+  if (candidate?.unit && candidate.unit !== requested?.unit) return false;
+  if (town && suburbUnexpected(label, wantSuburb, town)) return false;
+  return true;
+}
+
+function preferLocalAddressResults(results, q) {
+  const rows = (Array.isArray(results) ? results : []).filter(inTaranakiPoint);
+  const physical = physicalAddressQuery(q);
+  const want = houseNumberOf(physical);
+  // Another region's 217 Greenwood Road is not a fallback. Rural RAPID numbers
+  // miss the first 6 nationwide hits; using those pins sent Oakura jobs to Leigh.
+  const ranked = sortAddressResults(rows.length ? rows : (want ? [] : results), q);
+  const town = townFromQuery(q);
+  const usable = ranked.filter(result => addressResultUsable(result, q));
+  if (usable.length) return usable;
+  // Rural RAPID numbers often sit in a locality LINZ does not call by the postal
+  // town. Keep a Taranaki letterbox with the right number when it is near the
+  // typed town. A far duplicate (Patea vs Inglewood) is the other road — drop it.
+  const numbered = want
+    ? ranked.filter(result => addressMatchScore(physical, result.label) > 0 && (!addressNumberParts(result.label)?.unit || addressNumberParts(result.label)?.unit === addressNumberParts(q)?.unit))
+    : [];
+  if (numbered.length === 1) return numbered;
+  if (numbered.length) {
+    const centre = townCentre(town);
+    if (!centre) return numbered;
+    return numbered.filter(result => kmBetween(result, centre) <= 40);
+  }
+  if (want) return [];
+  if (town && ranked.length && ranked.every(result =>
+    suburbUnexpected(result.label, suburbFromQuery(q), town))) return [];
+  return ranked;
 }
 
 /* Taranaki localities that appear inside a road label.
    Deliberately a short, high-confidence list of places a driver could actually be sent to,
    not an exhaustive gazetteer: this only ever marks a doubtful match for a warning. */
 const TARANAKI_LOCALITIES = Object.freeze([
-  "waitoriki", "waitara", "urenui", "lepperton", "bellblock", "tikorangi", "motunui",
-  "onaero", "brixton", "waitariki", "egmontvillage", "norfolk", "ratapiko", "kaimata",
-  "tarata", "purangi", "toko", "midhirst", "stratford", "eltham", "kaponga", "manaia",
-  "opunake", "okato", "pungarehu", "rahotu", "tukapa", "spotswood", "westown",
-  "merrilands", "fitzroy", "moturoa", "blagdon", "ferndale", "highlands", "welbourn",
-  "lynmouth", "brooklands", "strandon", "whalersgate", "marfell", "omata", "hurdon",
-  "vogeltown", "mangorei", "taumaru", "hillsborough", "barrett", "wrights", "innglewood",
+  "patea", "alton", "waverley", "hawera", "normanby", "eltham", "stratford",
+  "kaponga", "manaia", "opunake", "waitara", "urenui", "bellblock", "newplymouth",
+  "oakura", "okato", "inglewood", "innglewood", "waitoriki", "waitariki",
+  "midhirst", "toko", "ngaere", "douglas", "motunui", "lepperton", "tikorangi"
 ]);
 
 // Split the unit from the physical street number. In NZ, "1/34" means unit 1
@@ -414,11 +533,11 @@ function addressNumberParts(text) {
     house: `${number}${suffix || ""}${highNumber ? `-${highNumber}${highSuffix || ""}` : ""}`.toLowerCase(),
     consumed
   });
-  let match = value.match(/^(?:(?:flat|unit|apartment|apt|shop|villa|room|rm|u)\s*\.?\s*|#\s*)?(\d+[a-z]?)\s*\/\s*(\d+)([a-z]?)(?:\s*-\s*(\d+)([a-z]?))?(?=\b|[\s,])/i);
+  let match = value.match(/^(?:(?:townhouse|town house|th|flat|unit|apartment|apt|shop|villa|room|rm|u)\s*\.?\s*|#\s*)?(\d+[a-z]?)\s*\/\s*(\d+)([a-z]?)(?:\s*-\s*(\d+)([a-z]?))?(?=\b|[\s,])/i);
   if (match) return {
     ...build(match[1], match[2], match[3], match[4], match[5], match[0].length)
   };
-  match = value.match(/^(?:flat|unit|apartment|apt|shop|villa|room|rm|u)\s*\.?\s*(\d+[a-z]?)\s*(?:[,\-]\s*|at\s+|\s+)(\d+)([a-z]?)(?:\s*-\s*(\d+)([a-z]?))?(?=\b|[\s,])/i);
+  match = value.match(/^(?:townhouse|town house|th|flat|unit|apartment|apt|shop|villa|room|rm|u)\s*\.?\s*(\d+[a-z]?)\s*(?:[,\-]\s*|at\s+|\s+)(\d+)([a-z]?)(?:\s*-\s*(\d+)([a-z]?))?(?=\b|[\s,])/i);
   if (match) return {
     ...build(match[1], match[2], match[3], match[4], match[5], match[0].length)
   };
@@ -545,33 +664,42 @@ function linzCqlFor(q, includeTown, dropSuffix, dropUnit = false) {
   } else {
     const words = streetPart.replace(/['"]/g, "").split(/\s+/).filter(Boolean).slice(0, 3);
     if (!words.length) return "";
-    conds.push(`full_address_ascii ILIKE '${esc(words.join(" "))}%'`);
+    conds.push(`full_address_ascii ILIKE '%${esc(words.join(" "))}%'`);
   }
   if (includeTown) {
     const town = townFromQuery(q);
     if (town) conds.push(`full_address_ascii ILIKE '%${esc(town)}%'`);
   }
+  // Postal town is often missing from the register ("Pitone, New Plymouth" vs
+  // typed Oakura). Keep every hit inside Taranaki councils so count=6 cannot
+  // fill with other regions' same-number roads.
+  conds.push("(territorial_authority_ascii ILIKE '%New Plymouth%' OR territorial_authority_ascii ILIKE '%Stratford%' OR territorial_authority_ascii ILIKE '%South Taranaki%')");
   return conds.join(" AND ");
 }
 
 async function linzAddressResults(env, q, limit) {
+  // Expand "Rd" before asking the register — otherwise an abbreviated street
+  // misses the letterbox and the map pins the other road of the same name.
+  q = collapseExtraRepeats(expandStreetAbbreviations(String(q || "")));
   // Most precise first; each step relaxes one guess. A hit at any step wins.
   // Town relaxes AFTER the unit letter: a written "2A" that's really "2" on the
   // right road beats an actual 2A on the other side of the country.
+  // Number + road in Taranaki first. Asking for the postal town first hid the
+  // real letterbox (Oakura is not in a Pitone LINZ label).
   const attempts = [...new Set([
-    linzCqlFor(q, true, false, false),
     linzCqlFor(q, false, false, false),
-    linzCqlFor(q, true, false, true),
+    linzCqlFor(q, true, false, false),
     linzCqlFor(q, false, false, true),
-    linzCqlFor(q, true, true, true),
-    linzCqlFor(q, false, true, true)
+    linzCqlFor(q, true, false, true),
+    linzCqlFor(q, false, true, true),
+    linzCqlFor(q, true, true, true)
   ])];
   for (const cql of attempts) {
     if (!cql) continue;
     const params = new URLSearchParams({
       service: "WFS", version: "2.0.0", request: "GetFeature",
       typeNames: LINZ_ADDRESSES_LAYER,
-      outputFormat: "application/json", count: String(limit),
+      outputFormat: "application/json", count: String(Math.max(limit, 20)),
       CQL_FILTER: cql
     });
     const response = await fetch(`https://data.linz.govt.nz/services;key=${env.LINZ_API_KEY}/wfs?${params}`);
@@ -590,6 +718,9 @@ async function linzAddressResults(env, q, limit) {
       };
     }).filter(row => row.label && Number.isFinite(row.lat) && Number.isFinite(row.lng));
     if (rows.length) {
+      const local = rows.filter(inTaranakiPoint);
+      if (local.length) rows = local;
+      else if (houseNumberOf(q)) continue;
       // Once a slash unit falls back to its physical street number, do not also
       // offer neighbouring suffixes (1/34 must never offer 34A).
       const wantedNumber = addressNumberParts(q);
@@ -601,7 +732,7 @@ async function linzAddressResults(env, q, limit) {
         if (!rows.length) continue;
       } else if (wantedNumber) {
         // A typed 34 only gets 34, never 34A; a typed 34A only gets 34A.
-        rows = rows.filter(row => addressMatchScore(q, row.numberText) === 2);
+        rows = rows.filter(row => addressMatchScore(q, row.numberText) === 2 && !addressNumberParts(row.numberText)?.unit);
         if (!rows.length) continue;
       }
       // Exact letterbox matches float above same-road neighbours.
@@ -633,53 +764,57 @@ async function handleAddress(request, env) {
   const q = (url.searchParams.get("q") || "").trim().slice(0, 180);
   const limit = Math.max(1, Math.min(6, number(url.searchParams.get("limit"), 6)));
   if (q.length < 3) return json(request, { results: [] });
-  const key = cacheRequest(request, "address-v11", [q.toLowerCase(), String(limit)]);
+  const key = cacheRequest(request, "address-v19", [q.toLowerCase(), String(limit)]);
   return cached(request, key, 2592000, async () => {
     /* Expand a trailing street abbreviation ("Rd" -> "Road") BEFORE any lookup. Without
      this an abbreviated address misses the authoritative register and falls through to the
      map, which is how a pickup was sent to the wrong road of the same name. */
-    const physicalQuery = expandStreetAbbreviations(physicalAddressQuery(q));
+    // Known local spelling correction; retain the customer's original address.
+    const lookupQuery = collapseExtraRepeats(expandStreetAbbreviations(q)).replace(/\bBarret Road\b/gi, "Barrett Road");
+    const physicalQuery = physicalAddressQuery(lookupQuery);
     const address = /new zealand|\bnz\b/i.test(physicalQuery) ? physicalQuery : `${physicalQuery}, Taranaki, New Zealand`;
     const town = townFromQuery(q);
     const street = String(physicalQuery).split(",")[0].trim();
+    const fetchLimit = 6;
+    // LINZ first for NZ RAPID numbers. Google interpolates the other Greenwood /
+    // Hursthouse Road and the old order then threw the real letterbox away.
+    if (env.LINZ_API_KEY) {
+      try {
+        let results = preferLocalAddressResults(await linzAddressResults(env, lookupQuery, fetchLimit), q);
+        results = results.slice(0, limit);
+        if (results.length) {
+          return json(request, { results, source: "LINZ", town }, 200, "public, max-age=2592000");
+        }
+      } catch { /* keep falling through */ }
+    }
     if (env.GOOGLE_API_KEY) {
       try {
-        let results = await googleGeocode(env, address, "country:NZ", limit);
+        let results = await googleGeocode(env, address, "country:NZ", fetchLimit);
         // A numbered request only accepts the same physical street number.
         // In particular, 1/34 may not silently become 34A.
         if (houseNumberOf(physicalQuery)) {
           results = results.filter(result => addressMatchScore(physicalQuery, result.label) > 0);
         }
         const townChecked = Boolean(town);
-        if (town && results.length && !results.some(result => labelInTown(result.label, town))) {
-          // Wrong town: ask again, this time forcing Google to stay inside it.
-          // Only a real letterbox counts — an interpolated guess in the right town
-          // is worse than an exact match in the neighbouring one.
-          const strict = await googleGeocode(env, `${street}, New Zealand`, `country:NZ|locality:${town}`, limit);
-          const inTown = strict.filter(result => labelInTown(result.label, town) && result.exact &&
-            (!houseNumberOf(physicalQuery) || addressMatchScore(physicalQuery, result.label) > 0));
+        if (town && results.length && !results.some(result => addressResultUsable(result, q))) {
+          // Wrong town, or the only hits are the other road of the same name.
+          // Prefer any in-town pin (even interpolated) over an exact letterbox in Patea.
+          const strict = await googleGeocode(env, `${street}, New Zealand`, `country:NZ|locality:${town}`, fetchLimit);
+          const inTown = strict.filter(result => addressResultUsable(result, q));
           if (inTown.length) results = inTown;
         }
-        if (results.length) {
-          // Town matches first, so a single-result caller never gets the wrong town silently.
-          results.sort((a, b) => Number(labelInTown(b.label, town)) - Number(labelInTown(a.label, town)));
+        results = preferLocalAddressResults(results, q);
+        // Google often answers the Waitoriki Lincoln Road first. If every hit is
+        // that unexpected suburb, skip Google so LINZ can still return the township letterbox.
+        if (results.length && results.some(result => addressResultUsable(result, q))) {
+          results = results.slice(0, limit);
           const townMismatch = townChecked && !labelInTown(results[0].label, town);
           return json(request, { results, source: "Google", town, townMismatch }, 200, "public, max-age=2592000");
         }
       } catch { /* use the no-cost fallback below */ }
     }
-    // LINZ NZ Addresses: every current NZ address, rural rapid numbers included.
-    // This is what finds rural Taranaki that OpenStreetMap has never heard of.
-    if (env.LINZ_API_KEY) {
-      try {
-        const results = await linzAddressResults(env, q, limit);
-        if (results.length) {
-          return json(request, { results, source: "LINZ", town }, 200, "public, max-age=2592000");
-        }
-      } catch { /* keep falling through to the free map below */ }
-    }
     try {
-      const params = new URLSearchParams({ format: "json", addressdetails: "1", countrycodes: "nz", limit: String(limit), q: address });
+      const params = new URLSearchParams({ format: "json", addressdetails: "1", countrycodes: "nz", limit: String(fetchLimit), q: address });
       const response = await fetch(`https://nominatim.openstreetmap.org/search?${params}`, {
         headers: { "Accept": "application/json", "User-Agent": "NakiPickupRun/1.0 (nakiwreckremoval@gmail.com)" }
       });
@@ -698,7 +833,7 @@ async function handleAddress(request, env) {
         if (!results.length && /^\s*\d/.test(physicalQuery)) {
           const roadOnly = physicalQuery.replace(/^\s*\d+[a-z]?\s*/i, "").trim();
           if (roadOnly && roadOnly !== physicalQuery) {
-            const retryParams = new URLSearchParams({ format: "json", addressdetails: "1", countrycodes: "nz", limit: String(limit), q: roadOnly });
+            const retryParams = new URLSearchParams({ format: "json", addressdetails: "1", countrycodes: "nz", limit: String(fetchLimit), q: roadOnly });
             const retry = await fetch(`https://nominatim.openstreetmap.org/search?${retryParams}`, {
               headers: { "Accept": "application/json", "User-Agent": "NakiPickupRun/1.0 (nakiwreckremoval@gmail.com)" }
             });
@@ -714,7 +849,7 @@ async function handleAddress(request, env) {
           results.sort((a, b) =>
             addressMatchScore(physicalQuery, b.label) - addressMatchScore(physicalQuery, a.label));
         }
-        /* TOWN FIRST, because a road name can exist TWICE inside one district.
+        /* Prefer the township road when the same name exists twice in one district.
 
            Woody, 18 Sept: "201 Lincoln road, Inglewood pickup when I pressed navigate sent me
            to Waitariki school a few minutes on the road."
@@ -724,26 +859,10 @@ async function handleAddress(request, env) {
              Lincoln Road, Waitoriki, Inglewood   [-39.1248, 174.2576]  <- by the school
              Lincoln Road, Inglewood              [-39.1458, 174.2213]  <- the real one
 
-           Asking for the bare road returns the Waitoriki one FIRST, and because the app takes
-           results[0] that became the pin. The Google branch above already sorts town matches
-           first; this OpenStreetMap branch never did, so the same query could give a different
-           answer depending on which provider replied.
-
-           Array.sort is stable, so sorting on the town match alone keeps each group's
-           existing order - including the house-number ordering applied just above. */
-        if (town && results.length) {
-          results.sort((a, b) => Number(labelInTown(b.label, town)) - Number(labelInTown(a.label, town)));
-        }
-        /* Flag a road query whose best answer sits in an unexpected locality.
-
-           Only for a query with NO house number, which is the case that actually went wrong:
-           a bare "Lincoln Road" cannot be told apart from its namesake, and both sit in
-           Inglewood, so the town alone is not enough. With a house number the answer is
-           specific, and the house-number sorting above already governs it - flagging there
-           would fire on perfectly good addresses, which is why it does not.
-
-           This never changes which pin is used. It only tells the app the road name was
-           ambiguous so the driver is warned rather than silently sent. */
+           Asking for the bare road returns the Waitoriki one FIRST. Navigate already uses
+           the typed address, so Google Maps is right; the in-app pin used results[0] and
+           sat by the school. When both answers exist, keep the one without the extra suburb. */
+        results = preferLocalAddressResults(results, q).slice(0, limit);
         const houseNumberWanted = houseNumberOf(physicalQuery);
         const wantSuburb = suburbFromQuery(q);
         const ambiguousRoad = Boolean(!houseNumberWanted && town && results.length
@@ -1186,4 +1305,8 @@ export default {
 };
 
 export { ReceptionCall };
-export { addressMatchScore, houseNumberOf, linzAddressResults, linzCqlFor, physicalAddressQuery, expandStreetAbbreviations };
+export {
+  addressMatchScore, houseNumberOf, linzAddressResults, linzCqlFor, physicalAddressQuery,
+  expandStreetAbbreviations, suburbUnexpected, preferLocalAddressResults, addressResultUsable,
+  collapseExtraRepeats
+};

@@ -18,7 +18,7 @@ function functionSource(name) {
 }
 
 const names = [
-  "normKey", "addressWithoutUnit", "houseNumberOf", "labelDroppedNumber",
+  "addressUnitOf", "normKey", "addressWithoutUnit", "houseNumberOf", "labelDroppedNumber",
   "looksLikeStreetAddress", "uniqueAddressParts", "safeMapsAddress",
   "bookingNavAddress", "navAddress", "mapsDirUrl"
 ];
@@ -106,3 +106,12 @@ test("lettered houses, registered ranges, rural numbers and numberless roads sta
     assert.equal(context.safeMapsAddress(entered, "Taranaki", ""), `${entered}, Taranaki`, entered);
   }
 });
+
+ test("townhouse notation keeps 71 as the street number and refuses a neighbour", () => {
+  for (const address of ["TH78/71 Barrett Road", "TH 78/71 Barrett Road", "Townhouse 78/71 Barrett Road"]) {
+    assert.equal(context.houseNumberOf(address), "71");
+    assert.equal(context.addressWithoutUnit(address), "71 Barrett Road");
+    assert.equal(context.labelDroppedNumber(address, "79/71 Barrett Road"), true);
+    assert.equal(context.labelDroppedNumber(address, "78/71 Barrett Road"), false);
+  }
+ });
