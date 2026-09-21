@@ -30,7 +30,7 @@ export function apiSchema(origin) {
       '/bookings': {
         get: operation('listBookings', 'Search website, Jotform and imported pickup bookings (300/page)', {parameters: searchParams}),
         post: operation('createBooking', 'Create a booking without sending customer messages', {parameters: [keyParam],
-          requestBody: body({...booking, requestedDate: {type: 'string', format: 'date'}}, ['phone','email','streetAddress','town','ruralOption','items']),
+          requestBody: body({...booking, expectedTotalCents:{type:'integer',minimum:0}, expectedQuoteRequired:{type:'boolean'}, requestedDate: {type: 'string', format: 'date'}}, ['phone','email','streetAddress','town','ruralOption','items']),
           description: 'Provide at least firstName or lastName. Use exact catalog names. The booking starts NEW. This creates or links the customer by email. Use PATCH separately to confirm a pickup date.',
           responses: {'201': result('Created; includes booking and customerEmailed:false')}})
       },

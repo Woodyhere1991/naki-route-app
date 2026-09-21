@@ -1,3 +1,4 @@
+import { readRunBackup, writeRunBackup } from "./run-backup.js";
 import { AuthMailError, reserveAuthRequest } from "./auth-limits.js";
 import { kidsActivityReport } from "./kids-activity.js";
 import { scoreReviewReason } from "./score-validation.js";
@@ -3209,32 +3210,22 @@ export async function handlePortalRequest({ request, env, path, json, sendMail, 
       // different one, so "My runs on other phones" looked broken depending on
       // which inbox he used that day.
       const key = `backup:${OWNER_EMAIL}`;
-      const savedAt = now();
-      const record = JSON.stringify({ savedAt, runCount: Number(parsed.runCount) || 0, data: parsed.data });
-      // Roll the current copy back one slot before overwriting it.
-      const existing = await env.REMINDERS.get(key);
-      if (existing) {
-        await env.REMINDERS.put(`${key}:prev`, existing);
-        const day = new Date(JSON.parse(existing).savedAt).toISOString().slice(0,10);
-        const dailyKey = `${key}:day:${day}`;
-        if (!await env.REMINDERS.get(dailyKey)) await env.REMINDERS.put(dailyKey,existing,{expirationTtl:8*86400});
-      }
-      await env.REMINDERS.put(key, record);
-      return json(request, { ok: true, savedAt });
+      const result = await writeRunBackup(env, key, parsed);
+      return result.error ? json(request, {error:result.error}, result.status) : json(request, {ok:true, savedAt:result.savedAt});
     }
 
     if (path === "/owner/backup" && request.method === "GET") {
       const key = `backup:${OWNER_EMAIL}`;
       const which = new URL(request.url).searchParams.get("which") === "prev" ? `${key}:prev` : key;
-      const stored = await env.REMINDERS.get(which, "json");
+      const stored = await readRunBackup(env, key, which !== key);
       if (!stored) return json(request, { error: "No backup saved yet" }, 404);
       return json(request, stored);
     }
 
     if (path === "/owner/backup/info" && request.method === "GET") {
       const key = `backup:${OWNER_EMAIL}`;
-      const [latest, prev] = await Promise.all([env.REMINDERS.get(key), env.REMINDERS.get(`${key}:prev`)]);
-      const peek = raw => { try { const v = JSON.parse(raw); return { savedAt: v.savedAt, runCount: v.runCount }; } catch { return null; } };
+      const [latest, prev] = await Promise.all([readRunBackup(env,key), readRunBackup(env,key,true)]);
+      const peek = raw => { try { const v = typeof raw === "string" ? JSON.parse(raw) : raw; return { savedAt: v.savedAt, runCount: v.runCount }; } catch { return null; } };
       return json(request, { latest: latest ? peek(latest) : null, previous: prev ? peek(prev) : null });
     }
 
