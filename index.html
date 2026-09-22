@@ -5426,6 +5426,7 @@ window.openPreparedTextBatch = async (index, button) => {
 
 function renderContacts(){
   const wrap = $("#contactsWrap"); if (!wrap) return;
+  const batchesOpen=wrap.querySelector("[data-message-batches]")?.open;
   // Mid-edit? Leave the card alone. Rebuilding it under him would shut the
   // keyboard and throw away the half-typed message.
   const active = document.activeElement;
@@ -5463,18 +5464,18 @@ function renderContacts(){
     const people=w.stopIds.map(findStop).filter(Boolean);
     return `<div class="card reminder-group"><h3>${esc(w.label||"Batch")} · ${people.length}</h3>
       ${mode==="reminder"?`<div class="times"><input type="time" aria-label="Batch start" value="${esc(w.start)}" onchange="setReminderWindowTime('${esc(w.id)}','start',this.value)" onblur="finishDateTimePicker(this)"/><span>to</span><input type="time" aria-label="Batch end" value="${esc(w.end)}" onchange="setReminderWindowTime('${esc(w.id)}','end',this.value)" onblur="finishDateTimePicker(this)"/></div>`:""}
-      <div class="reminder-people">${people.map(person=>`<div class="reminder-person"><span class="who"><b>${esc(fullName(person)||person.street)}</b><span class="addr">${esc(fullAddr(person))}</span></span><span class="move-to"><select aria-label="Move ${esc(fullName(person))}" onchange="moveReminderStop('${esc(person.id)}',this.value)">${reminderMoveOptions(w.id,windows)}</select></span></div>`).join("")||"Move people here from the other batch."}</div>
+      <div class="reminder-people">${people.map(person=>`<div class="reminder-person"><input type="checkbox" aria-label="Select ${esc(fullName(person))}" data-recipient="${esc(person.id)}" ${selected.has(person.id)?"checked":""} onchange="setRecipientSelected('${esc(person.id)}',this.checked)"/><span class="who"><b>${esc(fullName(person)||person.street)}</b><span class="addr">${esc(fullAddr(person))}</span><span class="addr">${esc(messageDeliveryLabel(person))}</span></span><span class="move-to"><select aria-label="Move ${esc(fullName(person))}" onchange="moveReminderStop('${esc(person.id)}',this.value)">${reminderMoveOptions(w.id,windows)}</select></span></div>`).join("")||"Move people here from the other batch."}</div>
       ${mode==="reminder"?`<details><summary>Message for this batch</summary><textarea class="reminder-msg" data-reminder-msg="1" data-window-id="${esc(w.id)}" oninput="saveReminderGroupMessage(this.dataset.windowId,this.value)">${esc(reminderMessageForWindow(w))}</textarea></details>`:""}
-      <div class="reminder-group-actions"><button class="good sm" onclick="bulkSend('${esc(w.id)}')" ${bulkSendBusy?"disabled":""}>Send this batch</button><button class="ghost sm" onclick="removeReminderWindow('${esc(w.id)}')">Remove batch</button></div></div>`;
+      <div class="reminder-group-actions"><button class="ghost sm" onclick="selectGroupRecipients('${esc(w.id)}','new')">Select new only</button><button class="ghost sm" onclick="selectGroupRecipients('${esc(w.id)}','all')">Select all</button><button class="good sm" onclick="bulkSend('${esc(w.id)}',true)" ${bulkSendBusy?"disabled":""}>Send selected in batch</button><button class="ghost sm" onclick="bulkSend('${esc(w.id)}')" ${bulkSendBusy?"disabled":""}>Send whole batch</button><button class="ghost sm" onclick="removeReminderWindow('${esc(w.id)}')">Remove batch</button></div></div>`;
   }).join("");
-  const reminderControls=`<details style="margin-top:10px" ${windows.length>1?"open":""}><summary>Optional batches · ${windows.length}</summary>
+  const reminderControls=`<details data-message-batches style="margin-top:10px" ${(batchesOpen ?? windows.length>1)?"open":""}><summary>Optional batches · ${windows.length}</summary>
     <p class="small muted">Everyone starts together. Add a batch, then move whoever you want into it — any town.</p>
     ${windowRows}<button class="ghost sm" onclick="addReminderWindow()">＋ Add batch</button> <button class="ghost sm" onclick="resetReminderWindows()">Put everyone in one batch</button></details>`;
   const previewPlaceholder = mode==="reminder"
     ? "Add scheduled pickups first"
     : "Choose a collection day above";
   const previewHint = mode==="reminder"
-    ? `Everyone on this schedule gets this message. Open Optional batches to send a separate batch.`
+    ? `Use Send selected only for the ticked customers, or message everyone. Optional batches let you split the schedule.`
     : `Choose the day and the message is made automatically — or type in the box to word it yourself.`;
   const edited = Boolean(messageOverride().trim());
   const confirmMessage = `<label style="margin-top:10px">Message</label>
@@ -5484,10 +5485,10 @@ function renderContacts(){
       <button class="ghost sm" id="messageResetBtn" onclick="resetMessageDraft()" style="display:${edited?"inline-block":"none"}">↺ Use the automatic message</button>
     </div>
     <p class="small muted" id="messageHint">${edited ? EDITED_MESSAGE_HINT : previewHint}</p>`
-    + `<details style="margin-top:10px"><summary>Select individual customers (optional)</summary>
-    <p class="small muted">The same selected customers are used for both text and email.</p>
+    + `<section style="margin-top:10px"><h3>Customers &amp; message status</h3>
+    <p class="small muted">Select new only skips people already messaged for this day and message type. Then use Send selected only.</p>
     <div style="display:flex;gap:6px;margin:6px 0"><button class="ghost sm" onclick="selectRecipients('all')">Select all</button><button class="ghost sm" onclick="selectRecipients('new')">Select new only</button><button class="ghost sm" onclick="selectRecipients('none')">Unselect all</button></div>
-    <div class="recipient-list">${recipientRows}</div></details>`;
+    <div class="recipient-list">${recipientRows}</div></section>`;
   const preview = `${modeToggle}<label style="margin-top:10px">Collection day</label>
     <div class="date-field-shell"><input type="date" value="${esc(state.confirmationDate||"")}" oninput="setConfirmationDate(this.value)" onchange="setConfirmationDate(this.value)" onblur="finishDateTimePicker(this)" /></div>
     ${reminderControls}
@@ -5498,7 +5499,7 @@ function renderContacts(){
     ? "Opens your text app with the numbers and message filled in. Check the recipients, then tap Send."
     : "Opens your text app with the numbers and message filled in. Check the recipients, then tap Send.";
   const actions = `<div class="message-actions"><b id="selectedCount">${selCount} selected customer${selCount!==1?'s':''}</b>
-    <div class="row" style="margin-top:6px"><button id="bulkSendButton" class="good grow" onclick="bulkSend()" ${bulkSendBusy?'disabled aria-busy="true"':''}>${bulkSendBusy?'Sending… please wait':sendLabel}</button></div><button class="ghost sm" style="margin-top:6px" onclick="bulkSend('',true)" ${bulkSendBusy?"disabled":""}>Send selected only</button>
+    <div class="row" style="margin-top:6px"><button id="bulkSendButton" class="good grow" onclick="bulkSend('',true)" ${bulkSendBusy?'disabled aria-busy="true"':''}>${bulkSendBusy?'Sending… please wait':'Send selected only'}</button></div><button class="ghost sm" style="margin-top:6px" onclick="bulkSend()" ${bulkSendBusy?"disabled":""}>${sendLabel}</button>
     <div id="bulkSendStatus" class="small" aria-live="polite" style="margin-top:6px;${bulkSendBusy?'color:var(--warn)':''}">${bulkSendBusy?'<span class="spinner"></span> Sending now — please do not press it again.':''}</div>
     <p class="small muted" style="margin:6px 0 0">${sendHint} Use your phone's <b>Mass text / individual SMS</b> setting for separate customer conversations.</p>
     ${preparedTextBatchControls()}</div>`;
@@ -5605,7 +5606,9 @@ function updateSelectedCustomerCount(){
 window.setRecipientSelected = (id, checked) => {
   const selected = selectedRecipientIds();
   if (checked) selected.add(id); else selected.delete(id);
-  state.messageSelectedIds = [...selected]; save(); updateSelectedCustomerCount();
+  state.messageSelectedIds = [...selected]; save();
+  document.querySelectorAll("[data-recipient]").forEach(el=>{ el.checked=selected.has(el.dataset.recipient); });
+  updateSelectedCustomerCount();
 };
 window.selectRecipients = mode => {
   const candidates = pickupsOnly(state.stops).filter(s => s.status!=="DONE");
