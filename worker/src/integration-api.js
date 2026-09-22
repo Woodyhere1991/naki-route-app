@@ -1,3 +1,4 @@
+import { readRunBackup } from "./run-backup.js";
 import {apiBody, apiDigest} from './api-keys.js';
 import {handlePortalRequest, bookingFrom, profileFrom, ITEM_PRICES, RURAL_PRICES, OWNER_EMAIL} from './customer.js';
 import {apiSchema} from './integration-schema.js';
@@ -7,8 +8,8 @@ const statuses = ['NEW', 'ADDED_TO_RUN', 'CONTACTED', 'CONFIRMED', 'COMPLETED', 
 const textFields = {firstName: 60, lastName: 60, phone: 30, email: 160, streetAddress: 180, town: 100,
   area: 100, ruralOption: 120, additionalInfo: 1500, requestedDate: 10, status: 30,
   pickupDate: 10, pickupWindow: 80, customerNote: 500, quoteNote: 300, accessNotes: 1000};
-const createFields = ['firstName','lastName','phone','email','streetAddress','town','area','ruralOption','items','additionalInfo','requestedDate'];
-const bookingFields = createFields.filter(x => x !== 'requestedDate').concat(['status','pickupDate','pickupWindow','customerNote','quoteAmount','quoteNote']);
+const createFields = ['firstName','lastName','phone','email','streetAddress','town','area','ruralOption','items','additionalInfo','requestedDate','expectedTotalCents','expectedQuoteRequired'];
+const bookingFields = createFields.filter(x => !['requestedDate','expectedTotalCents','expectedQuoteRequired'].includes(x)).concat(['status','pickupDate','pickupWindow','customerNote','quoteAmount','quoteNote']);
 const customerFields = ['firstName','lastName','phone','streetAddress','town','area','ruralOption','accessNotes'];
 
 function reply(data, status = 200, headers = {}) {
@@ -42,6 +43,8 @@ function validate(body, fields) {
   if ('status' in body && !statuses.includes(body.status)) fail('Choose a status from /catalog.');
   if ('ruralOption' in body && !Object.hasOwn(RURAL_PRICES, body.ruralOption)) fail('Choose a ruralOption from /catalog.');
   if ('items' in body && (!Array.isArray(body.items) || !body.items.length || body.items.length > 10 || body.items.some(x => typeof x !== 'string' || !Object.hasOwn(ITEM_PRICES, x)))) fail('Use 1 to 10 item names from /catalog. Repeat a name for multiple items.');
+  if ('expectedTotalCents' in body && (!Number.isSafeInteger(body.expectedTotalCents) || body.expectedTotalCents < 0)) fail('expectedTotalCents must be a non-negative integer.');
+  if ('expectedQuoteRequired' in body && typeof body.expectedQuoteRequired !== 'boolean') fail('expectedQuoteRequired must be true or false.');
   if ('quoteAmount' in body && (typeof body.quoteAmount !== 'number' || !Number.isFinite(body.quoteAmount) || body.quoteAmount < 0 || body.quoteAmount > 100000)) fail('quoteAmount must be an NZD amount from 0 to 100000.');
 }
 
@@ -110,7 +113,7 @@ export async function handleIntegrationApi(request, environment) {
     };
     if (isRead) {
       if (path === '/me') return reply({name: key.name, permission: key.permission, expiresAt: key.expires_at});
-      if (path === '/catalog') return reply({currency: 'NZD', items: Object.keys(ITEM_PRICES), ruralOptions: Object.keys(RURAL_PRICES), statuses});
+      if (path === '/catalog') return reply({currency: 'NZD', items: Object.keys(ITEM_PRICES), ruralOptions: Object.keys(RURAL_PRICES), itemPrices: ITEM_PRICES, ruralPrices: RURAL_PRICES, statuses});
       if (path === '/bookings' || path === '/customers') return portal('/owner' + path);
       if (match) {
         const table = kind === 'bookings' ? bookingTable(id) : 'customers';
@@ -119,7 +122,7 @@ export async function handleIntegrationApi(request, environment) {
         return reply({[kind === 'bookings' ? 'booking' : 'customer']: kind === 'bookings' ? bookingView(row) : {id: row.id, ...profileFrom(row), updatedAt: row.updated_at}}, 200, {ETag: etag(row)});
       }
       if (path === '/runs') {
-        const saved = await env.REMINDERS.get('backup:' + OWNER_EMAIL, 'json');
+        const saved = await readRunBackup(env, 'backup:' + OWNER_EMAIL);
         let store = {};
         if (saved?.data?.naki_pickup_runs_v1) {
           try { store = JSON.parse(saved.data.naki_pickup_runs_v1); } catch { fail('The saved run copy could not be read.', 503); }
@@ -134,7 +137,18 @@ export async function handleIntegrationApi(request, environment) {
     const body = await apiBody(request);
     validate(body, creating ? createFields : kind === 'bookings' ? bookingFields : customerFields);
     return await writeOnce(request, env, key, path, body, async () => {
-      if (creating) return portal('/owner/bookings', 'POST', body);
+      if (creating) {
+        const items = body.items || [];
+        const total = items.reduce((sum,item)=>sum+ITEM_PRICES[item][1],0)
+          + (items.length ? Math.max(...items.map(item=>ITEM_PRICES[item][0]-ITEM_PRICES[item][1])) : 0)
+          + (RURAL_PRICES[body.ruralOption] || 0);
+        const quote = items.includes('Other') || String(body.ruralOption||'').startsWith('More than 10 km');
+        if (('expectedTotalCents' in body && body.expectedTotalCents !== total)
+          || ('expectedQuoteRequired' in body && body.expectedQuoteRequired !== quote))
+          return reply({error:'The caller quote differs from current Naki pricing. Review before creating this booking.'},422);
+        const {expectedTotalCents,expectedQuoteRequired,...fields}=body;
+        return portal('/owner/bookings', 'POST', fields);
+      }
       const table = kind === 'bookings' ? bookingTable(id) : 'customers';
       const row = await env.CUSTOMER_DB.prepare(`SELECT * FROM ${table} WHERE id=?1`).bind(id).first();
       if (!row) fail('Record not found.', 404);
