@@ -5475,7 +5475,7 @@ function renderContacts(){
     ? "Add scheduled pickups first"
     : "Choose a collection day above";
   const previewHint = mode==="reminder"
-    ? `Use Send selected only for the ticked customers, or message everyone. Optional batches let you split the schedule.`
+    ? `Use Select all to include everyone, then Send selected only. Optional batches let you split the schedule.`
     : `Choose the day and the message is made automatically — or type in the box to word it yourself.`;
   const edited = Boolean(messageOverride().trim());
   const confirmMessage = `<label style="margin-top:10px">Message</label>
@@ -5494,12 +5494,11 @@ function renderContacts(){
     ${reminderControls}
     ${confirmMessage}
     <button class="ghost sm" style="margin-top:6px" onclick="clearMessageMarks()">Clear sent marks for this day</button>`;
-  const sendLabel = `📣 Text &amp; email everyone (${pend.length})`;
   const sendHint = mode==="reminder"
     ? "Opens your text app with the numbers and message filled in. Check the recipients, then tap Send."
     : "Opens your text app with the numbers and message filled in. Check the recipients, then tap Send.";
   const actions = `<div class="message-actions"><b id="selectedCount">${selCount} selected customer${selCount!==1?'s':''}</b>
-    <div class="row" style="margin-top:6px"><button id="bulkSendButton" class="good grow" onclick="bulkSend('',true)" ${bulkSendBusy?'disabled aria-busy="true"':''}>${bulkSendBusy?'Sending… please wait':'Send selected only'}</button></div><button class="ghost sm" style="margin-top:6px" onclick="bulkSend()" ${bulkSendBusy?"disabled":""}>${sendLabel}</button>
+    <div class="row" style="margin-top:6px"><button id="bulkSendButton" class="good grow" onclick="bulkSend('',true)" ${bulkSendBusy?'disabled aria-busy="true"':''}>${bulkSendBusy?'Sending… please wait':'Send selected only'}</button></div>
     <div id="bulkSendStatus" class="small" aria-live="polite" style="margin-top:6px;${bulkSendBusy?'color:var(--warn)':''}">${bulkSendBusy?'<span class="spinner"></span> Sending now — please do not press it again.':''}</div>
     <p class="small muted" style="margin:6px 0 0">${sendHint} Use your phone's <b>Mass text / individual SMS</b> setting for separate customer conversations.</p>
     ${preparedTextBatchControls()}</div>`;
