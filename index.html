@@ -2768,7 +2768,7 @@ function detailsByEmail(){
     .concat(runStore.shared?.unpaid||[])
     .forEach(s=>remember(s.email,{
       firstName:s.first_name, lastName:s.last_name, phone:s.phone,
-      streetAddress:s.street, town:s.town, area:s.area, accessNotes:s.additional_info||s.note
+      streetAddress:originalStopLocation(s).street, town:originalStopLocation(s).town, area:originalStopLocation(s).area, accessNotes:s.additional_info||s.note
     }, Number(s.historyCreatedAt||s.createdAt||0)||0));
   return byEmail;
 }
@@ -3797,6 +3797,7 @@ async function addAddressLines(lines){
 // Keys used to recognise the same pickup when a sheet is loaded again.
 // Prefer the sheet's own submission ID, then fall back to contact details and address.
 function pickupKeys(s){
+  s = originalStopLocation(s);
   const keys = [];
   const submissionId = String(s.submission_id||"").trim();
   // Only trust an ID that LOOKS like one (long number). Jumbled sheet rows shove
@@ -4648,28 +4649,14 @@ function stopTownKey(id){
   return townKey(stop?.town||stop?.area) || "your area";
 }
 function defaultReminderWindows(){
-  const ordered=reminderStopsInRouteOrder();
-  if (!ordered.length) return [];
-  const groups=new Map();
-  ordered.forEach(stop=>{
-    const key=messageAreaKey(stop);
-    if (!groups.has(key)) groups.set(key, []);
-    groups.get(key).push(stop);
-  });
-  return [...groups.entries()].map(([key,stops])=>{
-    const times=defaultTimesForArea(key);
-    return { id:`area:${key}`, label:"", stopIds:stops.map(s=>s.id), start:times.start, end:times.end };
-  });
+  const ids=pickupsOnly(state.stops).filter(s=>s.status!=="DONE").map(s=>s.id);
+  return ids.length ? [{id:"window:everyone",label:"Batch 1",stopIds:ids,start:"09:00",end:"12:00"}] : [];
 }
 function reminderWindowsAreStale(raw){
-  if (!Array.isArray(raw) || !raw.length) return true;
-  // Driving-order 3-hour blocks mixed towns at random. Old plain town: windows
-  // are rebuilt too, so New Plymouth and Bell Block start in one group.
-  return raw.some(w=>/^auto:/.test(String(w.id||"")))
-    || raw.every(w=>/^town:/.test(String(w.id||"")) && !String(w.label||"").trim());
+  return !Array.isArray(raw) || !raw.length || raw.some(w=>/^(auto|area|town):/.test(String(w.id||"")));
 }
 function reminderWindows(){
-  const pending=new Set(state.stops.filter(s=>s.status!=="DONE").map(s=>s.id));
+  const pending=new Set(pickupsOnly(state.stops).filter(s=>s.status!=="DONE").map(s=>s.id));
   const rawSaved=Array.isArray(state.reminderWindows) ? state.reminderWindows : [];
   const saved=reminderWindowsAreStale(rawSaved) ? [] : rawSaved;
   const seen=new Set();
@@ -4681,17 +4668,12 @@ function reminderWindows(){
       end:/^\d{2}:\d{2}$/.test(raw.end||"")?raw.end:"12:00" };
   }).filter(w=>w.stopIds.length || String(w.id).startsWith("window:"));
   if (!saved.length) return defaultReminderWindows();
-  // A newly added pickup starts in its ordinary town group until it is moved.
-  [...pending].filter(id=>!seen.has(id)).forEach(id=>{
-    const stop=state.stops.find(s=>s.id===id), key=messageAreaKey(stop);
-    let w=windows.find(x=>x.id===`area:${key}`);
-    if (!w){
-      const d=defaultTimesForArea(key);
-      w={id:`area:${key}`,label:"",stopIds:[],start:d.start,end:d.end};
-      windows.push(w);
-    }
-    w.stopIds.push(id);
-  });
+  // New pickups join the first batch regardless of town.
+  const extra=[...pending].filter(id=>!seen.has(id));
+  if(extra.length){
+    if(!windows.length) return defaultReminderWindows();
+    windows[0].stopIds.push(...extra);
+  }
   return windows;
 }
 function reminderWindowPlaces(window){
@@ -4721,18 +4703,17 @@ function reminderGroupMessage(window){
 }
 function automaticReminderMessage(window){
   const day=collectionDayLabel(state.confirmationDate), dayPart=day ? ` ${day}` : "";
-  return `Hey Woody here, just a reminder for whiteware collection${dayPart}. Aiming to be in ${reminderWindowPlaces(window)} between ${fmtClockShort(parseHM(window.start))} and ${fmtClockShort(parseHM(window.end))}. Thanks :)`;
+  return `Hey Woody here, just a reminder for whiteware collection${dayPart}. Aiming to collect between ${fmtClockShort(parseHM(window.start))} and ${fmtClockShort(parseHM(window.end))}. Thanks :)`;
 }
 function reminderMessageForWindow(window){
   return reminderGroupMessage(window) || automaticReminderMessage(window);
 }
 function reminderBulkMessage(){
-  const windows = reminderWindows().filter(w=>w.stopIds.length);
-  if (!windows.length) return "";
-  const day = collectionDayLabel(state.confirmationDate);
-  const dayPart = day ? ` ${day}` : "";
-  const lines = windows.map(w=>`${reminderWindowPlaces(w)}: between ${fmtClockShort(parseHM(w.start))} and ${fmtClockShort(parseHM(w.end))}`).join("\n");
-  return `Hey Woody here, just a reminder for whiteware collection${dayPart}. Aiming to be in:\n\n${lines}\n\nThanks :)`;
+  const windows=reminderWindows().filter(w=>w.stopIds.length);
+  if(!windows.length) return "";
+  if(windows.length===1) return automaticReminderMessage(windows[0]);
+  const day=collectionDayLabel(state.confirmationDate);
+  return `Hey Woody here, just a reminder for whiteware collection${day?` ${day}`:""}. I'll message you when I'm on my way. Thanks :)`;
 }
 
 /* ---------- Rendering the stop list ---------- */
@@ -4877,7 +4858,7 @@ function renderList(){
     const callFirst = /call|text|phone|ring|txt/i.test(s.additional_info||"");
     const formNote = s.additional_info ? `<div class="note${callFirst?' callfirst':''}">${callFirst?'📞':'📝'} ${esc(s.additional_info)}</div>` : "";
     const userNote = s.note ? `<div class="usernote">✏️ ${esc(s.note)}</div>` : "";
-    const editBtn  = `<button class="ghost sm" onclick="editStop('${s.id}')">✎ Edit pickup</button>`;
+    const editBtn  = `${!isDone ? `<button class="ghost sm" onclick="editPickupLocation('${s.id}')">📍 ${s.pickupLocationOriginal?"Change one-off location":"One-off location"}</button>` : ""}<button class="ghost sm" onclick="editStop('${s.id}')">✎ Edit pickup</button>`;
     // The agreed price, right on the card. Changing it lives in Edit pickup.
     // No price set? Work one out from the items and the travel fee, marked "est"
     // so it's obvious it was calculated rather than agreed.
@@ -4922,6 +4903,7 @@ function renderList(){
         <div class="addr">${esc(fullAddr(s))} ${tag} ${priceTag}</div>
         ${navDiffers(s)?`<div class="addr" style="color:#ffd08a">🧭 Navigates to ${esc(s.geoLabel)}</div>`:""}
         ${unconfirmedAddress}
+        ${s.pickupLocationOriginal?`<div class="addr" style="color:var(--accent)">📍 One-off pickup location · home address unchanged <button class="ghost sm" onclick="restorePickupLocation('${s.id}')">Restore original</button></div>`:""}
         ${apps?`<div class="apps">${apps}</div>`:""}
         ${formNote}
         ${userNote}
@@ -5094,6 +5076,7 @@ function historyBookingStatus(s){
   return "ADDED_TO_RUN";
 }
 function historyBookingPayload(s){
+  s = originalStopLocation(s);
   const amount = s.invoiceAmount!=null ? s.invoiceAmount : (s.receiptAmount!=null ? s.receiptAmount : s.amount);
   return {
     bookingKey:historyBookingKey(s),
@@ -5302,6 +5285,7 @@ function selectedRecipients(){
   return pickupsOnly(state.stops).filter(s => s.status!=="DONE" && selected.has(s.id));
 }
 function bulkBookingRecipient(s){
+  s = originalStopLocation(s);
   return {
     bookingId:String(s.submission_id||"").trim(),
     bookingKey:historyBookingKey(s),
@@ -5431,12 +5415,12 @@ window.openPreparedTextBatch = async (index, button) => {
     const phoneList=phones.map(n=>n.replace(/[^\d+]/g,"")).join("\n");
     let copied=copyPlainText(phoneList);
     if(!copied&&navigator.clipboard?.writeText){try{await navigator.clipboard.writeText(phoneList);copied=true;}catch{}}
-    if(!copied)return alert("Couldn't copy the numbers. Please try again.");
+    // The SMS link carries recipients even when clipboard access is unavailable.
     if(button){button.disabled=true;button.textContent="Preparing…";}
     const emailResult=await sendReminderEmailBatch(batch);
     showBulkSendResult(`${emailResult.problem?emailResult.problem+" · ":""}Text group ${index+1} ready — paste the copied numbers into To.`,Boolean(emailResult.problem));
     markTextsSentOnOpen(batch.recipients);
-    location.href="sms:"+(/iPad|iPhone|iPod/.test(navigator.userAgent)?"&body=":"?body=")+encodeURIComponent(batch.message);
+    location.href=batchSmsUrl(batch);
   } finally {bulkSendBusy=false;renderContacts();}
 };
 
@@ -5474,65 +5458,23 @@ function renderContacts(){
       <button class="${mode==='confirm'?'good':'ghost'} sm grow" onclick="setMessageMode('confirm')">Confirmation</button>
       <button class="${mode==='reminder'?'good':'ghost'} sm grow" onclick="setMessageMode('reminder')">Reminder + times</button>
     </div>`;
-  const windows = mode!=="reminder" ? [] : reminderWindows();
-  const windowRows = mode!=="reminder" ? "" : windows.map(w=>{
-    const people=w.stopIds.map(id=>state.stops.find(s=>s.id===id)).filter(Boolean);
-    const moving=reminderMoveId===w.id;
-    const towns=new Set(w.stopIds.map(stopTownKey));
-    const canSplitBell=towns.has("bell block") && towns.has("new plymouth");
-    const peopleRows=people.map(s=>{
-      const sent=isContacted(s);
-      const name=fullName(s) || s.street || "Unnamed pickup";
-      const addr=fullAddr(s);
-      const sub=addr && addr!==name ? addr : (s.town && !String(name).toLowerCase().includes(String(s.town).toLowerCase()) ? s.town : "");
-      const mover=moving ? `<span class="move-to"><select aria-label="Move ${esc(name)}" onchange="moveReminderStop('${esc(jsString(s.id))}',this.value)">${reminderMoveOptions(w.id, windows)}</select></span>` : "";
-      return `<label class="reminder-person${moving?" moving":""}">
-        <input type="checkbox" data-recipient="${s.id}" ${selected.has(s.id)?"checked":""} onchange="setRecipientSelected('${s.id}',this.checked)" />
-        <span class="who"><b>${esc(name)}</b>${sub?`<span class="addr">${esc(sub)}</span>`:""}</span>
-        <span class="reminder-flag ${sent?"sent":"new"}">${esc(messageDeliveryLabel(s))}</span>
-        ${mover}
-      </label>`;
-    }).join("");
-    const editedGroup=Boolean(reminderGroupMessage(w));
-    return `<div class="card reminder-group">
-      <div style="display:flex;align-items:center;gap:6px"><h3 style="flex:1">${esc(reminderWindowPlaces(w))} · ${people.length}</h3>
-        <button class="ghost sm" onclick="removeReminderWindow('${esc(jsString(w.id))}')">Remove</button></div>
-      <div class="times">
-        <input type="time" data-window-id="${esc(w.id)}" data-field="start" value="${esc(w.start)}" oninput="setReminderWindowTime(this.dataset.windowId,'start',this.value)" onchange="setReminderWindowTime(this.dataset.windowId,'start',this.value)" onblur="finishDateTimePicker(this)" style="width:auto;min-height:38px" />
-        <span class="muted">to</span>
-        <input type="time" data-window-id="${esc(w.id)}" data-field="end" value="${esc(w.end)}" oninput="setReminderWindowTime(this.dataset.windowId,'end',this.value)" onchange="setReminderWindowTime(this.dataset.windowId,'end',this.value)" onblur="finishDateTimePicker(this)" style="width:auto;min-height:38px" />
-      </div>
-      <details style="margin-top:7px"${moving?" open":""}><summary class="small muted">Who is in this group <span class="chev">›</span></summary>
-        <label class="small muted" style="margin-top:6px">Name on the message (blank uses the town names)</label>
-        <input value="${esc(w.label)}" placeholder="${esc(reminderWindowPlaces({ ...w, label:"" }))}" onchange="setReminderWindowLabel('${esc(jsString(w.id))}',this.value)" />
-        <div class="reminder-people">${peopleRows || `<p class="small muted">No pickups in this group. Remove it, or move people in.</p>`}</div>
-        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px">
-          <button class="ghost sm" onclick="selectGroupRecipients('${esc(jsString(w.id))}','all')">Select all</button>
-          <button class="ghost sm" onclick="selectGroupRecipients('${esc(jsString(w.id))}','new')">Select new</button>
-          <button class="ghost sm" onclick="selectGroupRecipients('${esc(jsString(w.id))}','none')">Unselect</button>
-        </div>
-        <details style="margin-top:7px"><summary class="small muted">Separate message if you send this group on its own <span class="chev">›</span></summary>
-          <textarea class="reminder-msg" data-reminder-msg="1" data-window-id="${esc(w.id)}" oninput="saveReminderGroupMessage(this.dataset.windowId,this.value)">${esc(reminderMessageForWindow(w))}</textarea>
-          ${editedGroup ? `<button class="ghost sm" style="margin-top:4px" onclick="resetReminderGroupMessage('${esc(jsString(w.id))}')">↺ Automatic message</button>` : ""}
-        </details>
-      </details>
-      <div class="reminder-group-actions">
-        <button class="ghost sm" onclick="bulkSend('${esc(jsString(w.id))}')" ${bulkSendBusy?"disabled":""}>Send this group only</button>
-        <button class="${moving?"good":"ghost"} sm" onclick="toggleReminderMove('${esc(jsString(w.id))}')">${moving?"Done moving":"Move people"}</button>
-        ${canSplitBell ? `<button class="ghost sm" onclick="splitReminderTown('${esc(jsString(w.id))}','bell block')">Split Bell Block off</button>` : ""}
-      </div>
-    </div>`;
+  const windows = reminderWindows();
+  const windowRows=windows.map(w=>{
+    const people=w.stopIds.map(findStop).filter(Boolean);
+    return `<div class="card reminder-group"><h3>${esc(w.label||"Batch")} · ${people.length}</h3>
+      ${mode==="reminder"?`<div class="times"><input type="time" aria-label="Batch start" value="${esc(w.start)}" onchange="setReminderWindowTime('${esc(w.id)}','start',this.value)" onblur="finishDateTimePicker(this)"/><span>to</span><input type="time" aria-label="Batch end" value="${esc(w.end)}" onchange="setReminderWindowTime('${esc(w.id)}','end',this.value)" onblur="finishDateTimePicker(this)"/></div>`:""}
+      <div class="reminder-people">${people.map(person=>`<div class="reminder-person"><span class="who"><b>${esc(fullName(person)||person.street)}</b><span class="addr">${esc(fullAddr(person))}</span></span><span class="move-to"><select aria-label="Move ${esc(fullName(person))}" onchange="moveReminderStop('${esc(person.id)}',this.value)">${reminderMoveOptions(w.id,windows)}</select></span></div>`).join("")||"Move people here from the other batch."}</div>
+      ${mode==="reminder"?`<details><summary>Message for this batch</summary><textarea class="reminder-msg" data-reminder-msg="1" data-window-id="${esc(w.id)}" oninput="saveReminderGroupMessage(this.dataset.windowId,this.value)">${esc(reminderMessageForWindow(w))}</textarea></details>`:""}
+      <div class="reminder-group-actions"><button class="good sm" onclick="bulkSend('${esc(w.id)}')" ${bulkSendBusy?"disabled":""}>Send this batch</button><button class="ghost sm" onclick="removeReminderWindow('${esc(w.id)}')">Remove batch</button></div></div>`;
   }).join("");
-  const reminderControls = mode!=="reminder" ? "" : `<label style="margin-top:10px">Town times</label>
-    <p class="small muted" style="margin:0 0 2px">One message lists every town's time. New Plymouth and Bell Block start together. Split a group only for an Oakura or Okato run, when some New Plymouth stops are earlier than the rest.</p>
-    <div style="display:flex;gap:6px;flex-wrap:wrap;margin:6px 0"><button class="ghost sm" onclick="selectRecipients('all')">Select all</button><button class="ghost sm" onclick="selectRecipients('new')">Select new only</button><button class="ghost sm" onclick="selectRecipients('none')">Unselect all</button></div>
-    ${windowRows || `<p class="small muted">No pickups yet.</p>`}
-    <div style="display:flex;gap:6px;margin-top:5px"><button class="ghost sm" onclick="addReminderWindow()">＋ New group</button><button class="ghost sm" onclick="resetReminderWindows()">Reset to towns</button></div>`;
+  const reminderControls=`<details style="margin-top:10px" ${windows.length>1?"open":""}><summary>Optional batches · ${windows.length}</summary>
+    <p class="small muted">Everyone starts together. Add a batch, then move whoever you want into it — any town.</p>
+    ${windowRows}<button class="ghost sm" onclick="addReminderWindow()">＋ Add batch</button> <button class="ghost sm" onclick="resetReminderWindows()">Put everyone in one batch</button></details>`;
   const previewPlaceholder = mode==="reminder"
-    ? "Add pickups first — each town gets a time in the message"
+    ? "Add scheduled pickups first"
     : "Choose a collection day above";
   const previewHint = mode==="reminder"
-    ? `Everyone gets this one text. Change the times above and it updates. Tap Send this group only if you need a separate Oakura/Okato message.`
+    ? `Everyone on this schedule gets this message. Open Optional batches to send a separate batch.`
     : `Choose the day and the message is made automatically — or type in the box to word it yourself.`;
   const edited = Boolean(messageOverride().trim());
   const confirmMessage = `<label style="margin-top:10px">Message</label>
@@ -5542,23 +5484,23 @@ function renderContacts(){
       <button class="ghost sm" id="messageResetBtn" onclick="resetMessageDraft()" style="display:${edited?"inline-block":"none"}">↺ Use the automatic message</button>
     </div>
     <p class="small muted" id="messageHint">${edited ? EDITED_MESSAGE_HINT : previewHint}</p>`
-    + (mode==="confirm" ? `<label style="margin-top:10px">Select customers</label>
+    + `<details style="margin-top:10px"><summary>Select individual customers (optional)</summary>
     <p class="small muted">The same selected customers are used for both text and email.</p>
     <div style="display:flex;gap:6px;margin:6px 0"><button class="ghost sm" onclick="selectRecipients('all')">Select all</button><button class="ghost sm" onclick="selectRecipients('new')">Select new only</button><button class="ghost sm" onclick="selectRecipients('none')">Unselect all</button></div>
-    <div class="recipient-list">${recipientRows}</div>` : "");
+    <div class="recipient-list">${recipientRows}</div></details>`;
   const preview = `${modeToggle}<label style="margin-top:10px">Collection day</label>
     <div class="date-field-shell"><input type="date" value="${esc(state.confirmationDate||"")}" oninput="setConfirmationDate(this.value)" onchange="setConfirmationDate(this.value)" onblur="finishDateTimePicker(this)" /></div>
     ${reminderControls}
     ${confirmMessage}
     <button class="ghost sm" style="margin-top:6px" onclick="clearMessageMarks()">Clear sent marks for this day</button>`;
-  const sendLabel = "📣 Text &amp; email everyone";
+  const sendLabel = `📣 Text &amp; email everyone (${pend.length})`;
   const sendHint = mode==="reminder"
-    ? "One text to everyone, with each town's time on its own line. In Messages, tap <b>To</b> then <b>Paste</b>."
-    : "Shows you exactly what it's about to do, then does the lot. In Messages, tap <b>To</b> then <b>Paste</b>.";
+    ? "Opens your text app with the numbers and message filled in. Check the recipients, then tap Send."
+    : "Opens your text app with the numbers and message filled in. Check the recipients, then tap Send.";
   const actions = `<div class="message-actions"><b id="selectedCount">${selCount} selected customer${selCount!==1?'s':''}</b>
-    <div class="row" style="margin-top:6px"><button id="bulkSendButton" class="good grow" onclick="bulkSend()" ${bulkSendBusy?'disabled aria-busy="true"':''}>${bulkSendBusy?'Sending… please wait':sendLabel}</button></div>
+    <div class="row" style="margin-top:6px"><button id="bulkSendButton" class="good grow" onclick="bulkSend()" ${bulkSendBusy?'disabled aria-busy="true"':''}>${bulkSendBusy?'Sending… please wait':sendLabel}</button></div><button class="ghost sm" style="margin-top:6px" onclick="bulkSend('',true)" ${bulkSendBusy?"disabled":""}>Send selected only</button>
     <div id="bulkSendStatus" class="small" aria-live="polite" style="margin-top:6px;${bulkSendBusy?'color:var(--warn)':''}">${bulkSendBusy?'<span class="spinner"></span> Sending now — please do not press it again.':''}</div>
-    <p class="small muted" style="margin:6px 0 0">${sendHint}</p>
+    <p class="small muted" style="margin:6px 0 0">${sendHint} Use your phone's <b>Mass text / individual SMS</b> setting for separate customer conversations.</p>
     ${preparedTextBatchControls()}</div>`;
   wrap.innerHTML = `<div class="card"><details open>
     <summary>Bulk message<span class="se-sum">${missing.length?` · ${missing.length} missing contact${missing.length!==1?'s':''}`:""}</span><span class="chev">›</span></summary>
@@ -5756,11 +5698,49 @@ function splitItems(text){ return String(text||"").split(/[;,\n]/).map(x=>x.trim
 const validMoney=v=>v && parseMoney(v)===null ? "Enter the price as a number, or leave it blank." : "";
 const validEmail=v=>v && !goodEmail(v) ? "That email address doesn't look right." : "";
 // Edit who it's for, what's being collected and the agreed price, so the receipt matches the job.
+function originalStopLocation(s){
+  return s?.pickupLocationOriginal ? {...s,...s.pickupLocationOriginal} : s;
+}
+const PICKUP_LOCATION_FIELDS = ["street","town","area","lat","lng","geoLabel","addrDiffers","pinFix"];
+function setPickupLocation(s, street, town){
+  if (!s.pickupLocationOriginal){
+    s.pickupLocationOriginal=Object.fromEntries(PICKUP_LOCATION_FIELDS.map(key=>[key,s[key] ?? null]));
+  }
+  for (const key of PICKUP_LOCATION_FIELDS) delete s[key];
+  s.street=street; s.town=town; s.area="";
+}
+window.editPickupLocation = async id => {
+  const s=findStop(id); if(!s) return;
+  const result=await openEditForm({title:"One-off pickup location", saveLabel:"Save this pickup location",
+    note:"Only this scheduled stop and its navigation change. The customer's saved address stays unchanged.",
+    fields:[{key:"street",label:"Meeting address",value:s.street,validate:v=>v.trim()?"":"Enter the meeting address"},
+      {key:"town",label:"Town",value:s.town,validate:v=>v.trim()?"":"Enter the town"}]});
+  if(!result) return;
+  setPickupLocation(s,result.street,result.town);
+  save(); render(); drawRoute();
+  const street=s.street, town=s.town;
+  const hit=await geocode(fullAddr(s)).catch(()=>null);
+  if(!s.pickupLocationOriginal || s.street!==street || s.town!==town) return;
+  if(hit) applyGeo(s,hit);
+  save(); render(); drawRoute();
+  flash(hit?"✓ One-off pickup location saved":"Location saved — map pin not confirmed; check before driving");
+};
+window.restorePickupLocation = id => {
+  const s=findStop(id); if(!s?.pickupLocationOriginal) return;
+  for(const key of PICKUP_LOCATION_FIELDS) delete s[key];
+  Object.assign(s,s.pickupLocationOriginal);
+  for(const key of PICKUP_LOCATION_FIELDS) if(s[key]===null) delete s[key];
+  delete s.pickupLocationOriginal;
+  save(); render(); drawRoute();
+  flash("✓ Original pickup location restored");
+};
+
 window.editStop = async id => {
   const s = findStop(id); if(!s) return;
+  const previousAddress=fullAddr(s);
   const result = await openEditForm({
     title:"✎ Edit pickup",
-    note:"Changes are saved on this phone and sent to their account if they booked online.",
+    note:s.pickupLocationOriginal?"This stop uses a one-off location. Its address changes stay on this stop; the saved customer address is unchanged.":"Changes are saved on this phone and sent to their account if they booked online.",
     saveLabel:"Save pickup",
     fields:[
       { key:"first_name", label:"First name", value:s.first_name, half:true },
@@ -5780,6 +5760,8 @@ window.editStop = async id => {
   s.first_name=result.first_name; s.last_name=result.last_name;
   s.phone=result.phone; s.email=result.email;
   s.street=result.street; s.town=result.town;
+  const addressChanged=previousAddress!==fullAddr(s);
+  if(addressChanged){ delete s.lat; delete s.lng; delete s.geoLabel; delete s.pinFix; delete s.addrDiffers; }
   s.appliances=splitItems(result.appliances);
   s.note=result.note;
   // Price changed? Tear up any built-but-unsent receipt/invoice — otherwise the
@@ -5794,6 +5776,11 @@ window.editStop = async id => {
   }
   save(); render();
   syncExternalBooking(s);
+  if(addressChanged){
+    const address=fullAddr(s), hit=await geocode(address).catch(()=>null);
+    if(fullAddr(s)===address && hit){ applyGeo(s,hit); save(); render(); }
+    drawRoute();
+  }
 };
 // Ditch a built-but-unsent receipt so a wrong amount can be redone from scratch.
 window.cancelReceipt = id => {
@@ -5886,7 +5873,7 @@ window.moveReminderStop = (stopId, dest) => {
   const from=windows.find(w=>w.stopIds.includes(stopId)); if (!from) return;
   from.stopIds=from.stopIds.filter(id=>id!==stopId);
   if (dest==="new"){
-    const created={id:`window:${uid()}`,label:"",stopIds:[stopId],start:from.start,end:from.end};
+    const created={id:`window:${uid()}`,label:`Batch ${windows.length+1}`,stopIds:[stopId],start:from.start,end:from.end};
     windows.push(created);
     reminderMoveId=created.id;
   } else {
@@ -5915,7 +5902,7 @@ window.splitReminderTown = (id, town) => {
 window.addReminderWindow = () => {
   const windows=editableReminderWindows();
   const first=windows[0] || { start:"09:00", end:"12:00" };
-  const created={id:`window:${uid()}`,label:"",stopIds:[],start:first.start,end:first.end};
+  const created={id:`window:${uid()}`,label:`Batch ${windows.length+1}`,stopIds:[],start:first.start,end:first.end};
   windows.push(created);
   reminderMoveId=created.id;
   state.reminderWindows=windows;
@@ -5928,7 +5915,7 @@ window.removeReminderWindow = id => {
   if (doomed.stopIds.length){
     const home=rest.find(w=>w.stopIds.length) || rest[0];
     if (!home){
-      if (!confirm("Remove this group? Everyone goes back to town groups.")) return;
+      if (!confirm("Remove this group? Everyone goes back into one batch.")) return;
       reminderMoveId="";
       delete state.reminderWindows;
       rebuildReminderAfterTimeChange(); save(); renderContacts();
@@ -6787,14 +6774,23 @@ function showBulkSendResult(message, hasProblem=false){
    The clipboard write has to start first and synchronously - a phone only lets a
    page write to the clipboard while it is still handling the tap, so it cannot
    wait behind a network call. */
-window.bulkSend = async (groupId) => {
+function bulkRecipients(group, selectedOnly=false){
+  const recipients=selectedOnly ? selectedRecipients() : pickupsOnly(state.stops).filter(s=>s.status!=="DONE");
+  return recipients.filter(s=>!group || group.stopIds.includes(s.id));
+}
+function batchSmsUrl(batch){
+  const ios=/iPad|iPhone|iPod/.test(navigator.userAgent);
+  const numbers=batchPhoneNumbers(batch).map(n=>n.replace(/[^\d+]/g,"")).join(ios?",":";");
+  return `sms:${numbers}${ios?"&":"?"}body=${encodeURIComponent(batch.message)}`;
+}
+window.bulkSend = async (groupId, selectedOnly=false) => {
   if (bulkSendBusy) return;
   groupId = String(groupId||"");
   const group = groupId ? reminderWindows().find(w=>w.id===groupId) : null;
   if (groupId && !group) return alert("That group is gone.");
-  const recipients = selectedRecipients().filter(s=>!group || group.stopIds.includes(s.id));
+  const recipients = bulkRecipients(group,selectedOnly);
   if (!recipients.length) return alert(group
-    ? "Tick at least one person in this group first."
+    ? "Move at least one person into this batch first."
     : "Select at least one customer first.");
   const batches = messageBatches(recipients, groupId);
   const phoneBatches = batches.filter(batch=>batchPhoneNumbers(batch).length);
@@ -6803,7 +6799,7 @@ window.bulkSend = async (groupId) => {
   if (!nums.length && !mailable.length){
     return alert("None of the selected customers have a phone number or an email address.");
   }
-  const message = group ? reminderMessageForWindow(group) : bulkMessage();
+  const message = group && messageMode()==="reminder" ? reminderMessageForWindow(group) : bulkMessage();
   if (messageMode()==="reminder" && !reminderWindows().some(w=>w.stopIds.length)) return alert("Add pickups first.");
   if (messageMode()!=="reminder" && !message) return alert("Choose the collection day first, then check the message preview.");
   const confirming = messageMode()==="confirm";
@@ -6812,7 +6808,7 @@ window.bulkSend = async (groupId) => {
   const who = group ? reminderWindowPlaces(group) : "";
   const lines = [];
   if (phoneBatches.length>1) lines.push(`Prepare ${phoneBatches.length} separate text groups, one per town`);
-  else if (nums.length) lines.push(`Copy ${nums.length} number${nums.length!==1?"s":""} and open Messages`);
+  else if (nums.length) lines.push(`Open Messages with ${nums.length} number${nums.length!==1?"s":""} filled in`);
   if (mailable.length) lines.push(`Email the same message to ${mailable.length} of them`);
   if (confirming) lines.push(`Save ${day} to their online accounts`);
   lines.push("Mark texts as sent when Messages opens and show which emails succeeded");
@@ -6833,7 +6829,7 @@ window.bulkSend = async (groupId) => {
         : navigator.clipboard?.writeText
           ? navigator.clipboard.writeText(phoneList).then(()=>true, ()=>false)
           : Promise.resolve(false);
-      if (!await copying) return alert("Couldn't copy the numbers. Please try again.");
+      await copying; // Clipboard is a fallback; the SMS link carries recipients.
     }
     if (confirming){
       // Saves the day AND sends the confirmation email, which opens with this very
@@ -6882,7 +6878,15 @@ window.bulkSend = async (groupId) => {
   if (phoneBatches.length===1){
     markTextsSentOnOpen(phoneBatches[0].recipients);
     renderContacts();
-    location.href = "sms:" + (/iPad|iPhone|iPod/.test(navigator.userAgent) ? "&body=" : "?body=") + encodeURIComponent(phoneBatches[0].message);
+    showBulkSendResult(resultMessage, Boolean(problem));
+    const status=document.getElementById("bulkSendStatus");
+    if(status){
+      const link=document.createElement("a");
+      link.href=batchSmsUrl(phoneBatches[0]); link.className="ghost sm";
+      link.textContent="Reopen text app"; link.style.display="inline-block";
+      status.append(document.createElement("br"),link);
+    }
+    location.href = batchSmsUrl(phoneBatches[0]);
   }
 };
 window.togglePriority = id => {
