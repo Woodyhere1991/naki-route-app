@@ -4117,7 +4117,8 @@ const ITEM_PRICES = {
   "treadmill":[2000,1500], "exercise bike":[2000,1500], "elliptical or cross-trainer":[2000,1500],
   "rowing machine":[2000,1500], "stair climber or stepper":[2000,1500],
   "home gym or multi-gym":[3000,2500], "pilates reformer":[2000,1500],
-  "lawn mower":[2000,1000], "push bike":[1000,1000],
+  "lawn mower":[2000,1000], "push bike":[1000,1000], "push bike (adult)":[1000,1000],
+  "kids' bike":[500,500], "scooter":[500,500],
   "bbq (2-4 burners)":[2000,1000], "bbq (5 or more burners)":[3000,2000],
   "gas bottle":[1000,1000], "cast-iron bath":[3000,2000],
   "flat-screen tv":[2000,1000], "old box tv (crt)":[4500,3500],
@@ -4132,7 +4133,7 @@ const BOOKING_ITEMS = [
   "Cooktop","Small benchtop oven","Microwave","Dishwasher","Front-loading washing machine",
   "Top-loading washing machine","Dryer","Metal wash tub","Treadmill","Exercise bike",
   "Elliptical or cross-trainer","Rowing machine","Stair climber or stepper","Home gym or multi-gym",
-  "Pilates reformer","Lawn mower","Push bike","BBQ (2-4 burners)","BBQ (5 or more burners)",
+  "Pilates reformer","Lawn mower","Push bike (adult)","Kids' bike","Scooter","BBQ (2-4 burners)","BBQ (5 or more burners)",
   "Gas bottle","Cast-iron bath","Flat-screen TV","Old box TV (CRT)","Small desktop printer",
   "Large scanner/printer","Very large standing scanner/printer","Heat pump or air conditioner","Other"
 ];
@@ -4162,7 +4163,10 @@ function itemPrice(name){
       t.includes("rowing") || t.includes("stair climber") || t.includes("stepper") ||
       t.includes("pilates") || t.includes("exercise bike")) return [2000,1500];
   if (t.includes("mower")) return [2000,1000];
-  if (t.includes("bike") || t.includes("bicycle")) return [1000,1000];
+  // Kids' bikes and scooters are $5, adult bikes $10 (Woody, 25 Sept 2026).
+  // A mobility scooter is not a kids' scooter, so it is left for a quote.
+  if (t.includes("scooter")) return t.includes("mobility") ? null : [500,500];
+  if (t.includes("bike") || t.includes("bicycle")) return /kid|child|junior|toddler|balance|small/.test(t) ? [500,500] : [1000,1000];
   if (t.includes("bbq") || t.includes("barbecue")) return /5|6|7|8|more/.test(t) ? [3000,2000] : [2000,1000];
   if (t.includes("gas bottle")) return [1000,1000];
   if (t.includes("bath")) return [3000,2000];

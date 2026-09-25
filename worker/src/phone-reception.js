@@ -11,7 +11,7 @@
    Audio never touches our storage. We keep what a booking needs and a short
    transcript of what was agreed, and nothing else. */
 
-import { ITEM_PRICES, RURAL_PRICES, OWNER_EMAIL } from "./customer.js";
+import { ITEM_PRICES, LEGACY_ITEMS, RURAL_PRICES, OWNER_EMAIL } from "./customer.js";
 // index.js imports this module, so this is a cycle - safe only because
 // sendMail is a hoisted declaration and is called at runtime, never while
 // the modules are still loading.
@@ -91,7 +91,7 @@ export function phoneStream(request, env) {
 export function priceLines() {
   const seen = new Map();
   for (const [item, [first]] of Object.entries(ITEM_PRICES)) {
-    if (item === "Other") continue;
+    if (item === "Other" || LEGACY_ITEMS.has(item)) continue;
     if (!seen.has(first)) seen.set(first, []);
     seen.get(first).push(item);
   }

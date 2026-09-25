@@ -48,7 +48,11 @@ export const ITEM_PRICES = {
   "Home gym or multi-gym": [3000, 2500],
   "Pilates reformer": [2000, 1500],
   "Lawn mower": [2000, 1000],
-  "Push bike": [1000, 1000],
+  // Woody, 25 Sept 2026: bikes priced by size, and scooters added. $5/$10 each,
+  // whether first or extra.
+  "Push bike (adult)": [1000, 1000],
+  "Kids' bike": [500, 500],
+  "Scooter": [500, 500],
   "BBQ (2-4 burners)": [2000, 1000],
   "BBQ (5 or more burners)": [3000, 2000],
   "Gas bottle": [1000, 1000],
@@ -59,8 +63,12 @@ export const ITEM_PRICES = {
   "Large scanner/printer": [1000, 1000],
   "Very large standing scanner/printer": [2000, 2000],
   "Heat pump or air conditioner": [2000, 1000],
-  "Other": [0, 0]
+  "Other": [0, 0],
+  // Retired name, kept so older bookings that list it still price and edit.
+  // Never offered on a form or to a bot (see LEGACY_ITEMS).
+  "Push bike": [1000, 1000]
 };
+export const LEGACY_ITEMS = new Set(["Push bike"]);
 
 export const RURAL_PRICES = {
   "Main town or main road - no travel fee": 0,

@@ -1,6 +1,6 @@
 import { readRunBackup } from "./run-backup.js";
 import {apiBody, apiDigest} from './api-keys.js';
-import {handlePortalRequest, bookingFrom, profileFrom, ITEM_PRICES, RURAL_PRICES, OWNER_EMAIL} from './customer.js';
+import {handlePortalRequest, bookingFrom, profileFrom, ITEM_PRICES, LEGACY_ITEMS, RURAL_PRICES, OWNER_EMAIL} from './customer.js';
 import {apiSchema} from './integration-schema.js';
 
 const BASE = '/api/v1';
@@ -115,7 +115,7 @@ export async function handleIntegrationApi(request, environment, {sendMail = nul
     };
     if (isRead) {
       if (path === '/me') return reply({name: key.name, permission: key.permission, expiresAt: key.expires_at});
-      if (path === '/catalog') return reply({currency: 'NZD', items: Object.keys(ITEM_PRICES), ruralOptions: Object.keys(RURAL_PRICES), itemPrices: ITEM_PRICES, ruralPrices: RURAL_PRICES, statuses});
+      if (path === '/catalog') return reply({currency: 'NZD', items: Object.keys(ITEM_PRICES).filter(item => !LEGACY_ITEMS.has(item)), ruralOptions: Object.keys(RURAL_PRICES), itemPrices: ITEM_PRICES, ruralPrices: RURAL_PRICES, statuses});
       if (path === '/bookings' || path === '/customers') return portal('/owner' + path);
       if (match) {
         const table = kind === 'bookings' ? bookingTable(id) : 'customers';

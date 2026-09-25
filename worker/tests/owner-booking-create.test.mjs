@@ -77,6 +77,18 @@ test('the booking confirmation explains what happens, including no packaging, in
   } finally { db.close(); }
 });
 
+// Woody, 25 Sept 2026: kids' bikes and scooters $5 each, adult bikes $10 each.
+test('bikes are priced by size and scooters are $5 each', async () => {
+  const { db, create } = await setup();
+  try {
+    assert.equal((await create({ ...valid, items: ["Kids' bike", 'Scooter', 'Push bike (adult)'] })).status, 201);
+    assert.equal(db.prepare('SELECT total_cents FROM bookings').get().total_cents, 2000);
+    assert.deepEqual([ITEM_PRICES["Kids' bike"], ITEM_PRICES.Scooter, ITEM_PRICES['Push bike (adult)']], [[500, 500], [500, 500], [1000, 1000]]);
+    // The retired name still prices, so older bookings that list it keep working.
+    assert.deepEqual(ITEM_PRICES['Push bike'], [1000, 1000]);
+  } finally { db.close(); }
+});
+
 test('owner can take a booking for a brand new person', async () => {
   const { db, create, mails } = await setup();
   try {
