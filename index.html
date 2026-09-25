@@ -4403,7 +4403,9 @@ function orderRunAroundUnloads(all,matrix,startIndex,endIndex){
 function setRouteOptimiseBusy(isBusy,message=""){
   routeOptimiseBusy=isBusy;
   ["optimise","optimiseHere"].forEach(id=>{const button=document.getElementById(id);if(button){button.disabled=isBusy;button.setAttribute("aria-busy",isBusy?"true":"false");}});
-  busy(message);
+  // Only paint the spinner when work starts. Clearing #busy here used to wipe the
+  // green "route optimised" line, so Optimise looked like it did nothing.
+  if(isBusy) busy(message);
 }
 async function optimise(){
   if(routeOptimiseBusy) return false;
@@ -4418,8 +4420,9 @@ async function optimise(){
     else{endIndex=points.length;points.push(back);}
   }
   setRouteOptimiseBusy(true,"Checking real road travel times…");
+  let usedRoadTimes=true, optimised=false;
   try{
-    let matrix,usedRoadTimes=true;
+    let matrix;
     try{matrix=await roadTimeMatrix(points);}
     catch(e){matrix=routeMatrixFallback(points);usedRoadTimes=false;}
     const currentIds=routeStops().map(s=>s.id).join("|");
@@ -4430,10 +4433,17 @@ async function optimise(){
     const rest = state.stops.filter(s => !ids.includes(s.id));
     state.stops = best.concat(rest);
     state.manual = false;
-    save(); render(); await drawRoute();
-    flash(usedRoadTimes?"✓ Route optimised using real driving times":"⚠ Road timings were unavailable — route optimised using distance estimates");
-    return usedRoadTimes;
-  }finally{setRouteOptimiseBusy(false);}
+    save(); render();
+    optimised = true;
+  }finally{
+    setRouteOptimiseBusy(false);
+    if(optimised) flash(usedRoadTimes?"✓ Route optimised using real driving times":"⚠ Road timings were unavailable — route optimised using distance estimates");
+    else busy("");
+  }
+  // Do not wait for the map line. That request can take several seconds, and
+  // waiting used to eat the confirmation and make Optimise look like a no-op.
+  if(optimised) drawRoute();
+  return optimised ? usedRoadTimes : false;
 }
 
 /* ---------- Map drawing + OSRM road line (best-effort) ---------- */
@@ -7513,7 +7523,10 @@ $("#optimise").onclick = async () => {
   routeStartOverride=null;
   await optimise();
   $("#addBox").open=false; $("#startBox").open=false;
-  document.getElementById("map").scrollIntoView({behavior:"smooth",block:"start"});
+  // Optimise lives on the Map tab, where the numbered list is hidden and the
+  // map itself sits in a closed details panel. Jump to Pickups so the new
+  // 1-2-3 order is actually on screen.
+  jumpToScheduled("listWrap");
 };
 // Re-plan from your current GPS position (for stops phoned in mid-route).
 $("#addUnload").onclick = () => addUnloadStop();
@@ -7526,7 +7539,7 @@ $("#optimiseHere").onclick = () => {
   navigator.geolocation.getCurrentPosition(
     async pos => { routeStartOverride = { lat:pos.coords.latitude, lng:pos.coords.longitude, label:"My current location" };
       runChangeBusy=false; await optimise(); $("#addBox").open=false; $("#startBox").open=false;
-      document.getElementById("map").scrollIntoView({behavior:"smooth",block:"start"}); },
+      jumpToScheduled("listWrap"); },
     async err => { runChangeBusy=false; busy(""); alert("Couldn't get location (needs https + permission). Using your set start."); await optimise(); },
     { enableHighAccuracy:true, timeout:10000 }
   );
