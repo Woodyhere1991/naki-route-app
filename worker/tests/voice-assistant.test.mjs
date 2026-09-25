@@ -125,7 +125,7 @@ test('the session is built with GPT-Live, a backend model and every tool the app
     }), env);
     assert.equal(reception.status, 200);
     const receptionTools = JSON.parse(sent.options.body).session.delegation.responses.tools.map(tool => tool.name);
-    assert.deepEqual(receptionTools.sort(), ['quote_price', 'take_booking']);
+    assert.deepEqual(receptionTools.sort(), ['quote_price', 'take_booking', 'text_booking_link']);
 
     const declared = new Set([...names, ...receptionTools]);
     const handled = [...app.matchAll(/name === '([a-z_]+)'/g)].map(match => match[1]);

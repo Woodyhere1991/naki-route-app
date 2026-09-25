@@ -36,7 +36,7 @@ test('KV mirror failure or stale KV does not replace authoritative runs',async t
 const html=fs.readFileSync(new URL('../../index.html',import.meta.url),'utf8');
 const section=(a,b)=>html.slice(html.indexOf(a),html.indexOf(b,html.indexOf(a)));
 test('a browser with local edits never pushes over a newer account copy',async()=>{
- let writes=0,pulls=0;const context={ownerToken:'yes',cloudBackupBusy:false,cloudPullAt:0,ownerApi:async()=>({latest:{savedAt:200}}),syncMark:()=>({serverAt:100,payload:'old'}),backupPayload:()=>({changed:true}),localHasWork:()=>true,pushCloudBackup:()=>writes++,applyCloudBackup:()=>pulls++,paintCloudState(){},backupStatus(){}};
+ let writes=0,pulls=0;const context={ownerToken:'yes',cloudBackupBusy:false,cloudPullAt:0,ownerApi:async()=>({latest:{savedAt:200}}),syncMark:()=>({serverAt:100,payload:'old'}),backupPayload:()=>({changed:true}),localHasWork:()=>true,adoptLostCloudSave:async()=>false,pushCloudBackup:()=>writes++,applyCloudBackup:()=>pulls++,paintCloudState(){},backupStatus(){}};
  vm.runInNewContext(section('async function syncFromCloud(','// A fresh or wiped phone'),context);await context.syncFromCloud(true);assert.equal(writes,0);assert.equal(pulls,0);
 });
 test('restore retains the local undo copy instead of importing another devices undo',async()=>{
@@ -44,6 +44,38 @@ test('restore retains the local undo copy instead of importing another devices u
  vm.runInNewContext(section('async function applyCloudBackup(','let cloudPullAt='),context);await context.applyCloudBackup({savedAt:200,data:{undo:'foreign',runs:'new',auth:'secret'}});assert.equal(entries.get('undo'),'local');assert.equal(entries.get('runs'),'new');assert.equal(entries.has('auth'),false);
 });
 test('browser sends the version it actually read with its save',async()=>{
- let sent;const payload={runCount:3,data:{runs:'safe'}};const context={ownerToken:'yes',cloudBackupBusy:false,lastCloudPush:'',backupPayload:()=>payload,syncMark:()=>({serverAt:123}),ownerApi:async(_p,o)=>{sent=JSON.parse(o.body);return {savedAt:124}},setSyncMark(){},paintCloudState(){},backupStatus(){}};
+ let sent;const payload={runCount:3,data:{runs:'safe'}};const context={ownerToken:'yes',cloudBackupBusy:false,lastCloudPush:'',backupPayload:()=>payload,syncMark:()=>({serverAt:123}),ownerApi:async(_p,o)=>{sent=JSON.parse(o.body);return {savedAt:124}},setSyncMark(){},paintCloudState(){},backupStatus(){},rememberCloudAttempt(){},textHash:async()=>'h'};
  vm.runInNewContext(section('async function pushCloudBackup(','// Called from save();'),context);await context.pushCloudBackup(false);assert.equal(sent.baseSavedAt,123);assert.equal(sent.data.runs,'safe');
+});
+// A save that reached the server but whose reply was lost, followed by more work
+// on the same phone, used to pause sync for good as "your account has newer runs".
+function lostReplyPhone(t){
+ const {env,key}=setup(t);const store=new Map();let runs='Hawera,New Plymouth,Coastal';let dropReply=false;const painted=[];
+ const context={ownerToken:'yes',cloudBackupBusy:false,cloudBackupTimer:null,lastCloudPush:'',fieldLastSave:0,CLOUD_ATTEMPTS_KEY:'attempts',crypto,TextEncoder,
+  loadJSON:(k,d)=>store.has(k)?JSON.parse(store.get(k)):d,saveJSON:(k,v)=>{store.set(k,JSON.stringify(v));return true},
+  syncMark:()=>store.has('sync')?JSON.parse(store.get('sync')):{serverAt:0,payload:''},setSyncMark:(serverAt,payload)=>store.set('sync',JSON.stringify({serverAt,payload})),
+  backupPayload:()=>({runCount:3,data:{runs}}),whenText:()=>'just now',paintCloudState:(text,bad)=>painted.push([text,Boolean(bad)]),backupStatus(){},setTimeout(){},clearTimeout(){},
+  ownerApi:async(path,options={})=>{
+   if(options.method==='PUT'){const result=await writeRunBackup(env,key,JSON.parse(options.body));if(result.error)throw Error(result.error);if(dropReply){dropReply=false;throw Error('The operation was aborted.');}return {ok:true,savedAt:result.savedAt};}
+   return readRunBackup(env,key);
+  }};
+ vm.runInNewContext(section('async function textHash(','// Called from save();'),context);
+ context.setSyncMark(100,JSON.stringify({runCount:3,data:{runs}}));
+ return {env,key,context,painted,edit:value=>{runs=value},dropNextReply:()=>{dropReply=true}};
+}
+test('a lost save reply followed by more edits keeps saving on the same phone',async t=>{
+ const phone=lostReplyPhone(t);
+ phone.edit('Hawera,New Plymouth,Coastal,Opunake');phone.dropNextReply();await phone.context.pushCloudBackup(true);
+ phone.edit('Hawera,New Plymouth,Coastal,Opunake,Eltham');await phone.context.pushCloudBackup(true);
+ assert.equal((await readRunBackup(phone.env,phone.key)).data.runs,'Hawera,New Plymouth,Coastal,Opunake,Eltham');
+ assert.equal((await readRunBackup(phone.env,phone.key,true)).data.runs,'Hawera,New Plymouth,Coastal,Opunake');
+ assert.ok(!phone.painted.some(([text])=>/newer runs/i.test(text)));
+ assert.match(phone.painted.at(-1)[0],/Saved to your account/);
+});
+test('another device\'s newer copy still pauses sync instead of being overwritten',async t=>{
+ const phone=lostReplyPhone(t);
+ assert.ok((await writeRunBackup(phone.env,phone.key,{baseSavedAt:100,runCount:3,data:{runs:'other phone'}})).savedAt);
+ phone.edit('this phone');await phone.context.pushCloudBackup(true);
+ assert.equal((await readRunBackup(phone.env,phone.key)).data.runs,'other phone');
+ assert.match(phone.painted.at(-1)[0],/newer runs/i);
 });

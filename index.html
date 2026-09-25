@@ -2080,8 +2080,12 @@ async function openOwnerDocument(id){
 }
 // A customer can change their request after it is already on a run. Bring the
 // stop in the run into line so the truck is loaded for what they actually want.
+// null while a quote is still needed. The website total on a quote job only covers
+// the items it could price, so treating it (or $0) as agreed put a wrong figure
+// on the run and straight onto the receipt without asking.
 function bookingPriceFor(b){
-  return b.quotedPrice!=null ? Number(b.quotedPrice) : Number(b.total||0);
+  if (b.quotedPrice!=null) return Number(b.quotedPrice);
+  return b.quoteRequired ? null : Number(b.total||0);
 }
 function stopIsFinished(stop){
   return stop.status==="DONE" || Boolean(stop.collectedAt) || Boolean(stop.invoiceSent) || Boolean(stop.receiptSent);
@@ -2123,12 +2127,15 @@ function syncBookingChangesIntoRuns(rows){
       }
       [...(data.stops||[]),...(data.bad||[])].forEach(stop=>{
         if (stop.submission_id!==b.id || stopIsFinished(stop)) return;
+        // Quote jobs added before this fix came in at $0. Put them back to "ask".
+        if (price==null && stop.amount===0 && !stop.quoteNeeded){ stop.amount=null; stop.quoteNeeded=true; touched=true; }
         const seenBefore="bookingFingerprint" in stop;
         if (seenBefore && stop.bookingFingerprint===fingerprint) return;
         const wasItems=(stop.appliances||[]).join(", ");
         const nowItems=items.join(", ");
         const itemsChanged=wasItems!==nowItems;
-        const priceChanged=Number(stop.amount||0)!==price;
+        // No price on the booking yet (quote needed) never wipes one typed on the stop.
+        const priceChanged=price!=null && Number(stop.amount||0)!==price;
         stop.bookingFingerprint=fingerprint;
         touched=true;
         // The very first time we look at a stop we only trust an item change.
@@ -2137,7 +2144,8 @@ function syncBookingChangesIntoRuns(rows){
         if (!itemsChanged && !priceChanged && String(stop.additional_info||"")===info) return;
         stop.appliances=items;
         stop.additional_info=info;
-        stop.amount=price;
+        if (price!=null){ stop.amount=price; delete stop.quoteNeeded; }
+        else if (stop.amount==null) stop.quoteNeeded=true;
         const parts=[];
         if (itemsChanged) parts.push(`${wasItems||"—"} → ${nowItems||"—"}`);
         if (priceChanged) parts.push(`$${price.toFixed(2)}`);
@@ -2251,6 +2259,7 @@ async function addDirectBooking(id,options={}){
     rural_option:b.ruralOption||"",
     // A quoted price beats the website total — that's the figure actually agreed.
     amount:bookingPriceFor(b),
+    quoteNeeded:bookingPriceFor(b)==null,
     status:"NEW"
   };
   try{
@@ -4219,6 +4228,7 @@ function stopPrice(s){
   if (s.amount!=null) return Number(s.amount);
   if (s.invoiceAmount!=null) return Number(s.invoiceAmount);
   if (s.receiptAmount!=null) return Number(s.receiptAmount);
+  if (s.quoteNeeded) return null;              // ask, rather than guess from part of the job
   return estimateStopPrice(s);
 }
 
@@ -4880,7 +4890,7 @@ function renderList(){
     const isEstimate = s.amount==null && s.invoiceAmount==null && s.receiptAmount==null && shownAmt!=null;
     const priceTag = shownAmt!=null
       ? `<span class="pricetag${isEstimate?' est':''}">$${Number(shownAmt).toFixed(2)}${isEstimate?' est':''}</span>`
-      : `<span class="pricetag none">No price</span>`;
+      : `<span class="pricetag none">${s.quoteNeeded?"Quote needed":"No price"}</span>`;
     const phoneLine = s.phone
       ? `<div class="stopphone">📱 <a href="tel:${esc(String(s.phone).replace(/[^\d+]/g,""))}">${esc(s.phone)}</a></div>`
       : `<div class="stopphone missing">📱 No mobile number</div>`;
@@ -5248,7 +5258,12 @@ function collectionDayLabel(value){
   const d = daysUntil(value);
   if (d===0) return "today";
   if (d===1) return "tomorrow";
-  const weekday = new Date(value + "T12:00:00").toLocaleDateString("en-NZ", { weekday:"long" });
+  // A day that has passed must never be texted as "this coming ...", and a week
+  // or more out needs the date so it isn't read as this week.
+  if (d<0) return "";
+  const date = new Date(value + "T12:00:00");
+  const weekday = date.toLocaleDateString("en-NZ", { weekday:"long" });
+  if (d>=7) return `on ${weekday} ${date.toLocaleDateString("en-NZ", { day:"numeric", month:"long" })}`;
   return `this coming ${weekday}`;
 }
 function confirmationMessage(value){
@@ -6815,6 +6830,7 @@ window.bulkSend = async (groupId, selectedOnly=false) => {
   if (!nums.length && !mailable.length){
     return alert("None of the selected customers have a phone number or an email address.");
   }
+  if (state.confirmationDate && daysUntil(state.confirmationDate)<0) return alert("That collection day has already been. Choose the new day first.");
   const message = group && messageMode()==="reminder" ? reminderMessageForWindow(group) : bulkMessage();
   if (messageMode()==="reminder" && !reminderWindows().some(w=>w.stopIds.length)) return alert("Add pickups first.");
   if (messageMode()!=="reminder" && !message) return alert("Choose the collection day first, then check the message preview.");
@@ -7245,13 +7261,16 @@ function backupStatus(message, bad=false){
 // backup would change the payload every time we saved the note, so the phone would
 // never look settled and would upload forever.
 const SYNC_KEY="naki_cloud_sync_v1";
+// Fingerprints of saves this phone sent but never heard back about. Private to
+// this phone for the same reason as SYNC_KEY.
+const CLOUD_ATTEMPTS_KEY="naki_cloud_attempts_v1";
 function nakiStorageKeys(){
   // The geocode cache is deliberately excluded. It is a derived cache that can be
   // rebuilt by looking the address up again, and it grows with every address ever
   // searched. Including it meant the cloud backup crept towards the server's 4 MB
   // limit, and past it every save was refused — so the account copy silently
   // stopped updating while the app only ever said "waiting to sync".
-  return Object.keys(localStorage).filter(key=>key.startsWith("naki_") && !key.startsWith("naki_action_") && key!=="naki_weather_cache_v1" && key!==GEO && key!==OWNER_TOKEN_KEY && key!==SYNC_KEY && key!=="naki_pre_pull_snapshot_v1" && !key.startsWith("naki_recovery_"));
+  return Object.keys(localStorage).filter(key=>key.startsWith("naki_") && !key.startsWith("naki_action_") && key!=="naki_weather_cache_v1" && key!==GEO && key!==OWNER_TOKEN_KEY && key!==SYNC_KEY && key!==CLOUD_ATTEMPTS_KEY && key!=="naki_pre_pull_snapshot_v1" && !key.startsWith("naki_recovery_"));
 }
 $("#backupSave").onclick=()=>{
   try{
@@ -7328,14 +7347,42 @@ async function refreshCloudBackupInfo(){
       : "Saved on phone · account backup waiting");
   }catch(e){ paintCloudState("Couldn't check your saved copy right now."); }
 }
+/* A save can land on the server while its reply is lost - a timeout on a weak rural
+   signal does exactly that. The server then holds a newer copy than this phone
+   knows about, and the next save was refused as "your account has newer runs",
+   pausing sync for good on a single phone. Remembering what we sent lets the phone
+   recognise that newer copy as its own and carry on. */
+async function textHash(text){
+  const bytes=new Uint8Array(await crypto.subtle.digest("SHA-256",new TextEncoder().encode(text)));
+  return [...bytes].map(b=>b.toString(16).padStart(2,"0")).join("");
+}
+function rememberCloudAttempt(base, hash){
+  const saved=loadJSON(CLOUD_ATTEMPTS_KEY,{base:-1,hashes:[]});
+  const hashes=saved.base===base && Array.isArray(saved.hashes) ? saved.hashes : [];
+  saveJSON(CLOUD_ATTEMPTS_KEY,{base,hashes:[...hashes.filter(h=>h!==hash),hash].slice(-8)});
+}
+async function adoptLostCloudSave(){
+  const attempts=loadJSON(CLOUD_ATTEMPTS_KEY,null);
+  if (!attempts || attempts.base!==syncMark().serverAt || !(attempts.hashes||[]).length) return false;
+  const saved=await ownerApi("/owner/backup");
+  if (!saved || !saved.savedAt || !attempts.hashes.includes(await textHash(JSON.stringify(saved.data)))) return false;
+  // The server's copy is one this phone sent, so we are its base now.
+  const stamp=JSON.stringify({runCount:saved.runCount, data:saved.data});
+  setSyncMark(saved.savedAt, stamp);
+  lastCloudPush=stamp;
+  return true;
+}
 async function pushCloudBackup(quiet=true){
   if (!ownerToken || cloudBackupBusy) return;
   const payload=backupPayload();
   const stamp=JSON.stringify(payload);
   if (quiet && stamp===lastCloudPush) return;         // nothing actually changed
   cloudBackupBusy=true;
+  let adopted=false;
   try{
-    const result=await ownerApi("/owner/backup",{ method:"PUT", body:JSON.stringify({...payload,baseSavedAt:syncMark().serverAt}) });
+    const base=syncMark().serverAt;
+    rememberCloudAttempt(base, await textHash(JSON.stringify(payload.data)));
+    const result=await ownerApi("/owner/backup",{ method:"PUT", body:JSON.stringify({...payload,baseSavedAt:base}) });
     lastCloudPush=stamp;
     setSyncMark(result.savedAt||Date.now(), stamp);
     fieldLastSave=result.savedAt||Date.now();
@@ -7346,7 +7393,9 @@ async function pushCloudBackup(quiet=true){
     // A backup the server refuses as too big will be refused forever, so saying
     // "waiting to sync" made it look like a temporary hiccup and hid a permanent
     // failure. Say what is actually wrong.
-    if (/newer runs|needs refreshing/i.test(e.message||"")){
+    if (/newer runs/i.test(e.message||"") && await adoptLostCloudSave().catch(()=>false)){
+      adopted=true;                                   // it was ours - save again on top of it
+    }else if (/newer runs|needs refreshing/i.test(e.message||"")){
       paintCloudState(e.message,true);
       backupStatus(e.message,true);
     }else if (/too big/i.test(e.message||"")){
@@ -7357,6 +7406,16 @@ async function pushCloudBackup(quiet=true){
       if (!quiet) backupStatus("Couldn't save to your account: "+e.message, true);
     }
   }finally{ cloudBackupBusy=false; }
+  if (adopted){
+    // Nothing changed since the lost save? Then it is already safely up there.
+    if (JSON.stringify(backupPayload())===syncMark().payload){
+      fieldLastSave=syncMark().serverAt;
+      paintCloudState(`✓ Saved to your account ${whenText(fieldLastSave)}`);
+      if (!quiet) backupStatus("Saved to your account.");
+      return;
+    }
+    return pushCloudBackup(quiet);
+  }
 }
 // Called from save(); waits for things to settle so a drag isn't 20 uploads.
 function scheduleCloudBackup(){
@@ -7422,6 +7481,12 @@ async function syncFromCloud(force=false){
   if (info.latest.savedAt <= mark.serverAt) return;           // this phone is level or ahead
   const changedHere=JSON.stringify(backupPayload())!==mark.payload;
   if (changedHere && localHasWork()){
+    // The "newer" copy may be this phone's own save whose reply got lost.
+    if (await adoptLostCloudSave().catch(()=>false)){
+      if (JSON.stringify(backupPayload())===syncMark().payload) paintCloudState(`✓ Saved to your account ${whenText(syncMark().serverAt)}`);
+      else scheduleCloudBackup();
+      return;
+    }
     paintCloudState("Your account has newer runs. Both copies are kept. Export this phone copy before restoring from account.",true);
     backupStatus("Sync paused to protect both copies. Use Add & setup → My runs on other phones to export and restore.",true);
     return;
