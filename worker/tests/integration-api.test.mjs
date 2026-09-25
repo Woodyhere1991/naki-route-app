@@ -28,7 +28,7 @@ async function setup(t) {
       catch(e){db.exec('ROLLBACK');throw e;}
     }
   };
-  const state = {mails:0, allow:true, saved:null};
+  const state = {mails:0, botMails:[], allow:true, saved:null};
   const env = {CUSTOMER_DB:wrapper, BOT_RATE_LIMIT:{limit:async()=>({success:state.allow})}, REMINDERS:{get:async()=>state.saved}};
   const ownerHash = Buffer.from(await crypto.subtle.digest('SHA-256',new TextEncoder().encode('test-owner'))).toString('base64url');
   db.prepare("INSERT INTO sessions(token_hash,role,email,created_at,last_seen_at,expires_at) VALUES(?,'owner','owner@example.test',0,0,?)").run(ownerHash,Date.now()+86400000);
@@ -43,7 +43,7 @@ async function setup(t) {
   const key = await makeKey();
   const api = (path,method='GET',body,headers={},secret=key.secret) => handleIntegrationApi(new Request('https://test.invalid/api/v1'+path,{
     method,headers:{Authorization:'Bearer '+secret,'Content-Type':'application/json',...headers},...(body===undefined?{}:{body:JSON.stringify(body)})
-  }),env);
+  }),env,{sendMail:async(_env,message)=>{state.botMails.push(message);return true;}});
   const create = async() => {const r=await api('/bookings','POST',sample,{'Idempotency-Key':crypto.randomUUID()});assert.equal(r.status,201,await r.clone().text());return (await r.json()).booking;};
   return {db,env,state,key,owner,api,makeKey,create};
 }
@@ -79,14 +79,17 @@ test('read-only keys can read but cannot create, update or delete',async t=>{
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM bookings').get().n,0);
 });
 
-test('idempotent booking creation writes once and sends no customer message',async t=>{
+test('idempotent booking creation writes once and sends the customer one booking confirmation',async t=>{
   const {db,api,state,owner}=await setup(t);
   const first=await api('/bookings','POST',sample,{'Idempotency-Key':'same-create-1'});assert.equal(first.status,201);
-  const body=await first.json();assert.equal(body.customerEmailed,false);
+  const body=await first.json();assert.equal(body.customerEmailed,true);
+  // Woody, 25 Sept: everyone who books gets the what-happens-next email, phone bookings included.
+  assert.equal(state.botMails.length,1);assert.equal(state.botMails[0].to,sample.email);assert.equal(state.botMails[0].subject,'Whiteware Collection');
+  assert.match(state.botMails[0].text,/can't take any packaging, boxes etc/);
   const retry=await api('/bookings','POST',sample,{'Idempotency-Key':'same-create-1'});
   assert.equal(retry.status,201);assert.equal(retry.headers.get('Idempotency-Replayed'),'true');assert.deepEqual(await retry.json(),body);
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM bookings').get().n,1);
-  assert.equal(state.mails,0);
+  assert.equal(state.mails,0);assert.equal(state.botMails.length,1,'a replayed create must not email again');
   assert.equal((await api('/bookings','POST',{...sample,firstName:'Different'},{'Idempotency-Key':'same-create-1'})).status,409);
   const activity=await(await owner('/owner/api-keys/activity')).json();assert.equal(activity.activity[0].status,201);
 });
@@ -102,6 +105,7 @@ test('booking PATCH keeps omitted values, requires a fresh ETag and safely repla
   assert.equal((await api(path,'PATCH',{status:'CONFIRMED',pickupDate:'2026-10-01'},headers)).status,200);
   assert.equal((await api(path,'PATCH',{customerNote:'stale'},{...headers,'Idempotency-Key':'new-but-stale'})).status,412);
   assert.notEqual((await api(path)).headers.get('ETag'),tag);assert.equal(state.mails,0);
+  assert.equal(state.botMails.length,1,'bot edits never email the customer; only the creation confirmation was sent');
   assert.equal(db.prepare('SELECT customer_note FROM bookings WHERE id=?').get(booking.id).customer_note,'');
 });
 

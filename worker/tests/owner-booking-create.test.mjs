@@ -60,6 +60,23 @@ const valid = {
   items: ['Microwave'], additionalInfo: 'Gate code 1234'
 };
 
+// Woody, 25 Sept: "add that i cant take any packaging, boxes etc". The same text
+// goes to website, owner-taken and phone (bot API) bookings. It had also shown
+// customers broken characters for weeks after the file was saved in the wrong
+// encoding, so the customer-facing text is checked for that too.
+test('the booking confirmation explains what happens, including no packaging, in clean text', async () => {
+  const { db, create, mails } = await setup();
+  try {
+    assert.equal((await create(valid)).status, 201);
+    assert.equal(mails.length, 1);
+    const text = mails[0].text;
+    assert.match(text, /Please note we can't take any packaging, boxes etc - only the items you've booked\./);
+    assert.ok(text.includes('Collections in Hāwera,'));
+    assert.ok(text.includes('Thank you! \u{1F60A}'));
+    assert.doesNotMatch(text, /[ÂÃÄâð][\u0080-¿Œ-™]/, 'no double-encoded characters');
+  } finally { db.close(); }
+});
+
 test('owner can take a booking for a brand new person', async () => {
   const { db, create, mails } = await setup();
   try {

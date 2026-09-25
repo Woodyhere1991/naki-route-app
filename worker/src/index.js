@@ -1230,7 +1230,7 @@ export default {
   async fetch(request, env) {
     if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: cors(request) });
     const url = new URL(request.url);
-    if (url.pathname.startsWith("/api/v1/")) return handleIntegrationApi(request, env);
+    if (url.pathname.startsWith("/api/v1/")) return handleIntegrationApi(request, env, { sendMail });
     const path = url.pathname.replace(/^\/v2/, "");
     // Twilio and Jotform are servers, not browsers - neither sends an Origin.
     // They prove themselves with a signature instead, inside their handlers.

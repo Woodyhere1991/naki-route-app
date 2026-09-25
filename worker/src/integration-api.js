@@ -88,7 +88,7 @@ async function writeOnce(request, env, key, path, body, run) {
   return response;
 }
 
-export async function handleIntegrationApi(request, environment) {
+export async function handleIntegrationApi(request, environment, {sendMail = null} = {}) {
   try {
     const url = new URL(request.url), path = url.pathname.slice(BASE.length);
     if (path === '/openapi.json' && request.method === 'GET') return reply(apiSchema(url.origin));
@@ -102,11 +102,13 @@ export async function handleIntegrationApi(request, environment) {
     const kind = match?.[1], id = match?.[2];
     const isRead = request.method === 'GET';
     if (!isRead && key.permission !== 'write') fail('This key is read-only.', 403);
-    const portal = async (target, method = 'GET', body, version = null) => {
+    // Only booking creation gets the real sender, so the customer receives the same
+    // booking confirmation a website booking sends. Every other bot call stays silent.
+    const portal = async (target, method = 'GET', body, version = null, {email = false} = {}) => {
       const response = await handlePortalRequest({
         request: new Request(url.origin + target + url.search, {method, headers: {'Content-Type': 'application/json'}, ...(body ? {body: JSON.stringify(body)} : {})}),
         env, path: target, json: (_r, data, status) => reply(data, status),
-        sendMail: async () => false,
+        sendMail: email && sendMail ? sendMail : async () => false,
         integrationSession: {role: 'owner', email: OWNER_EMAIL, apiKeyId: key.id, expectedUpdatedAt: version}
       });
       return response;
@@ -147,7 +149,7 @@ export async function handleIntegrationApi(request, environment) {
           || ('expectedQuoteRequired' in body && body.expectedQuoteRequired !== quote))
           return reply({error:'The caller quote differs from current Naki pricing. Review before creating this booking.'},422);
         const {expectedTotalCents,expectedQuoteRequired,...fields}=body;
-        return portal('/owner/bookings', 'POST', fields);
+        return portal('/owner/bookings', 'POST', fields, null, {email: true});
       }
       const table = kind === 'bookings' ? bookingTable(id) : 'customers';
       const row = await env.CUSTOMER_DB.prepare(`SELECT * FROM ${table} WHERE id=?1`).bind(id).first();
