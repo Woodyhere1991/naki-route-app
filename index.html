@@ -1160,6 +1160,7 @@ function showActiveRun(){
   drawRoute();
   refreshWeather(false);
   renderDirectBookings();
+  setTimeout(backfillNavLabels, 400);
 }
 function switchRun(id){
   if (id===runStore.activeRunId) return;
@@ -1233,6 +1234,7 @@ async function mergeRunIntoActive(){
   save();
   closeRunActions();
   render(); drawRoute(); renderDirectBookings();
+  setTimeout(backfillNavLabels, 400);
   const n=moveStops.length+moveBad.length;
   flash(`✓ Merged ${from.name} — ${n} stop${n===1?"":"s"} added. Tap Optimise to re-order.`);
 }
@@ -3913,6 +3915,14 @@ function addFileStops(rows, srcName, setStatus, extraNote){
       status: (r.status==="DONE") ? "DONE" : "NEW",
       src: srcName==="Direct booking" ? "direct" : "sheet" // direct bookings stay until Woody removes them
     };
+    // A direct booking arrives already looked up. Keep the confirmed address
+    // with its pin - dropping it is what put "Exact map pin not confirmed" on
+    // almost every booking added from the Bookings tab.
+    if (s.lat!=null && s.lng!=null && typeof r.geoLabel==="string"){
+      s.geoLabel = r.geoLabel;
+      s.addrDiffers = Boolean(r.addrDiffers);
+      if (r.pinFix!=null) s.pinFix = r.pinFix;
+    }
     const keys = pickupKeys(s);
     if (keys.some(k => known.has(k))){
       // Already on a run. Still worth one thing: if the sheet has a price and the
@@ -3966,6 +3976,7 @@ function addFileStops(rows, srcName, setStatus, extraNote){
     status(msg); flash(msg);
     drawRoute();
     refreshWeather(true);
+    setTimeout(backfillNavLabels, 400);
   })();
   return {accepted:added+parked+toGeocode.length>0,added,parked,skipped};
 }
@@ -7002,20 +7013,29 @@ window.navStop = id => {
 // Stops whose label lost the house number get re-looked-up too, so old
 // street-level answers ("Tawa Street" for "2A Tawa Street") fix themselves.
 const navRetried = new Set();   // once per stop per session — a permanently vague address must not re-lookup on every open
+let navBackfillBusy = false, navBackfillAgain = false;
 async function backfillNavLabels(){
+  // Runs at start-up, and again whenever stops arrive while the app stays open
+  // (Bookings tab, run switch, merge, coming back from the background). A phone
+  // left open all day never reloads, so start-up alone missed most stops.
+  if (navBackfillBusy){ navBackfillAgain = true; return; }
   const pending = pickupsOnly(state.stops).filter(s =>
     !navRetried.has(s.id) && pinNeedsRelookup(s));
   if (!pending.length || importBusy) return;
+  navBackfillBusy = true;
   let changed = false;
-  for (const s of pending){
-    if (importBusy) break;
-    navRetried.add(s.id);
-    const hit = await geocode(fullAddr(s));
-    const live = findStop(s.id); if (!live || !hit) continue;   // dropped, or a plain miss that retries next load
-    applyGeo(live, hit);
-    changed = true;
-  }
+  try{
+    for (const s of pending){
+      if (importBusy) break;
+      navRetried.add(s.id);
+      const hit = await geocode(fullAddr(s));
+      const live = findStop(s.id); if (!live || !hit) continue;   // dropped, or a plain miss that retries next load
+      applyGeo(live, hit);
+      changed = true;
+    }
+  } finally { navBackfillBusy = false; }
   if (changed){ save(); render(); drawRoute(); }
+  if (navBackfillAgain){ navBackfillAgain = false; setTimeout(backfillNavLabels, 0); }
 }
 window.callStop = id => { const s=findStop(id); if(s&&s.phone) location.href="tel:"+s.phone.replace(/\s+/g,""); };
 window.delStop = id => {
@@ -7929,6 +7949,9 @@ document.addEventListener("visibilitychange",()=>{ if(document.visibilityState==
 window.addEventListener("focus",refreshOwnerData);
 setTimeout(syncSavedProfileBookings, 1500);
 setTimeout(backfillNavLabels, 400);
+// A phone app comes back from the background without reloading; check any
+// stops that arrived meanwhile (for example from the other phone).
+document.addEventListener("visibilitychange",()=>{ if(document.visibilityState==="visible") setTimeout(backfillNavLabels, 1500); });
 $("#mapPanel").ontoggle = () => {
   // Opening the map fresh is a good moment to show the whole run again.
   if ($("#mapPanel").open){
