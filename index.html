@@ -453,6 +453,7 @@
       </div>
       <div id="runActions" class="run-actions" hidden>
         <button id="renameRun" class="ghost">Rename this run</button>
+        <button id="mergeRun" class="ghost">Merge another run into this one</button>
         <button id="clearAll" class="ghost">Clear stops from this run</button>
         <button id="deleteRun" class="bad">Delete this run</button>
       </div>
@@ -1123,6 +1124,7 @@ function renderRunSwitcher(){
   }).join("");
   $("#runCountLabel").textContent=`${runStore.runs.length} saved run${runStore.runs.length===1?"":"s"} · saved on this phone`;
   $("#deleteRun").disabled=runStore.runs.length===1;
+  $("#mergeRun").disabled=runStore.runs.length===1;
 }
 function closeRunActions(){
   $("#runActions").hidden=true;
@@ -1205,6 +1207,34 @@ function renameActiveRun(){
   save();
   closeRunActions();
   renderRunSwitcher();
+}
+// Fold another run (e.g. Coastal) into this one: its stops join this run and
+// the other run is removed. A booking already on this run isn't added twice.
+async function mergeRunIntoActive(){
+  const others=runStore.runs.filter(run=>run.id!==runStore.activeRunId);
+  if (!others.length){ alert("There's no other run to merge in."); return; }
+  if (!canLeaveActiveRun()) return;
+  const picked=await openEditForm({
+    title:`Merge into ${activeRunName()}`,
+    note:"All its stops move onto this run, then that run is removed.",
+    saveLabel:"Merge",
+    fields:[{key:"run",label:"Run to merge in",type:"select",value:others[0].id,
+      options:others.map(run=>({value:run.id,label:`${run.name} (${(run.data.stops||[]).length+(run.data.bad||[]).length})`}))}]
+  });
+  if (!picked) return;
+  const from=others.find(run=>run.id===picked.run);
+  if (!from) return;
+  const have=new Set(state.stops.concat(state.bad||[]).map(s=>s.submission_id).filter(Boolean));
+  const fresh=list=>(list||[]).filter(s=>!s.submission_id || !have.has(s.submission_id));
+  const moveStops=fresh(from.data.stops), moveBad=fresh(from.data.bad);
+  state.stops=state.stops.concat(moveStops);
+  state.bad=(state.bad||[]).concat(moveBad);
+  runStore.runs=runStore.runs.filter(run=>run.id!==from.id);
+  save();
+  closeRunActions();
+  render(); drawRoute(); renderDirectBookings();
+  const n=moveStops.length+moveBad.length;
+  flash(`✓ Merged ${from.name} — ${n} stop${n===1?"":"s"} added. Tap Optimise to re-order.`);
 }
 function deleteActiveRun(){
   if (runStore.runs.length===1){ alert("Keep at least one pickup run."); return; }
@@ -4941,6 +4971,7 @@ function renderList(){
 
   wrap.innerHTML =
     `<div class="sectitle">${pickupsOnly(pending).length} pickups left${pending.length-pickupsOnly(pending).length ? ` · ${pending.length-pickupsOnly(pending).length} GMS drop-off${pending.length-pickupsOnly(pending).length===1?"":"s"}` : ""} · ${esc(activeRunName())} ${state.manual?'· manual order':''} · hold &amp; drag to reorder</div>
+     ${pickupsOnly(pending).length+(state.bad||[]).length ? `<div class="row" style="margin:0 0 10px"><button class="ghost grow" onclick="sendAllBackToBookings()">↩ Send all back to Bookings</button></div>` : ""}
      <div id="pendingList">${pendRows || `<div class="empty" style="padding:16px 8px">Nothing pending — all picked up 🎉</div>`}</div>` +
     (done.length ? `<details class="card completed-pickups"${completedOpen?" open":""}><summary>Completed (${done.length})</summary>
       <div class="row" style="margin:10px 0 12px"><button class="ghost grow" onclick="clearCompletedStops()">🧹 Clear completed off this run</button></div>
@@ -7018,6 +7049,23 @@ window.clearCompletedStops = async () => {
     state.messageSelectedIds = state.messageSelectedIds.filter(x => !ids.has(x));
   save(); render(); drawRoute();
 };
+// Unschedule the whole run in one tap: every pickup not yet collected (and any
+// still needing an address) comes off, so those bookings drop back to New.
+// Completed pickups and GMS drop-offs stay put.
+window.sendAllBackToBookings = () => {
+  const back = pickupsOnly(state.stops).filter(s => s.status!=="DONE");
+  const bad = state.bad||[];
+  const n = back.length + bad.length;
+  if (!n) return;
+  if (!confirm(`Send all ${n} pickup${n===1?"":"s"} on ${activeRunName()} back to Bookings as New?`)) return;
+  const ids = new Set(back.map(s => s.id));
+  state.stops = state.stops.filter(s => !ids.has(s.id));
+  state.bad = [];
+  if (Array.isArray(state.messageSelectedIds))
+    state.messageSelectedIds = state.messageSelectedIds.filter(x => !ids.has(x));
+  save(); render(); drawRoute(); renderDirectBookings();
+  flash(`✓ ${n} sent back to Bookings`);
+};
 window.copyText = (id, btn) => {
   const el = document.getElementById(id); if(!el) return;
   el.focus(); el.select(); el.setSelectionRange(0, 999999);
@@ -7853,6 +7901,7 @@ $("#manageRuns").onclick=()=>{
   $("#manageRuns").setAttribute("aria-expanded",String(!actions.hidden));
 };
 $("#renameRun").onclick=renameActiveRun;
+$("#mergeRun").onclick=mergeRunIntoActive;
 $("#deleteRun").onclick=deleteActiveRun;
 applyAppView(state.appView || (state.stops.length ? "today" : "add"));
 dedupeUnpaidLedger();
