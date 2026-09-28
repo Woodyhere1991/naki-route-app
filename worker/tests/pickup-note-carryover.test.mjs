@@ -5,9 +5,10 @@ import vm from 'node:vm';
 const html=fs.readFileSync(new URL('../../index.html',import.meta.url),'utf8');
 const slice=(a,b)=>html.slice(html.indexOf(a),html.indexOf(b,html.indexOf(a)));
 function harness(fail=false){
- const s={id:'stop',submission_id:'WEB-1',note:'After 10 October',additional_info:'Customer access note'},state={stops:[s],bad:[]},stored={note:''};
+ const s={id:'stop',submission_id:'WEB-1',note:'After 10 October',additional_info:'Customer access note',confirmedPickupDate:'2026-10-02'},state={stops:[s],bad:[]},stored={note:'',date:'2026-10-02'};
  const c=vm.createContext({state,directBookingRows:[{id:'WEB-1',ownerNote:''}],ownerToken:'owner',window:{},loadJSON:()=>({}),saveJSON(){},save(){},render(){},drawRoute(){},renderDirectBookings(){},flash(){},confirm:()=>true,activeRunName:()=> 'Test run',fullName:()=> 'Synthetic Customer',fullAddr:()=>'',findStop:id=>state.stops.find(s=>s.id===id),goodEmail:()=>false,stopBelongsToBooking:(stop,b)=>stop.submission_id===b.id,
-  ownerApi:async(path,options)=>{if(fail)throw Error('offline');const body=JSON.parse(options.body);assert.equal(body.expectedNote,stored.note);stored.note=body.note;return {note:stored.note};}
+  isUnload:()=>false,
+  ownerApi:async(path,options)=>{if(fail)throw Error('offline');const body=JSON.parse(options.body);if(path.endsWith('/unschedule')){assert.equal(body.expectedPickupDate,stored.date);stored.date='';return {booking:{id:'WEB-1',status:'NEW',pickupDate:'',pickupWindow:'',ownerNote:stored.note}};}assert.equal(body.expectedNote,stored.note);stored.note=body.note;return {note:stored.note};}
  });
  vm.runInContext(slice('function pickupNoteBookingId(', 'window.editStop = async id => {'),c);
  vm.runInContext(slice('const removingStops=new Set();','// Tidy the run at the end of the day:'),c);
@@ -20,16 +21,27 @@ test('removing Scheduled stop saves its pickup note before removing the local co
 });
 test('offline removal keeps pickup and pending note; retry safely completes',async()=>{
  const {c,s,state}=harness(true);await c.window.delStop(s.id);assert.equal(state.stops.length,1);assert.equal(s.ownerNotePending,true);
- c.ownerApi=async(_p,o)=>({note:JSON.parse(o.body).note});await c.window.delStop(s.id);assert.equal(state.stops.length,0);assert.equal(s.ownerNotePending,false);
+ c.ownerApi=async(p,o)=>p.endsWith('/unschedule')?{booking:{id:'WEB-1',status:'NEW',pickupDate:'',ownerNote:s.note}}:{note:JSON.parse(o.body).note};await c.window.delStop(s.id);assert.equal(state.stops.length,0);assert.equal(s.ownerNotePending,false);
 });
 test('bulk return cannot discard notes when the save fails',async()=>{
  const {c,state}=harness(true);await c.window.sendAllBackToBookings();assert.equal(state.stops.length,1);
 });
 test('duplicate taps share a save and cannot remove a different stop',async()=>{
- const {c,s,state}=harness();let release,count=0;c.ownerApi=()=>{count++;return new Promise(resolve=>release=()=>resolve({note:s.note}));};
+ const {c,s,state}=harness();let release,count=0;const original=c.ownerApi;c.ownerApi=(p,o)=>{if(p.endsWith('/unschedule'))return original(p,o);count++;return new Promise(resolve=>release=()=>resolve({note:s.note}));};
  const first=c.window.delStop(s.id),second=c.window.delStop(s.id);assert.equal(count,1);release();await Promise.all([first,second]);assert.equal(state.stops.length,0);
 });
 test('a correction while a save is in flight keeps the newer note and stop',async()=>{
  const {c,s,state}=harness();let release;c.ownerApi=()=>new Promise(resolve=>release=()=>resolve({note:'After 10 October'}));const removing=c.window.delStop(s.id);s.note='After 20 October';s.ownerNotePending=true;release();await removing;assert.equal(state.stops.length,1);assert.equal(s.ownerNotePending,true);assert.equal(s.note,'After 20 October');
 });
 test('all inline owner app JavaScript parses',()=>{for(const m of html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi))if(!m[1].includes('application/ld+json'))new vm.Script(m[2]);});
+
+test('removal clears the shared confirmation and keeps the pickup note',async()=>{
+ const {c,s,state,stored}=harness();await c.window.delStop(s.id);assert.equal(stored.date,'');assert.equal(state.stops.length,0);assert.equal(c.directBookingRows[0].status,'NEW');assert.equal(c.directBookingRows[0].pickupDate,'');assert.equal(c.directBookingRows[0].ownerNote,'After 10 October');
+});
+test('date-clear failure retains the pickup even when its note already saved',async()=>{
+ const {c,s,state,stored}=harness();const api=c.ownerApi;c.ownerApi=(p,o)=>{if(p.endsWith('/unschedule'))throw Error('offline');return api(p,o);};await c.window.delStop(s.id);assert.equal(state.stops.length,1);assert.equal(stored.note,s.note);assert.equal(stored.date,'2026-10-02');c.ownerApi=api;await c.window.delStop(s.id);assert.equal(state.stops.length,0);
+});
+test('bulk return unschedules while clearing a completed pickup never reopens it',async()=>{
+ const {c,state,stored}=harness();await c.window.sendAllBackToBookings();assert.equal(state.stops.length,0);assert.equal(stored.date,'');
+ const done=harness();done.s.status='DONE';await done.c.window.delStop(done.s.id);assert.equal(done.stored.date,'2026-10-02');assert.equal(done.state.stops.length,0);
+});

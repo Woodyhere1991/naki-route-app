@@ -11,13 +11,14 @@ const {chromium}=require('playwright'),fs=require('node:fs'),path=require('node:
    }
    if(/unpkg.com|cdnjs.cloudflare.com/.test(url.hostname))return route.continue();
    if(url.pathname.endsWith('/owner-note')){saved=JSON.parse(route.request().postData()).note;return route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({ok:true,note:saved})});}
+   if(url.pathname.endsWith('/unschedule'))return route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({ok:true,booking:{id:'WEB-note-test',status:'NEW',firstName:'Test',lastName:'Customer',streetAddress:'12 Example Street',town:'Waitara',items:['Fridge'],total:20,ownerNote:saved,pickupDate:'',pickupWindow:'',createdAt:new Date().toISOString(),documents:[]}})});
    return route.fulfill({status:200,contentType:'application/json',body:'{"bookings":[],"customers":[],"documents":[]}'});
   });
   await page.goto('http://pickup.test/',{waitUntil:'domcontentloaded'});
   await page.waitForFunction(()=>typeof window.delStop==='function');
   await page.evaluate(()=>{
-   ownerToken='synthetic-test';directBookingRows=[{id:'WEB-note-test',status:'NEW',firstName:'Test',lastName:'Customer',streetAddress:'12 Example Street',town:'Waitara',items:['Fridge'],total:20,ownerNote:'',createdAt:new Date().toISOString(),documents:[]}];
-   state.stops=[{id:'stop-test',submission_id:'WEB-note-test',first_name:'Test',last_name:'Customer',street:'12 Example Street',town:'Waitara',appliances:['Fridge'],note:'After 10 October',status:'NEW',src:'direct'}];
+   ownerToken='synthetic-test';directBookingRows=[{id:'WEB-note-test',status:'CONFIRMED',pickupDate:'2026-10-02',pickupWindow:'Morning',firstName:'Test',lastName:'Customer',streetAddress:'12 Example Street',town:'Waitara',items:['Fridge'],total:20,ownerNote:'',createdAt:new Date().toISOString(),documents:[]}];
+   state.stops=[{id:'stop-test',submission_id:'WEB-note-test',first_name:'Test',last_name:'Customer',street:'12 Example Street',town:'Waitara',appliances:['Fridge'],note:'After 10 October',status:'NEW',confirmedPickupDate:'2026-10-02',src:'direct'}];
    window.confirm=()=>true;
   });
   await page.evaluate(()=>window.delStop('stop-test'));assert.equal(saved,'After 10 October');
@@ -25,6 +26,7 @@ const {chromium}=require('playwright'),fs=require('node:fs'),path=require('node:
   await page.evaluate(()=>{document.body.dataset.view='bookings';renderDirectBookings();});
   await page.evaluate(()=>document.querySelectorAll('#directBookingList details').forEach(el=>el.open=true));
   assert.match(await page.locator('#directBookingList').innerText(),/After 10 October/);
+  assert.equal(await page.evaluate(()=>directBookingRows[0].pickupDate),'');
   await page.evaluate(()=>{const details=document.querySelector('#directBookingList details');if(details)details.open=true;});
   assert.equal(await page.locator('[data-note-direct="WEB-note-test"]').count(),1);
   await page.close();

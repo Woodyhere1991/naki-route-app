@@ -3749,6 +3749,29 @@ export async function handlePortalRequest({ request, env, path, json, sendMail, 
       });
     }
 
+    const unscheduleMatch=path.match(/^\/owner\/bookings\/([^/]+)\/unschedule$/);
+    if(unscheduleMatch && request.method==='POST'){
+      const id=decodeURIComponent(unscheduleMatch[1]);
+      const table=id.startsWith('JOTFORM-')?'jotform_bookings':id.startsWith('PICKUP-')?'external_bookings':'bookings';
+      let body;try{body=await request.json();}catch{return json(request,{error:'Invalid request'},400);}
+      if(typeof body.expectedPickupDate!=='string')return json(request,{error:'Refresh the booking before removing it from Scheduled.'},400);
+      const row=await env.CUSTOMER_DB.prepare(`SELECT * FROM ${table} WHERE id=?1`).bind(id).first();
+      if(!row)return json(request,{error:'Booking not found'},404);
+      if(['COMPLETED','CANCELLED','DECLINED'].includes(row.status))return json(request,{error:'This booking is already completed or closed. Refresh Bookings first.'},409);
+      const alreadyNew=row.status==='NEW'&&!row.pickup_date&&!row.pickup_window;
+      if(!alreadyNew && (row.pickup_date||'')!==body.expectedPickupDate)return json(request,{error:'The pickup date changed. Refresh Bookings before removing this pickup.'},409);
+      if(!alreadyNew){
+        const changed=await env.CUSTOMER_DB.prepare(`UPDATE ${table} SET status='NEW',pickup_date='',pickup_window='',updated_at=?1 WHERE id=?2 AND updated_at=?3`)
+          .bind(Math.max(now(),Number(row.updated_at||0)+1),id,row.updated_at).run();
+        if(!changed.meta?.changes)return json(request,{error:'This booking changed. Refresh Bookings and try again.'},409);
+        if(table==='bookings')await env.CUSTOMER_DB.prepare("INSERT INTO booking_events(id,booking_id,event_type,detail,created_at) VALUES(?1,?2,'STATUS','NEW - removed from Scheduled; confirmed date cleared',?3)").bind(crypto.randomUUID(),id,now()).run();
+        if(table!=='external_bookings')try{await updateSheetBookingStatus(env,id,'NEW');}catch{/* Account is authoritative. */}
+      }
+      const updated=await env.CUSTOMER_DB.prepare(`SELECT * FROM ${table} WHERE id=?1`).bind(id).first();
+      const notes=await ownerNotesFor(env.CUSTOMER_DB,[id]);
+      return json(request,{ok:true,booking:{...bookingFrom({...updated,booking_source:table==='bookings'?'WEBSITE':table==='jotform_bookings'?'JOTFORM':'PICKUP_RUN'}),ownerNote:notes.get(id)||''}});
+    }
+
     const ownerNoteMatch=path.match(/^\/owner\/bookings\/([^/]+)\/owner-note$/);
     if(ownerNoteMatch)return ownerBookingNote({request,env,bookingId:decodeURIComponent(ownerNoteMatch[1]),json});
 

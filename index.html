@@ -1245,7 +1245,7 @@ async function deleteActiveRun(){
   const run=activeRunRecord();
   const stopCount=(state.stops||[]).length+(state.bad||[]).length;
   if (!confirm(`Delete “${run.name}” and its ${stopCount} pickup${stopCount===1?"":"s"}? This cannot be undone.`)) return;
-  if(!await preservePickupNotes([...(state.stops||[]),...(state.bad||[])]))return;
+  if(!await unschedulePickups([...(state.stops||[]),...(state.bad||[])]))return;
   if(runStore.activeRunId!==run.id)return;
   const index=runStore.runs.findIndex(item=>item.id===run.id);
   runStore.runs.splice(index,1);
@@ -5860,6 +5860,41 @@ async function preservePickupNotes(stops){
   for(const stop of stops)if(!await syncPickupNote(stop))return false;
   return true;
 }
+// Clear the shared confirmation before discarding the local scheduled copy.
+const unschedulingPickups=new Map();
+async function unschedulePickup(s){
+  if(!s)return true;
+  if(unschedulingPickups.has(s.id))return unschedulingPickups.get(s.id);
+  const work=(async()=>{
+    if(!await syncPickupNote(s))return false;
+    // Clearing collected jobs is tidying history, not undoing collection.
+    if(s.status==='DONE'||s.collectedAt||s.historyStatus==='COMPLETED'||isUnload(s))return true;
+    const id=pickupNoteBookingId(s);
+    if(!id){
+      if(s.confirmedPickupDate||s.historyStatus==='CONFIRMED'){flash('Pickup kept on Scheduled. Refresh Bookings to link its confirmed date first.');return false;}
+      return true;
+    }
+    try{
+      if(!ownerToken)throw new Error('Sign in to update the customer’s booking.');
+      const b=directBookingRows.find(row=>row.id===id);
+      const result=await ownerApi(`/owner/bookings/${encodeURIComponent(id)}/unschedule`,{method:'POST',body:JSON.stringify({expectedPickupDate:b?.pickupDate ?? s.confirmedPickupDate ?? ''})});
+      if(!result.booking||result.booking.status!=='NEW'||result.booking.pickupDate||result.booking.pickupWindow)throw new Error('The unscheduled booking was not confirmed. Please retry.');
+      const index=directBookingRows.findIndex(row=>row.id===id);
+      if(index>=0)directBookingRows[index]=result.booking;
+      else directBookingRows.push(result.booking);
+      s.historyStatus='NEW';s.confirmedPickupDate='';delete s.syncPending;
+      save();renderDirectBookings();
+      // An edit made while the date request was in flight must also survive.
+      return await syncPickupNote(s);
+    }catch(error){flash('Pickup kept on Scheduled. '+error.message);return false;}
+  })();
+  unschedulingPickups.set(s.id,work);
+  try{return await work;}finally{unschedulingPickups.delete(s.id);}
+}
+async function unschedulePickups(stops){
+  for(const stop of stops)if(!await unschedulePickup(stop))return false;
+  return true;
+}
 const bookingNoteDrafts=loadJSON("naki_booking_note_drafts_v1",{});
 async function editBookingNote(id){
   const b=directBookingRows.find(row=>row.id===id);if(!b)return;
@@ -7115,10 +7150,10 @@ window.delStop = async id => {
   if (!confirm(`Remove ${who} from ${activeRunName()}?\n\nThis takes it off the scheduled run.`)) return;
   removingStops.add(id);
   try{
-    if(!await syncPickupNote(s))return;
+    if(!await unschedulePickup(s))return;
     runState.stops = runState.stops.filter(x=>x.id!==id);
     if (Array.isArray(runState.messageSelectedIds)) runState.messageSelectedIds = runState.messageSelectedIds.filter(x=>x!==id);
-    save(); render(); drawRoute();
+    save(); render(); drawRoute(); renderDirectBookings();
   }finally{removingStops.delete(id);}
 };
 // Tidy the run at the end of the day: take every completed pickup off this run
@@ -7157,7 +7192,7 @@ window.sendAllBackToBookings = async () => {
   if (!n) return;
   if (!confirm(`Send all ${n} pickup${n===1?"":"s"} on ${activeRunName()} back to Bookings as New?`)) return;
   const returningState=state;
-  if(!await preservePickupNotes([...back,...bad]))return;
+  if(!await unschedulePickups([...back,...bad]))return;
   if(state!==returningState)return;
   const ids = new Set(back.map(s => s.id));
   state.stops = state.stops.filter(s => !ids.has(s.id));
@@ -7206,7 +7241,7 @@ window.dropBad = async id => {
   const who = fullAddr(state.bad[i]) || "this address";
   if (!confirm(`Remove ${who} from the needs-address list?`)) return;
   const runState=state, stop=runState.bad[i];
-  if(!await syncPickupNote(stop))return;
+  if(!await unschedulePickup(stop))return;
   runState.bad=runState.bad.filter(s=>s.id!==id); save(); render();
 };
 
@@ -7768,7 +7803,7 @@ $("#clearAll").onclick = async () => {
     : "";
   if (confirm(`${tally}Clear “${activeRunName()}”? This removes only this run's stops and progress.`)){
     const clearingState=state;
-    if(!await preservePickupNotes([...(state.stops||[]),...(state.bad||[])]))return;
+    if(!await unschedulePickups([...(state.stops||[]),...(state.bad||[])]))return;
     if(state!==clearingState)return;
     state = { stops:[], bad:[], start:state.start, end:state.end, roundTrip:state.roundTrip, manual:false, sheetUrl: state.sheetUrl, unpaid: state.unpaid||[] };
     routeStartOverride = null;

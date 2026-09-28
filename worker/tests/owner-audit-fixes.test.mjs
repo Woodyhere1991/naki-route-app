@@ -63,6 +63,27 @@ async function setup() {
 const NEW_BOOKING = `INSERT INTO bookings (id,customer_id,status,first_name,last_name,phone,email,street_address,town,rural_option,items_json,quote_cents,quote_note,quoted_at,created_at,updated_at)
   VALUES ('WEB-audit-1','cust-1','NEW','Ana','Smith','0212345678','ana@example.test','80 Hume Street','Waitara','Main town or main road - no travel fee','["Microwave"]',4500,'Agreed on the phone',123,0,0)`;
 
+test('unscheduling clears owner and customer dates while preserving both notes and requested date',async()=>{
+ const {db,call,state}=await setup();try{
+  db.exec(NEW_BOOKING);db.exec("UPDATE bookings SET status='CONFIRMED',pickup_date='2026-10-02',pickup_window='Morning',additional_info='After 10 October',customer_note='Keep access instructions',requested_date='2026-10-12'; INSERT INTO owner_booking_notes VALUES('WEB-audit-1','After 10 October',1)");
+  const path='/owner/bookings/WEB-audit-1/unschedule',body={expectedPickupDate:'2026-10-02'};
+  assert.equal((await call(path,{body,token:'cust-audit-token'})).status,401);
+  const res=await call(path,{body});assert.equal(res.status,200);
+  const owner=(await res.json()).booking;assert.equal(owner.status,'NEW');assert.equal(owner.pickupDate,'');assert.equal(owner.pickupWindow,'');assert.equal(owner.ownerNote,'After 10 October');assert.equal(owner.additionalInfo,'After 10 October');assert.equal(owner.requestedDate,'2026-10-12');assert.equal(owner.customerNote,'Keep access instructions');
+  const customer=await (await call('/customer/bookings',{method:'GET',token:'cust-audit-token'})).json();assert.equal(customer.bookings[0].status,'NEW');assert.equal(customer.bookings[0].pickupDate,'');assert.equal(customer.bookings[0].pickupWindow,'');
+  assert.equal((await call(path,{body})).status,200);assert.equal(db.prepare("SELECT count(*) n FROM booking_events WHERE event_type='STATUS'").get().n,1);assert.equal(state.mails.length,0);
+ }finally{db.close();}
+});
+test('unscheduling rejects stale dates and completed jobs, including imported bookings without email',async()=>{
+ const {db,call}=await setup();try{
+  db.exec(NEW_BOOKING);db.exec("UPDATE bookings SET status='CONFIRMED',pickup_date='2026-10-20'");
+  assert.equal((await call('/owner/bookings/WEB-audit-1/unschedule',{body:{expectedPickupDate:'2026-10-02'}})).status,409);
+  db.exec("UPDATE bookings SET status='COMPLETED'");assert.equal((await call('/owner/bookings/WEB-audit-1/unschedule',{body:{expectedPickupDate:'2026-10-20'}})).status,409);
+  db.exec("INSERT INTO jotform_bookings(id,submission_id,form_id,email,status,pickup_date,created_at,updated_at) VALUES('JOTFORM-unschedule','unschedule','form','','CONFIRMED','2026-10-02',0,0); INSERT INTO external_bookings(id,external_key,sync_token_hash,email,status,pickup_date,created_at,updated_at) VALUES('PICKUP-unschedule','unschedule','hash','','CONFIRMED','2026-10-02',0,0)");
+  for(const id of ['JOTFORM-unschedule','PICKUP-unschedule']){const res=await call(`/owner/bookings/${id}/unschedule`,{body:{expectedPickupDate:'2026-10-02'}});assert.equal(res.status,200);const b=(await res.json()).booking;assert.equal(b.status,'NEW');assert.equal(b.pickupDate,'');assert.equal(b.source,id.startsWith('JOTFORM')?'JOTFORM':'PICKUP_RUN');}
+ }finally{db.close();}
+});
+
 test('a confirmation email that fails is reported instead of claiming they were told', async () => {
   const { db, call, state } = await setup();
   try {
