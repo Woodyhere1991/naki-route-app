@@ -22,3 +22,13 @@ Read-only checks found 159 bookings with no requested dates, versus 154 bookings
 Recovered precisely the 20 saved requested_date values, guarded on the current fields being empty and no later CHANGED event. No confirmed date, note, status or updated_at field was touched. A fresh remote read matched requested_date/requested_window for all 154 snapshot bookings, with zero mismatches and all 20 dates restored. No whole-database rollback was used. Private recovery evidence is retained under ignored `tmp/`, never in a public staging folder. The user was informed of the incident and recovery.
 
 Future schema changes must follow the added preflight in HANDOVER.md: fresh private export, live schema/registry/pending-list comparison, and only the reviewed new migration. Do not blindly replay historical migrations.
+
+## Follow-up: removing a pickup also clears its confirmed date
+
+The owner clarified that Scheduled removal must unschedule the shared booking, including the customer's dashboard. Commit `2a2c723` adds the owner-only `/owner/bookings/:id/unschedule` action. It clears pickup_date/pickup_window and sets NEW while preserving customer notes, owner notes, requested dates and prices. Repeated requests are safe; stale dates, concurrent updates and closed bookings are rejected. No email/text is sent. No schema migration was needed.
+
+Single removal, needs-address removal, returning a run, clearing a run and deleting a run wait for note preservation and server unscheduling before discarding the local copy. Failure leaves the pickup available for retry. Completed jobs are not reopened. Notes edited while the date request is in progress are saved before removal finishes.
+
+236 tests passed, including authenticated customer/owner reads with blank dates after unscheduling, note preservation, retry/failure, duplicate taps, stale confirmation rejection, imported sources and completed-job protection. Desktop/mobile browser checks passed. Worker `38a5fdcd-ecaa-427f-a604-29adf4e306a5` and Pages `https://dd17e06c.naki-pickup-run.pages.dev` are live; canonical and immutable HTML/cache markers verified (`naki-field-20260929-unschedule-date`).
+
+After a fresh private D1 export, Gabby's specific stale 2 October date was cleared with an exact status/date/updated_at guard and a STATUS audit event. Her live row is NEW, both confirmed date/window fields empty, and “AFTER 10th OCTOBER” unchanged. Authenticated live owner UI confirms New, the note and no date/calendar/text-confirmation link. Customer-dashboard data uses the same cleared row and was regression-tested through its API; her own signed-in device was not accessed. Backup is retained privately in ignored `tmp/before-gabby-unschedule-20260929.sql`.
