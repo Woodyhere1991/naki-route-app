@@ -32,6 +32,8 @@ Two traps to remember when touching this app:
 
 ## Deploy order (do it in this order)
 
+Before any remote schema change, save a fresh private database export, inspect the live schema and `d1_migrations`, and check the exact pending migration list. This database has historically had migrations applied manually, so the registry alone may lag the schema. Never replay an older table-rebuild migration to reconcile that difference. Apply only the reviewed new migration below. On 29 September an unreviewed `migrations apply` replayed 0027/0028 and cleared requested dates; recovery is recorded in [the release notes](RELEASE-NOTES-2026-09-29.md).
+
 1. **Migration first** — `wrangler d1 execute naki-customer-bookings --remote --file=migrations/NNNN_x.sql`
 2. **Worker** — `wrangler deploy` from `naki-route-app/worker`
 3. **Owner app** — stage `index.html`, `manifest.webmanifest`, `sw.js` and `assets`
