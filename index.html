@@ -452,6 +452,7 @@
         <button id="manageRuns" class="ghost" aria-expanded="false">Manage</button>
       </div>
       <div id="runActions" class="run-actions" hidden>
+        <button id="addTownRun" class="good">+ Add town / run</button>
         <button id="renameRun" class="ghost">Rename this run</button>
         <button id="mergeRun" class="ghost">Merge another run into this one</button>
         <button id="clearAll" class="ghost">Clear stops from this run</button>
@@ -1177,7 +1178,7 @@ function switchRun(id){
 function createRun(){
   if (!canLeaveActiveRun()) return;
   const position=runStore.runs.length+1;
-  const entered=prompt("Name this run (for example: Harwood / Eltham / Stratford)",`Pickup run ${position}`);
+  const entered=prompt("Name this town / run (for example: Hāwera / Eltham / Stratford)",`Pickup run ${position}`);
   if (entered===null) return;
   const name=entered.trim().slice(0,60);
   if (!name){ alert("Please give the run a name."); return; }
@@ -7915,6 +7916,7 @@ async function syncPastBulkBookingDates(){
 /* ---------- Boot ---------- */
 $("#runSelect").onchange=e=>switchRun(e.target.value);
 $("#newRun").onclick=createRun;
+$("#addTownRun").onclick=createRun;
 $("#manageRuns").onclick=()=>{
   const actions=$("#runActions");
   actions.hidden=!actions.hidden;
