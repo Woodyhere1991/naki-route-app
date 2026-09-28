@@ -1,3 +1,4 @@
+import {ownerBookingNote,ownerNotesFor} from './owner-booking-notes.js';
 import { readRunBackup, writeRunBackup } from "./run-backup.js";
 import { AuthMailError, reserveAuthRequest } from "./auth-limits.js";
 import { kidsActivityReport } from "./kids-activity.js";
@@ -3370,6 +3371,11 @@ export async function handlePortalRequest({ request, env, path, json, sendMail, 
       // email too, so leaving them behind would reattach on the next sign-in.
       const address = email(existing.email);
       await env.CUSTOMER_DB.batch([
+        env.CUSTOMER_DB.prepare(`DELETE FROM owner_booking_notes WHERE booking_id IN (
+          SELECT id FROM bookings WHERE customer_id=?1
+          UNION SELECT id FROM jotform_bookings WHERE customer_id=?1 OR email=?2 COLLATE NOCASE
+          UNION SELECT id FROM external_bookings WHERE customer_id=?1 OR email=?2 COLLATE NOCASE
+        )`).bind(customerId,address),
         env.CUSTOMER_DB.prepare(
           "DELETE FROM booking_events WHERE booking_id IN (SELECT id FROM bookings WHERE customer_id = ?1)"
         ).bind(customerId),
@@ -3626,6 +3632,7 @@ export async function handlePortalRequest({ request, env, path, json, sendMail, 
         list.push(document);
         documentsByBooking.set(document.bookingId, list);
       }
+      const ownerNotes=await ownerNotesFor(env.CUSTOMER_DB,(rows.results||[]).map(row=>row.id));
       const bookings = (rows.results || []).map(row => {
         const externalKey = row.external_key || "";
         const documents = documentsByBooking.get(row.id)
@@ -3636,6 +3643,7 @@ export async function handlePortalRequest({ request, env, path, json, sendMail, 
         const invoiceOwing = Boolean(latestInvoice) && (!latestReceipt || latestInvoice.createdAt > latestReceipt.createdAt);
         return {
           ...bookingFrom(row),
+          ownerNote:ownerNotes.get(row.id)||"",
           emailFailed: Number(row.email_failed || 0) > 0,
           documents,
           invoiceOwing
@@ -3741,6 +3749,9 @@ export async function handlePortalRequest({ request, env, path, json, sendMail, 
       });
     }
 
+    const ownerNoteMatch=path.match(/^\/owner\/bookings\/([^/]+)\/owner-note$/);
+    if(ownerNoteMatch)return ownerBookingNote({request,env,bookingId:decodeURIComponent(ownerNoteMatch[1]),json});
+
     const match = path.match(/^\/owner\/bookings\/([^/]+)$/);
     if (match && request.method === "DELETE") {
       const bookingId = decodeURIComponent(match[1]);
@@ -3760,6 +3771,7 @@ export async function handlePortalRequest({ request, env, path, json, sendMail, 
       // deleted ID is a successful retry (for example after a lost response).
       await env.CUSTOMER_DB.batch([
         env.CUSTOMER_DB.prepare("DELETE FROM booking_documents WHERE booking_id = ?1").bind(bookingId),
+        env.CUSTOMER_DB.prepare("DELETE FROM owner_booking_notes WHERE booking_id = ?1").bind(bookingId),
         env.CUSTOMER_DB.prepare("DELETE FROM booking_events WHERE booking_id = ?1").bind(bookingId),
         env.CUSTOMER_DB.prepare(`DELETE FROM ${table} WHERE id = ?1`).bind(bookingId)
       ]);
@@ -3915,7 +3927,7 @@ export async function handlePortalRequest({ request, env, path, json, sendMail, 
         }).catch(() => false);
       }
       updated.booking_source = jotform ? "JOTFORM" : pickupRun ? "PICKUP_RUN" : "WEBSITE";
-      return json(request, { ok: true, booking: bookingFrom(updated), quoteEmailed, confirmationEmailed, customerSynced });
+      return json(request, { ok: true, booking: {...bookingFrom(updated),ownerNote:(await ownerNotesFor(env.CUSTOMER_DB,[bookingId])).get(bookingId)||""}, quoteEmailed, confirmationEmailed, customerSynced });
     }
   }
 

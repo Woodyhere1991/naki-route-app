@@ -145,3 +145,41 @@ test('the account backup uses one slot whichever owner address signs in', async 
   assert.doesNotMatch(source, /backup:\$\{session\.email/);
   assert.equal((source.match(/backup:\$\{OWNER_EMAIL\}/g) || []).length, 3);
 });
+test('pickup note stays with the booking, is owner-only, and never changes the customer note/date',async()=>{
+  const {db,call,state}=await setup();
+  try{
+    db.exec(NEW_BOOKING);
+    db.prepare("UPDATE bookings SET additional_info='Gate code supplied by customer',pickup_date='2026-10-20' WHERE id='WEB-audit-1'").run();
+    const note='AFTER 10th OCTOBER';
+    const saved=await call('/owner/bookings/WEB-audit-1/owner-note',{method:'PUT',body:{note,expectedNote:''}});assert.equal(saved.status,200);
+    const list=await (await call('/owner/bookings',{method:'GET'})).json();assert.equal(list.bookings[0].ownerNote,note);
+    const row=db.prepare('SELECT additional_info,pickup_date FROM bookings').get();assert.equal(row.additional_info,'Gate code supplied by customer');assert.equal(row.pickup_date,'2026-10-20');
+    const customer=await call('/customer/bookings',{method:'GET',token:'cust-audit-token'});const body=await customer.text();assert.equal(customer.status,200);assert.doesNotMatch(body,/AFTER 10th|ownerNote/);
+    assert.equal((await call('/owner/bookings/WEB-audit-1/owner-note',{method:'GET',token:'cust-audit-token'})).status,401);
+    assert.equal(state.mails.length,0);
+  }finally{db.close();}
+});
+test('pickup note retries are idempotent, stale edits are refused, and clearing is intentional',async()=>{
+  const {db,call}=await setup();try{
+    db.exec(NEW_BOOKING);const path='/owner/bookings/WEB-audit-1/owner-note';
+    const put=(note,expectedNote)=>call(path,{method:'PUT',body:{note,expectedNote}});
+    assert.equal((await put('After 10 October','')).status,200);
+    assert.equal((await put('After 10 October','')).status,200);
+    assert.equal((await put('Old stale note','')).status,409);
+    assert.equal((await put('','After 10 October')).status,200);
+    assert.equal((await (await call(path,{method:'GET'})).json()).note,'');
+    assert.equal((await put('x'.repeat(1501),'')).status,400);
+    assert.equal((await call('/owner/bookings/WEB-missing/owner-note',{method:'PUT',body:{note:'No phantom booking',expectedNote:''}})).status,404);
+  }finally{db.close();}
+});
+test('imported Jotform and pickup-run notes survive owner reads and delete with their booking',async()=>{
+  const {db,call}=await setup();try{
+    db.exec("INSERT INTO jotform_bookings(id,submission_id,form_id,email,created_at,updated_at) VALUES('JOTFORM-note','note','form','test@example.test',0,0); INSERT INTO external_bookings(id,external_key,sync_token_hash,email,created_at,updated_at) VALUES('PICKUP-note','note','hash','test@example.test',0,0)");
+    for(const id of ['JOTFORM-note','PICKUP-note']){
+      assert.equal((await call(`/owner/bookings/${id}/owner-note`,{method:'PUT',body:{note:'Keep this note',expectedNote:''}})).status,200);
+      const list=await (await call('/owner/bookings',{method:'GET'})).json();assert.equal(list.bookings.find(b=>b.id===id).ownerNote,'Keep this note');
+      assert.equal((await call(`/owner/bookings/${id}`,{method:'DELETE'})).status,200);
+      assert.equal(db.prepare('SELECT count(*) n FROM owner_booking_notes WHERE booking_id=?').get(id).n,0);
+    }
+  }finally{db.close();}
+});

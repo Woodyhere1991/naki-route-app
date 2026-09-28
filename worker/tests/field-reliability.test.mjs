@@ -13,6 +13,7 @@ const section=(source,a,b)=>source.slice(source.indexOf(a),source.indexOf(b,sour
 const json=(_r,data,status=200)=>new Response(JSON.stringify(data),{status,headers:{'Content-Type':'application/json'}});
 function database() {
   const db=new DatabaseSync(':memory:');
+  db.exec(fs.readFileSync(new URL('../migrations/0031_owner_booking_notes.sql',import.meta.url),'utf8'));
   db.exec('CREATE TABLE sessions(token_hash TEXT,customer_id TEXT,role TEXT,email TEXT,expires_at INTEGER);');
   db.exec(fs.readFileSync(new URL('../migrations/0023_owner_action_receipts.sql',import.meta.url),'utf8'));
   const wrap={prepare(sql){

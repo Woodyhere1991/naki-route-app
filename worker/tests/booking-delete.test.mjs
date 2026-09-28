@@ -6,6 +6,7 @@ import {handlePortalRequest} from '../src/customer.js';
 const json=(_r,data,status=200)=>Response.json(data,{status});
 async function setup(){
  const db=new DatabaseSync(':memory:');
+  db.exec(fs.readFileSync(new URL('../migrations/0031_owner_booking_notes.sql',import.meta.url),'utf8'));
  for(const file of ['0001_customer_accounts.sql','0003_pickup_run_history.sql','0004_jotform_bookings.sql','0008_quotes_photos_documents.sql'])db.exec(fs.readFileSync(new URL('../migrations/'+file,import.meta.url),'utf8'));
  db.exec('ALTER TABLE booking_documents ADD COLUMN r2_key TEXT;');
  const hash=Buffer.from(await crypto.subtle.digest('SHA-256',new TextEncoder().encode('delete-test'))).toString('base64url');

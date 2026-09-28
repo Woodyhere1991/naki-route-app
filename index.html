@@ -1239,12 +1239,14 @@ async function mergeRunIntoActive(){
   const n=moveStops.length+moveBad.length;
   flash(`✓ Merged ${from.name} — ${n} stop${n===1?"":"s"} added. Tap Optimise to re-order.`);
 }
-function deleteActiveRun(){
+async function deleteActiveRun(){
   if (runStore.runs.length===1){ alert("Keep at least one pickup run."); return; }
   if (!canLeaveActiveRun()) return;
   const run=activeRunRecord();
   const stopCount=(state.stops||[]).length+(state.bad||[]).length;
   if (!confirm(`Delete “${run.name}” and its ${stopCount} pickup${stopCount===1?"":"s"}? This cannot be undone.`)) return;
+  if(!await preservePickupNotes([...(state.stops||[]),...(state.bad||[])]))return;
+  if(runStore.activeRunId!==run.id)return;
   const index=runStore.runs.findIndex(item=>item.id===run.id);
   runStore.runs.splice(index,1);
   const next=runStore.runs[Math.min(index,runStore.runs.length-1)];
@@ -1831,6 +1833,7 @@ function renderDirectBookings(){
     const cardActions=b._localOnly ? bookingWorkflowActions : [
       b.photoCount ? `<button class="ghost sm" data-photos-direct="${esc(b.id)}">📷 ${b.photoCount} photo${b.photoCount===1?"":"s"}</button>` : "",
       `<button class="good sm" data-edit-direct="${esc(b.id)}">✎ Edit details &amp; price</button>`,
+      `<button class="ghost sm" data-note-direct="${esc(b.id)}">✏️ Pickup note</button>`,
       `<button class="ghost sm" title="Delete this booking" data-delete-direct="${esc(b.id)}">✕ Delete booking</button>`
     ].filter(Boolean).join("");
     const actionGroup=(label, buttons)=>buttons
@@ -1841,6 +1844,7 @@ function renderDirectBookings(){
       ${contact}
       <div class="direct-items">${items}</div>
       ${b.additionalInfo ? `<div class="small muted">${esc(b.additionalInfo)}</div>` : ""}
+      ${b.ownerNote ? `<div class="usernote">✏️ ${esc(b.ownerNote)}</div>` : ""}
       ${b.quotedPrice!=null && b.quoteNote ? `<div class="small muted">Quote note: ${esc(b.quoteNote)}</div>` : ""}
       ${b.emailFailed ? `<div class="small" style="color:var(--bad)">⚠ An email for this booking failed to send — check they know.</div>` : ""}
       ${confirmed}
@@ -1935,6 +1939,7 @@ function renderDirectBookings(){
   list.querySelectorAll("[data-complete-direct]").forEach(button=>button.onclick=()=>completeDirectBooking(button.dataset.completeDirect));
   list.querySelectorAll("[data-uncomplete-direct]").forEach(button=>button.onclick=()=>uncompleteDirectBooking(button.dataset.uncompleteDirect));
   list.querySelectorAll("[data-restore-direct]").forEach(button=>button.onclick=()=>restoreDirectBooking(button.dataset.restoreDirect));
+  list.querySelectorAll("[data-note-direct]").forEach(button=>button.onclick=()=>editBookingNote(button.dataset.noteDirect));
   list.querySelectorAll("[data-edit-direct]").forEach(button=>button.onclick=()=>editDirectBooking(button.dataset.editDirect));
   list.querySelectorAll("[data-delete-direct]").forEach(button=>button.onclick=()=>deleteDirectBooking(button.dataset.deleteDirect));
   list.querySelectorAll("[data-photos-direct]").forEach(button=>button.onclick=()=>showBookingPhotos(button.dataset.photosDirect));
@@ -2160,6 +2165,11 @@ function syncBookingChangesIntoRuns(rows){
       }
       [...(data.stops||[]),...(data.bad||[])].forEach(stop=>{
         if (stop.submission_id!==b.id || stopIsFinished(stop)) return;
+        // Note changes are independent of the item/price fingerprint. Keep unsent local edits.
+        if(b.ownerNote!==undefined && !stop.ownerNotePending && (stop.ownerNoteSynced!==undefined || !stop.note)){
+          if(stop.note!==(b.ownerNote||"")){stop.note=b.ownerNote||"";touched=true;}
+          stop.ownerNoteSynced=b.ownerNote||"";
+        }
         // Quote jobs added before this fix came in at $0. Put them back to "ask".
         if (price==null && stop.amount===0 && !stop.quoteNeeded){ stop.amount=null; stop.quoteNeeded=true; touched=true; }
         const seenBefore="bookingFingerprint" in stop;
@@ -2288,6 +2298,7 @@ async function addDirectBooking(id,options={}){
     area:b.area,
     appliances:b.items,
     additional_info:b.additionalInfo,
+    note:b.ownerNote||"", ownerNoteSynced:b.ownerNote||"",
     referral_source:b.referralSource,
     rural_option:b.ruralOption||"",
     // A quoted price beats the website total — that's the figure actually agreed.
@@ -2810,7 +2821,7 @@ function detailsByEmail(){
     .concat(runStore.shared?.unpaid||[])
     .forEach(s=>remember(s.email,{
       firstName:s.first_name, lastName:s.last_name, phone:s.phone,
-      streetAddress:originalStopLocation(s).street, town:originalStopLocation(s).town, area:originalStopLocation(s).area, accessNotes:s.additional_info||s.note
+      streetAddress:originalStopLocation(s).street, town:originalStopLocation(s).town, area:originalStopLocation(s).area, accessNotes:s.additional_info||""
     }, Number(s.historyCreatedAt||s.createdAt||0)||0));
   return byEmail;
 }
@@ -3908,6 +3919,7 @@ function addFileStops(rows, srcName, setStatus, extraNote){
       area: r.area||"", appliances: Array.isArray(r.appliances) ? r.appliances
               : (r.appliances ? String(r.appliances).split(/[;|]/).map(x=>x.trim()).filter(Boolean) : []),
       additional_info: r.additional_info||"",
+      note:r.note||"", ...(r.ownerNoteSynced!==undefined?{ownerNoteSynced:r.ownerNoteSynced}:{}),
       referral_source: r.referral_source||"",
       rural_option: r.rural_option||"",
       lat: r.lat!=null && r.lat!=="" ? +r.lat : null,
@@ -5161,7 +5173,7 @@ function historyBookingPayload(s){
     area:s.area||"",
     ruralOption:s.rural_option||"",
     referralSource:s.referral_source||"",
-    accessNotes:s.additional_info||s.note||""
+    accessNotes:s.additional_info||""
   };
 }
 // Push a pickup's state up to the customer's booking. Every failure leaves a
@@ -5809,6 +5821,59 @@ window.restorePickupLocation = id => {
   flash("✓ Original pickup location restored");
 };
 
+// Save before discarding the run copy; failures leave the note and pickup intact.
+function pickupNoteBookingId(s){
+  const b=directBookingRows.find(row=>stopBelongsToBooking(s,row));
+  return b?.id || (/^(?:WEB|PHONE|JOTFORM|PICKUP)-/.test(s.submission_id||"") ? s.submission_id : "");
+}
+const pickupNoteSaves=new Map();
+async function syncPickupNote(s){
+  if(!s || (!s.note && !s.ownerNotePending))return true;
+  if(!s.ownerNotePending && s.ownerNoteSynced===s.note)return true;
+  if(pickupNoteSaves.has(s.id))return pickupNoteSaves.get(s.id);
+  const work=(async()=>{
+    try{
+      let bookingId=pickupNoteBookingId(s);
+      if(!bookingId && goodEmail(s.email)){
+        await syncExternalBooking(s);
+        await loadDirectBookings(false);
+        bookingId=pickupNoteBookingId(s);
+      }
+      if(!bookingId)throw new Error("This note has no linked booking yet. Keep the pickup on its run until it is linked.");
+      if(!ownerToken)throw new Error("Sign in before saving this note to Bookings.");
+      const note=String(s.note||"").trim();
+      const base=s.ownerNoteSynced===undefined ? "" : s.ownerNoteSynced;
+      const result=await ownerApi(`/owner/bookings/${encodeURIComponent(bookingId)}/owner-note`,{
+        method:"PUT",body:JSON.stringify({note,expectedNote:base})
+      });
+      s.ownerNoteSynced=result.note;
+      s.ownerNotePending=String(s.note||"").trim()!==note;
+      const b=directBookingRows.find(row=>row.id===bookingId);if(b)b.ownerNote=result.note;
+      save();renderDirectBookings();
+      return !s.ownerNotePending;
+    }catch(error){s.ownerNotePending=true;save();flash("Pickup note kept on this phone. "+error.message);return false;}
+  })();
+  pickupNoteSaves.set(s.id,work);
+  try{return await work;}finally{pickupNoteSaves.delete(s.id);}
+}
+async function preservePickupNotes(stops){
+  for(const stop of stops)if(!await syncPickupNote(stop))return false;
+  return true;
+}
+const bookingNoteDrafts=loadJSON("naki_booking_note_drafts_v1",{});
+async function editBookingNote(id){
+  const b=directBookingRows.find(row=>row.id===id);if(!b)return;
+  const result=await openEditForm({title:"Pickup note",note:"Kept with this booking when it moves on or off Scheduled. Only visible in your owner app.",fields:[
+    {key:"note",label:"Note for this pickup",type:"textarea",rows:3,value:bookingNoteDrafts[id] ?? b.ownerNote ?? "",validate:v=>v.length>1500?"Keep the note under 1500 characters.":""}
+  ]});
+  if(!result)return;
+  try{
+    const saved=await ownerApi(`/owner/bookings/${encodeURIComponent(id)}/owner-note`,{method:"PUT",body:JSON.stringify({note:result.note,expectedNote:b.ownerNote||""})});
+    delete bookingNoteDrafts[id];saveJSON("naki_booking_note_drafts_v1",bookingNoteDrafts);
+    b.ownerNote=saved.note;syncBookingChangesIntoRuns([b]);renderDirectBookings();flash("✓ Pickup note saved");
+  }catch(error){bookingNoteDrafts[id]=result.note;saveJSON("naki_booking_note_drafts_v1",bookingNoteDrafts);flash("Note kept as a draft on this phone. "+error.message);}
+}
+
 window.editStop = async id => {
   const s = findStop(id); if(!s) return;
   const previousAddress=fullAddr(s);
@@ -5827,7 +5892,7 @@ window.editStop = async id => {
       { key:"town", label:"Town", value:s.town },
       { key:"appliances", label:"Things you're picking up", type:"textarea", value:(s.appliances||[]).join(", "),
         placeholder:"Fridge, washing machine" },
-      { key:"note", label:"Note for this pickup", type:"textarea", rows:2, value:s.note||"" }
+      { key:"note", label:"Note for this pickup", type:"textarea", rows:2, value:s.note||"",validate:v=>v.length>1500?"Keep the note under 1500 characters.":"" }
     ]
   });
   if (!result) return;                        // cancelled — leave the pickup untouched
@@ -5837,6 +5902,7 @@ window.editStop = async id => {
   const addressChanged=previousAddress!==fullAddr(s);
   if(addressChanged){ delete s.lat; delete s.lng; delete s.geoLabel; delete s.pinFix; delete s.addrDiffers; }
   s.appliances=splitItems(result.appliances);
+  if(s.note!==result.note)s.ownerNotePending=true;
   s.note=result.note;
   // Price changed? Tear up any built-but-unsent receipt/invoice — otherwise the
   // PDF still shows the old figure — and re-seed the next one from the new price.
@@ -5849,6 +5915,7 @@ window.editStop = async id => {
     delete pendingInvoices[id];
   }
   save(); render();
+  await syncPickupNote(s);
   syncExternalBooking(s);
   if(addressChanged){
     const address=fullAddr(s), hit=await geocode(address).catch(()=>null);
@@ -7039,13 +7106,20 @@ async function backfillNavLabels(){
   if (navBackfillAgain){ navBackfillAgain = false; setTimeout(backfillNavLabels, 0); }
 }
 window.callStop = id => { const s=findStop(id); if(s&&s.phone) location.href="tel:"+s.phone.replace(/\s+/g,""); };
-window.delStop = id => {
+const removingStops=new Set();
+window.delStop = async id => {
+  if(removingStops.has(id))return;
+  const runState=state;
   const s = findStop(id);
   const who = s ? (fullName(s) || fullAddr(s) || "this stop") : "this stop";
   if (!confirm(`Remove ${who} from ${activeRunName()}?\n\nThis takes it off the scheduled run.`)) return;
-  state.stops = state.stops.filter(x=>x.id!==id);
-  if (Array.isArray(state.messageSelectedIds)) state.messageSelectedIds = state.messageSelectedIds.filter(x=>x!==id);
-  save(); render(); drawRoute();
+  removingStops.add(id);
+  try{
+    if(!await syncPickupNote(s))return;
+    runState.stops = runState.stops.filter(x=>x.id!==id);
+    if (Array.isArray(runState.messageSelectedIds)) runState.messageSelectedIds = runState.messageSelectedIds.filter(x=>x!==id);
+    save(); render(); drawRoute();
+  }finally{removingStops.delete(id);}
 };
 // Tidy the run at the end of the day: take every completed pickup off this run
 // in one go. The stops are only removed from this phone's run, so anything still
@@ -7061,6 +7135,9 @@ window.clearCompletedStops = async () => {
   const msg = `Clear ${done.length} completed pickup${done.length===1?"":"s"} off ${activeRunName()}?${warn}`
     + `\n\nThey come off this run only — completed jobs stay in Bookings. This can't be undone here.`;
   if (!confirm(msg)) return;
+  const completedState=state;
+  if(!await preservePickupNotes(done))return;
+  if(state!==completedState)return;
   busy("Saving completed pickups…");
   try{ await flushExternalBookingSyncs(true); }catch(e){}
   busy("");
@@ -7073,12 +7150,15 @@ window.clearCompletedStops = async () => {
 // Unschedule the whole run in one tap: every pickup not yet collected (and any
 // still needing an address) comes off, so those bookings drop back to New.
 // Completed pickups and GMS drop-offs stay put.
-window.sendAllBackToBookings = () => {
+window.sendAllBackToBookings = async () => {
   const back = pickupsOnly(state.stops).filter(s => s.status!=="DONE");
   const bad = state.bad||[];
   const n = back.length + bad.length;
   if (!n) return;
   if (!confirm(`Send all ${n} pickup${n===1?"":"s"} on ${activeRunName()} back to Bookings as New?`)) return;
+  const returningState=state;
+  if(!await preservePickupNotes([...back,...bad]))return;
+  if(state!==returningState)return;
   const ids = new Set(back.map(s => s.id));
   state.stops = state.stops.filter(s => !ids.has(s.id));
   state.bad = [];
@@ -7121,11 +7201,13 @@ window.retryBad = async id => {
     state.bad.splice(j,1); state.stops.push(t); save(); render(); drawRoute();
   } else alert("Still couldn't find that address — add the town, or paste a Google Maps link or coordinates.");
 };
-window.dropBad = id => {
+window.dropBad = async id => {
   const i = state.bad.findIndex(s=>s.id===id); if(i<0) return;
   const who = fullAddr(state.bad[i]) || "this address";
   if (!confirm(`Remove ${who} from the needs-address list?`)) return;
-  state.bad.splice(i,1); save(); render();
+  const runState=state, stop=runState.bad[i];
+  if(!await syncPickupNote(stop))return;
+  runState.bad=runState.bad.filter(s=>s.id!==id); save(); render();
 };
 
 /* ---------- Wire up the UI ---------- */
@@ -7678,13 +7760,16 @@ $("#optimiseHere").onclick = () => {
     { enableHighAccuracy:true, timeout:10000 }
   );
 };
-$("#clearAll").onclick = () => {
+$("#clearAll").onclick = async () => {
   const done = state.stops.filter(s=>s.status==="DONE");
   const items = done.reduce((n,s)=>n+(s.appliances?s.appliances.length:0),0);
   const tally = done.length
     ? `Collected ${done.length} of ${state.stops.length} stops${items?` (${items} items)`:""} today.\n\n`
     : "";
   if (confirm(`${tally}Clear “${activeRunName()}”? This removes only this run's stops and progress.`)){
+    const clearingState=state;
+    if(!await preservePickupNotes([...(state.stops||[]),...(state.bad||[])]))return;
+    if(state!==clearingState)return;
     state = { stops:[], bad:[], start:state.start, end:state.end, roundTrip:state.roundTrip, manual:false, sheetUrl: state.sheetUrl, unpaid: state.unpaid||[] };
     routeStartOverride = null;
     save(); render(); drawRoute();
