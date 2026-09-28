@@ -158,3 +158,17 @@ test('a booking cannot be taken without an owner sign-in', async () => {
     assert.equal(db.prepare('SELECT COUNT(*) AS n FROM bookings').get().n, 0);
   } finally { db.close(); }
 });
+
+test('small-item collections enforce the stop minimum before travel', async () => {
+  for(const [items,ruralOption,total] of [
+    [["Kids' bike"],valid.ruralOption,1000],
+    [['Scooter'],valid.ruralOption,1000],
+    [['Small desktop printer'],valid.ruralOption,1000],
+    [["Kids' bike",'Scooter'],valid.ruralOption,1000],
+    [["Kids' bike",'Fridge/freezer'],valid.ruralOption,2500],
+    [["Kids' bike"],'Outlying route, or rural 6-10 km away - add $10',2000]
+  ]){
+    const {db,create}=await setup();
+    try{assert.equal((await create({...valid,items,ruralOption})).status,201);assert.equal(db.prepare('SELECT total_cents FROM bookings').get().total_cents,total);}finally{db.close();}
+  }
+});

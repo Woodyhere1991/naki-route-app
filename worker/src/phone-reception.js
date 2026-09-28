@@ -259,8 +259,9 @@ export function quoteFor(items, ruralKey) {
   const ruralOption = RURAL_BY_KEY[ruralKey] || RURAL_BY_KEY.town;
   let cents = known.reduce((sum, item) => sum + ITEM_PRICES[item][1], 0);
   if (known.length) cents += Math.max(...known.map(item => ITEM_PRICES[item][0] - ITEM_PRICES[item][1]));
+  if(known.length) cents = Math.max(1000, cents);
   cents += RURAL_PRICES[ruralOption] || 0;
-  const quoteRequired = Boolean(unknown.length) || ruralKey === "over10km";
+  const quoteRequired = Boolean(unknown.length) || known.includes("Other") || ruralKey === "over10km";
   return { cents, quoteRequired, known, unknown, ruralOption };
 }
 

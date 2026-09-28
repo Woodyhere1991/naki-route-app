@@ -4214,7 +4214,7 @@ function itemPrice(name){
       t.includes("rowing") || t.includes("stair climber") || t.includes("stepper") ||
       t.includes("pilates") || t.includes("exercise bike")) return [2000,1500];
   if (t.includes("mower")) return [2000,1000];
-  // Kids' bikes and scooters are $5, adult bikes $10 (Woody, 25 Sept 2026).
+  // Kids' bikes and scooters: $10 alone, $5 extra; adult bikes $10 (29 Sept 2026).
   // A mobility scooter is not a kids' scooter, so it is left for a quote.
   if (t.includes("scooter")) return t.includes("mobility") ? null : [500,500];
   if (t.includes("bike") || t.includes("bicycle")) return /kid|child|junior|toddler|balance|small/.test(t) ? [500,500] : [1000,1000];
@@ -4262,7 +4262,7 @@ function estimateStopPrice(s){
     counted++;
   });
   if (!counted) return null;
-  return (extras + uplift + ruralFee(s.rural_option || s.travel_option || "")) / 100;
+  return (Math.max(1000, extras + uplift) + ruralFee(s.rural_option || s.travel_option || "")) / 100;
 }
 // The price to show and to load into a receipt: what Woody set, else the estimate.
 function stopPrice(s){

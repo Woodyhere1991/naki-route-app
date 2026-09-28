@@ -48,8 +48,7 @@ export const ITEM_PRICES = {
   "Home gym or multi-gym": [3000, 2500],
   "Pilates reformer": [2000, 1500],
   "Lawn mower": [2000, 1000],
-  // Woody, 25 Sept 2026: bikes priced by size, and scooters added. $5/$10 each,
-  // whether first or extra.
+  // 29 Sept: kids bikes/scooters/printers $10 alone, $5 as extras; $10 minimum stop.
   "Push bike (adult)": [1000, 1000],
   "Kids' bike": [500, 500],
   "Scooter": [500, 500],
@@ -804,6 +803,7 @@ function calculate(items, ruralOption) {
   if (valid.length) {
     cents += Math.max(...valid.map(item => ITEM_PRICES[item][0] - ITEM_PRICES[item][1]));
   }
+  if(valid.length) cents = Math.max(1000, cents);
   cents += RURAL_PRICES[ruralOption] || 0;
   const quoteRequired = valid.includes("Other") || ruralOption.startsWith("More than 10 km");
   return { cents, quoteRequired };
