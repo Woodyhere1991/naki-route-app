@@ -85,7 +85,18 @@ business root's existing ignored `tmp/` folder:
   Egmont Village School directly on covered Junction Road (no fee); Rotokare
   Scenic Reserve about 12.02 km (owner quote), Makahu School (beyond 10 km).
 - Final dataset version: `20261001-v2`; compressed Worker bundle about 1.56 MiB.
-- Deployment/live proof is added after release. These are API/browser checks;
+- Released 1 October 2026: Worker commit `238d0bd`, customer-site commit `6dec2e8`.
+  Worker version `69727217-076f-4fff-b794-323758b41ca0`; Pages immutable deployment
+  https://123e0d3f.naki-collection.pages.dev and canonical
+  https://nakiwhitewareremoval.vip/account.
+- Live API checks passed all public landmark addresses above and rejected a made-up
+  numbered address. Live browser checks at 390/1280 px verified actual selections,
+  explanatory distances, manual override, no horizontal overflow and no JS errors.
+- Explicit deployment staging contained 92 allowlisted public files; source/staging
+  hashes matched. Immutable/canonical account, script, service-worker cache and
+  privacy markers passed. Homepage hero matched source; private/unknown paths
+  returned the custom 404 with text/html on both hosts.
+- These are API/browser checks;
   no customer booking is submitted and no physical driver survey is claimed.
 
 This release covers the website address selector. The separate Line Two phone
