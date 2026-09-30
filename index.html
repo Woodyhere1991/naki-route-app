@@ -436,6 +436,7 @@
   .view-title.direct-head{flex-wrap:wrap;align-items:flex-start}
   .customer-page-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;width:100%}
   .customer-page-actions button{width:100%;min-height:46px}
+  .document-preview-page{margin:0 auto 12px;width:fit-content;max-width:100%;background:#fff;box-shadow:0 2px 8px #0002}.document-preview-page canvas{display:block;max-width:100%;height:auto!important}.document-preview-status{color:#142433;text-align:center;padding:20px}
   .receipt-review-option{display:flex;align-items:center;gap:12px;margin:10px 0 0;padding:12px 14px;border:1px solid var(--line);border-radius:12px;background:var(--panel);color:var(--txt);font-size:16px;min-height:48px}
   .receipt-review-option[hidden]{display:none}.receipt-review-option input{width:22px;min-height:22px;height:22px;flex:0 0 22px;accent-color:var(--good)}
 </style>
@@ -785,7 +786,7 @@
 
 <!-- Receipt PDF preview: look it over, then Send (share sheet) or Close -->
 <div id="receiptPreview" style="position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:9999;display:none;flex-direction:column;padding:10px;padding-bottom:max(10px, env(safe-area-inset-bottom))">
-  <iframe id="receiptFrame" title="Receipt preview" style="flex:1;border:0;border-radius:14px;background:#fff"></iframe>
+  <div id="receiptFrame" aria-label="Document preview" style="flex:1;min-height:0;overflow:auto;border-radius:14px;background:#dce3e8;padding:12px;overscroll-behavior:contain"></div>
   <label id="receiptReviewOption" class="receipt-review-option" hidden><input type="checkbox" id="receiptIncludeReview" checked />Request Google review</label>
   <div style="display:flex;gap:8px;margin-top:10px">
     <button class="ghost" style="flex:1" onclick="closeReceiptPreview()">Close</button>
@@ -2034,7 +2035,7 @@ function openBookingInvoicePreview(id){
   const wrapEl=document.getElementById("receiptPreview");
   if (receiptPreviewUrl) URL.revokeObjectURL(receiptPreviewUrl);
   receiptPreviewUrl=URL.createObjectURL(pending.file);
-  document.getElementById("receiptFrame").src=receiptPreviewUrl;
+  window.nakiDocumentPreview.show(pending.file);
   const send=document.getElementById("receiptSendBtn");
   send.textContent=`📧 Email invoice · $${pending.amount.toFixed(2)}`;
   send.onclick=()=>{ closeReceiptPreview(); sendBookingInvoice(id); };
@@ -6458,11 +6459,11 @@ window.openReceiptPreview = id => {
       pendingReceipts[id]=new File([blob],file.name,{type:'application/pdf'});s.receiptIncludeReview=wanted;save();
       if(wrapEl.style.display!=='none')openReceiptPreview(id);
     }catch(error){toggle.checked=s?.receiptIncludeReview!==false;alert('Could not update the receipt. Your previous preview is kept.');}
-    finally{send.disabled=false;toggle.disabled=false;}
+    finally{send.disabled=document.getElementById("receiptFrame").dataset.ready!=="true";toggle.disabled=false;}
   };
   if (receiptPreviewUrl) URL.revokeObjectURL(receiptPreviewUrl);
   receiptPreviewUrl = URL.createObjectURL(file);
-  document.getElementById("receiptFrame").src = receiptPreviewUrl;
+  window.nakiDocumentPreview.show(file);
   const btn = document.getElementById("receiptSendBtn");
   btn.textContent = (s && goodEmail(s.email)) ? "📧 Email receipt" : "📤 Send receipt";
   btn.onclick = () => { closeReceiptPreview(); sendReceipt(id); };
@@ -6479,7 +6480,7 @@ window.closeReceiptPreview = () => {
   const wrapEl = document.getElementById("receiptPreview");
   wrapEl.style.display = "none";
   document.getElementById('receiptReviewOption').hidden=true;
-  document.getElementById("receiptFrame").src = "about:blank";
+  window.nakiDocumentPreview.clear();
   if (receiptPreviewUrl){ URL.revokeObjectURL(receiptPreviewUrl); receiptPreviewUrl = null; }
 };
 async function fileToBase64(file){
@@ -6619,7 +6620,7 @@ window.openInvoicePreview = id => {
   const wrapEl = document.getElementById("receiptPreview");
   if (receiptPreviewUrl) URL.revokeObjectURL(receiptPreviewUrl);
   receiptPreviewUrl = URL.createObjectURL(file);
-  document.getElementById("receiptFrame").src = receiptPreviewUrl;
+  window.nakiDocumentPreview.show(file);
   const btn = document.getElementById("receiptSendBtn");
   btn.textContent = (s && goodEmail(s.email)) ? "📧 Email invoice" : "📤 Send invoice";
   btn.onclick = () => { closeReceiptPreview(); sendInvoice(id); };
@@ -8146,6 +8147,7 @@ attachAutocomplete($("#endAddr"), $("#acEnd"), r => {
 });
 fieldBoot();
 </script>
+<script src="assets/document-preview.js"></script>
 <script src="assets/api-access.js"></script>
 <script src="assets/earnings.js"></script>
 </body>

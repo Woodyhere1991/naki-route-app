@@ -18,7 +18,7 @@ let expectedJobs,expectedFridges;
     if(url.hostname==='pickup.test'){
      const rel=url.pathname==='/'?'index.html':decodeURIComponent(url.pathname.slice(1)),target=path.resolve(root,rel);
      if(!target.startsWith(root+path.sep)||!fs.existsSync(target))return route.fulfill({status:404,body:''});
-     return route.fulfill({status:200,contentType:target.endsWith('.js')?'text/javascript':target.endsWith('.css')?'text/css':target.endsWith('.png')?'image/png':'text/html',body:fs.readFileSync(target)});
+     return route.fulfill({status:200,contentType:/\.m?js$/.test(target)?'text/javascript':target.endsWith('.css')?'text/css':target.endsWith('.png')?'image/png':'text/html',body:fs.readFileSync(target)});
     }
     if(url.pathname.endsWith('/owner/earnings'))return route.fulfill({status:fail?503:200,contentType:'application/json',body:JSON.stringify(fail?{error:'Reconnect to load earnings'}:baseline)});
     return route.fulfill({status:200,contentType:'application/json',body:'{"bookings":[],"customers":[],"documents":[],"ok":true}'});
@@ -56,12 +56,37 @@ let expectedJobs,expectedFridges;
       const blob=await buildReceiptPdf(state.stops[0],20);pendingReceipts['review-choice']=new File([blob],'test.pdf',{type:'application/pdf'});openReceiptPreview('review-choice');
     });
     assert.equal(await page.locator('#receiptIncludeReview').isChecked(),true);
+    const checkPreview=async()=>{
+      await page.waitForFunction(()=>document.getElementById('receiptFrame').dataset.ready==='true');
+      assert.ok(await page.locator('#receiptFrame canvas').count(),'Actual PDF is rendered');
+      const darkPixels=await page.locator('#receiptFrame canvas').first().evaluate(canvas=>{
+        const pixels=canvas.getContext('2d').getImageData(0,0,canvas.width,canvas.height).data;let count=0;
+        for(let i=0;i<pixels.length;i+=4)if(pixels[i+3]>0&&pixels[i]+pixels[i+1]+pixels[i+2]<500)count++;
+        return count;
+      });
+      assert.ok(darkPixels>1000,'Preview contains printed PDF content rather than a blank white panel');
+      assert.equal(await page.locator('#receiptSendBtn').isDisabled(),false);
+      assert.equal(await page.locator('#receiptFrame').evaluate(el=>el.scrollWidth>el.clientWidth+1),false);
+    };
+    await checkPreview();
     await page.locator('#receiptIncludeReview').uncheck();await page.waitForFunction(()=>!document.getElementById('receiptIncludeReview').disabled);
+    await checkPreview();
     assert.equal(await page.evaluate(async()=>/g.page|Leave a Google review|Happy with how it went/.test(await pendingReceipts['review-choice'].text())),false,'Review removed from actual PDF');
     assert.equal(await page.evaluate(()=>state.stops[0].receiptIncludeReview),false);
     await page.locator('#receiptIncludeReview').check();await page.waitForFunction(()=>!document.getElementById('receiptIncludeReview').disabled);
+    await checkPreview();
     assert.equal(await page.evaluate(async()=>/g.page/.test(await pendingReceipts['review-choice'].text())),true,'Review restored in actual PDF');
     await page.evaluate(()=>{delete pendingReceipts['review-choice'];closeReceiptPreview();});
+    assert.equal(await page.locator('#receiptFrame canvas').count(),0,'Private preview cleared on close');
+    await page.evaluate(async()=>{
+      const stop=state.stops[0],blob=await buildInvoicePdf(stop,20);
+      pendingInvoices[stop.id]=new File([blob],'invoice.pdf',{type:'application/pdf'});openInvoicePreview(stop.id);
+    });
+    await checkPreview();
+    assert.equal(await page.locator('#receiptReviewOption').isVisible(),false);
+    await page.evaluate(()=>{closeReceiptPreview();pendingBookingInvoices['preview-booking']={file:pendingInvoices['review-choice'],amount:20};openBookingInvoicePreview('preview-booking');});
+    await checkPreview();
+    await page.evaluate(()=>{closeReceiptPreview();delete pendingInvoices['review-choice'];delete pendingBookingInvoices['preview-booking'];});
     await page.evaluate(async()=>{
      state.unpaid=[];state.stops=[{id:'receipt-final',src:'direct',submission_id:'WEB-receipt-final',first_name:'Receipt',last_name:'Example',email:'example@example.test',status:'NEW',amount:20,receiptAmount:25,appliances:['Fridge']}];
      pendingReceipts['receipt-final']=new File(['synthetic receipt'], 'test.pdf',{type:'application/pdf'});await window.sendReceipt('receipt-final');
