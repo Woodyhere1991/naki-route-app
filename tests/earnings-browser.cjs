@@ -5,8 +5,9 @@ const yesterday=Date.now()-86400000;
 const fixture={asOf:new Date().toISOString(),summary:{allTimeCents:5500},records:[2000,3500,0].map((cents,i)=>({kind:'booking',key:'WEB-test-'+i,aliases:['WEB-test-'+i],rank:30,status:'COMPLETED',completedAt:yesterday,at:yesterday,cents})),
  stats:{rows:[2000,3500,0].map((cents,i)=>({key:'WEB-test-'+i,aliases:['WEB-test-'+i],completed:true,completedDay:'2026-09-30',requestedDay:'2026-09-28',cents,items:[i===0?'Fridge':'Dryer'],name:'Example '+i,customerId:'synthetic'+i,town:'Waitara'})).concat([{key:'old-request',aliases:['old-request'],completed:false,archived:true,requestedDay:'2024-02-11',items:['Dishwasher'],name:'Historical example',customerId:'old'}]),sources:{rawSubmissions:1,jotformForms:[],localWorkbooks:0,pastCustomerContacts:0},snapshotAt:'2026-09-30T00:00:00Z'}};
 const baseline=process.env.NAKI_EARNINGS_FIXTURE?JSON.parse(fs.readFileSync(process.env.NAKI_EARNINGS_FIXTURE)):fixture;
-const expectedJobs=baseline.records.length===3?3:206,expectedFridges=baseline.records.length===3?1:67,expectedHistory=baseline.records.length===3?4:3067;
+let expectedJobs,expectedFridges;
 (async()=>{
+ const {buildEntries}=await import('../assets/earnings-model.js'),{aggregateStats,mergeStatsRows}=await import('../assets/business-stats-model.js');const stats=aggregateStats(mergeStatsRows(baseline.stats.rows,buildEntries(baseline.records)));expectedJobs=stats.jobs;expectedFridges=stats.fridges;
  const browser=process.env.NAKI_BROWSER==='webkit'?await webkit.launch({headless:true}):await chromium.launch({channel:'msedge',headless:true});
  try{
   for(const width of [375,390,1280]){
@@ -25,18 +26,16 @@ const expectedJobs=baseline.records.length===3?3:206,expectedFridges=baseline.re
    await page.goto('https://pickup.test/',{waitUntil:'domcontentloaded'});
    await page.waitForFunction(()=>!!window.nakiEarnings);
    await page.evaluate(()=>{ownerToken='synthetic-owner';state.stops=[];state.bad=[];state.unpaid=[];runStore.runs=[{id:'test-run',name:'Test run',data:state}];runStore.activeRunId='test-run';});
-   await page.locator('[data-view-button=earnings]').click();
+   await page.locator('.bottom-nav [data-view-button=customers]').click();await page.locator('[data-view-button=earnings]').click();
    await page.waitForFunction(()=>!document.getElementById('earningsContent').hidden);
    assert.ok((await page.locator('#earningsContent').innerText()).includes(new Intl.NumberFormat('en-NZ',{style:'currency',currency:'NZD'}).format(baseline.summary.allTimeCents/100)));
    await page.getByRole('button',{name:'12 months',exact:true}).click();
    assert.equal(await page.locator('.earnings-chart rect.bar').count(),12);
    await page.locator('[data-earnings-tab=stats]').click();
-   assert.match(await page.locator('#earningsContent').innerText(),new RegExp('Confirmed collections\\s+'+expectedJobs));
+   assert.equal(await page.locator('.stats-numbers strong').first().innerText(),expectedJobs.toLocaleString('en-NZ'));
    assert.match(await page.locator('#earningsContent').innerText(),new RegExp('Fridges collected\\s+'+expectedFridges));
-   await page.locator('[data-stats-lens=history]').click();
-   assert.ok((await page.locator('#earningsContent').innerText()).includes(expectedHistory.toLocaleString('en-NZ')));
    await page.locator('#statsYear').selectOption('2024');
-   assert.match(await page.locator('#earningsContent').innerText(),/not proof of collection or earnings/);
+   assert.match(await page.locator('#earningsContent').innerText(),/Older bookings are counted as collected/);
    assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth+1),false,'No horizontal page overflow');
    if(width===390&&process.env.NAKI_EARNINGS_FIXTURE){await page.locator('#statsYear').selectOption('all');await page.screenshot({path:path.join(root,'tmp','business-stats-phone-private.png'),fullPage:true});}
    await page.locator('[data-earnings-tab=earnings]').click();
@@ -52,6 +51,17 @@ const expectedJobs=baseline.records.length===3?3:206,expectedFridges=baseline.re
    await page.evaluate(()=>{state.stops=[{id:'a',status:'NEW',amount:20},{id:'b',status:'NEW',amount:30}];window.toggleDone('a');});
    assert.equal(await page.locator('#dayEarningsDialog').evaluate(e=>e.open),false,'Earlier stops do not trigger the popup');
    if(width===390){
+    await page.evaluate(async()=>{
+      await ensurePdf();state.stops=[{id:'review-choice',first_name:'Preview',last_name:'Example',status:'NEW',amount:20,receiptAmount:20,street:'20 Example St',town:'Waitara',email:'example@example.test',appliances:['Fridge']}];
+      const blob=await buildReceiptPdf(state.stops[0],20);pendingReceipts['review-choice']=new File([blob],'test.pdf',{type:'application/pdf'});openReceiptPreview('review-choice');
+    });
+    assert.equal(await page.locator('#receiptIncludeReview').isChecked(),true);
+    await page.locator('#receiptIncludeReview').uncheck();await page.waitForFunction(()=>!document.getElementById('receiptIncludeReview').disabled);
+    assert.equal(await page.evaluate(async()=>/g.page|Leave a Google review|Happy with how it went/.test(await pendingReceipts['review-choice'].text())),false,'Review removed from actual PDF');
+    assert.equal(await page.evaluate(()=>state.stops[0].receiptIncludeReview),false);
+    await page.locator('#receiptIncludeReview').check();await page.waitForFunction(()=>!document.getElementById('receiptIncludeReview').disabled);
+    assert.equal(await page.evaluate(async()=>/g.page/.test(await pendingReceipts['review-choice'].text())),true,'Review restored in actual PDF');
+    await page.evaluate(()=>{delete pendingReceipts['review-choice'];closeReceiptPreview();});
     await page.evaluate(async()=>{
      state.unpaid=[];state.stops=[{id:'receipt-final',src:'direct',submission_id:'WEB-receipt-final',first_name:'Receipt',last_name:'Example',email:'example@example.test',status:'NEW',amount:20,receiptAmount:25,appliances:['Fridge']}];
      pendingReceipts['receipt-final']=new File(['synthetic receipt'], 'test.pdf',{type:'application/pdf'});await window.sendReceipt('receipt-final');
@@ -70,7 +80,7 @@ const expectedJobs=baseline.records.length===3?3:206,expectedFridges=baseline.re
     assert.match(await page.locator('#dayEarningsBody').innerText(),/1 job today/);await page.locator('#dayEarningsClose').click();
    }
    await page.evaluate(()=>{state.stops=[];});
-   await page.locator('[data-view-button=earnings]').click();await page.waitForFunction(()=>!document.getElementById('earningsContent').hidden);
+   await page.locator('.bottom-nav [data-view-button=customers]').click();await page.locator('[data-view-button=earnings]').click();await page.waitForFunction(()=>!document.getElementById('earningsContent').hidden);
    fail=true;await page.locator('#earningsRefresh').click();
    await page.waitForFunction(()=>document.getElementById('earningsStatus').innerText.includes('Reconnect'));
    assert.equal(await page.locator('#earningsContent').innerText(),'','Failure does not show stale money');

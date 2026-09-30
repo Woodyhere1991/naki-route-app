@@ -17,7 +17,6 @@
 
 <link rel="stylesheet" href="/assets/vendor/leaflet.css" />
 <script src="/assets/field-tools.js"></script>
-<script src="/assets/voice-assistant.js"></script>
 
 <style>
   :root{
@@ -429,6 +428,16 @@
   .weather-town-label small{color:var(--muted);margin-top:4px;line-height:1.5}
   .weather-town .weather-day{margin-top:8px}
   .completed-pickups>summary{min-height:44px;align-content:center;font-weight:700}
+
+  /* Flexible labels keep every action readable on small phones and with larger text. */
+  button,a.ghost{min-width:0;max-width:100%;white-space:normal;overflow-wrap:anywhere;text-align:center}
+  button.sm,a.sm{padding-top:9px;padding-bottom:9px;height:auto}
+  .booking-doc-row button{white-space:normal;flex-shrink:1}
+  .view-title.direct-head{flex-wrap:wrap;align-items:flex-start}
+  .customer-page-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;width:100%}
+  .customer-page-actions button{width:100%;min-height:46px}
+  .receipt-review-option{display:flex;align-items:center;gap:12px;margin:10px 0 0;padding:12px 14px;border:1px solid var(--line);border-radius:12px;background:var(--panel);color:var(--txt);font-size:16px;min-height:48px}
+  .receipt-review-option[hidden]{display:none}.receipt-review-option input{width:22px;min-height:22px;height:22px;flex:0 0 22px;accent-color:var(--good)}
 </style>
 <link rel="stylesheet" href="/assets/earnings.css" />
 </head>
@@ -603,7 +612,7 @@
   <section class="view-panel view-customers" id="customerProfiles">
     <div class="view-title direct-head">
       <span>Customers</span>
-      <span><button class="ghost sm" id="addContactBtn">＋ Add contact</button> <button class="ghost sm" id="addBookingForBtn">＋ Take a booking</button> <button class="ghost sm" id="customersRefresh">Refresh</button></span>
+      <span class="customer-page-actions"><button class="good sm" data-view-button="earnings">📊 Earnings</button><button class="ghost sm" id="addContactBtn">＋ Add contact</button> <button class="ghost sm" id="addBookingForBtn">＋ Take a booking</button> <button class="ghost sm" id="customersRefresh">Refresh</button></span>
     </div>
     <div class="list-toolbar" id="customerToolbar" style="display:none">
       <input id="customerSearch" class="grow" placeholder="Search name, town, address, email or phone" />
@@ -611,8 +620,6 @@
         <button class="ghost sm" data-customer-view="list">List</button>
         <button class="ghost sm" data-customer-view="full">Full</button>
       </span>
-      <!-- Only appears when there are actually blanks to fill. -->
-      <button class="ghost sm" id="customerFillBlanks" style="display:none"></button>
     </div>
     <div id="customerStatus" class="small muted"></div>
     <p class="small muted">App installs are recorded when opened from the home screen. Later removals and browser shortcuts cannot be confirmed.</p>
@@ -668,24 +675,7 @@
   </div>
 
   <!-- BACKUP — runs live only in this browser, so give them a way out -->
-  <div class="card view-panel view-add">
-    <details id="receptionBox">
-      <summary>Practise with the phone assistant <span class="chev">›</span></summary>
-      <div style="padding-top:10px">
-        <p class="small muted" style="margin:0 0 10px">
-          Ring the phone assistant yourself and play the customer. Same words and
-          same prices a real caller gets — but nothing is saved and no phone number
-          is needed. About 5c a minute.
-        </p>
-        <div class="row">
-          <button class="ghost grow" id="receptionTest">☎️ Practice call</button>
-        </div>
-        <p class="small muted" style="margin:6px 0 0">Try: "How much to take a fridge and a washing machine from Waitara?"</p>
-      </div>
-    </details>
-  </div>
-
-  <div class="card view-panel view-add">
+<div class="card view-panel view-add">
     <details id="backupBox">
       <summary>My runs on other phones <span class="chev">›</span></summary>
       <div style="padding-top:10px">
@@ -789,7 +779,6 @@
   <button data-view-button="today">Scheduled</button>
   <button data-view-button="bookings">Bookings <span id="bookingCount" class="booking-count" style="display:none">0</span></button>
   <button data-view-button="customers">Customers</button>
-  <button data-view-button="earnings">Earnings</button>
   <button data-view-button="messages">Messages</button>
   <button data-view-button="add">Add &amp; setup</button>
 </nav>
@@ -797,6 +786,7 @@
 <!-- Receipt PDF preview: look it over, then Send (share sheet) or Close -->
 <div id="receiptPreview" style="position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:9999;display:none;flex-direction:column;padding:10px;padding-bottom:max(10px, env(safe-area-inset-bottom))">
   <iframe id="receiptFrame" title="Receipt preview" style="flex:1;border:0;border-radius:14px;background:#fff"></iframe>
+  <label id="receiptReviewOption" class="receipt-review-option" hidden><input type="checkbox" id="receiptIncludeReview" checked />Request Google review</label>
   <div style="display:flex;gap:8px;margin-top:10px">
     <button class="ghost" style="flex:1" onclick="closeReceiptPreview()">Close</button>
     <button class="ghost" style="flex:1" id="receiptRedoBtn">✏️ Change amount</button>
@@ -960,7 +950,7 @@ function cleanRunData(raw, sharedUnpaid){
   // An invoice raised BEFORE the pickup keeps its stop on the run — the money is
   // tracked in the unpaid ledger, but the gear still has to be collected. Only
   // invoiced work that was actually picked up moves out of the run.
-  const owe = s.stops.filter(x => x.invoiceSent && !x.paid && x.invoiceStage !== "before");
+  const owe = s.stops.filter(x => x.invoiceSent && !x.paid && !x.invoiceCleared && x.invoiceStage !== "before");
   owe.forEach(x => { x.status = "DONE"; });
   s.stops = s.stops.filter(x => !owe.includes(x));
   oldUnpaid.concat(owe).forEach(x=>{
@@ -1261,7 +1251,7 @@ async function deleteActiveRun(){
 function applyAppView(view){
   if (!["today","bookings","customers","messages","earnings","add"].includes(view)) view = state.stops.length ? "today" : "add";
   document.body.dataset.view = view;
-  document.querySelectorAll("[data-view-button]").forEach(btn=>btn.classList.toggle("on", btn.dataset.viewButton===view));
+  document.querySelectorAll("[data-view-button]").forEach(btn=>btn.classList.toggle("on", btn.dataset.viewButton===view||view==="earnings"&&btn.dataset.viewButton==="customers"));
   if (view==="today" && map) setTimeout(()=>map.invalidateSize(), 80);
   if (view==="messages") setTimeout(fitMessagePreview, 0);
   if (view==="today" || view==="add") refreshWeather(false);   // panel just became visible
@@ -1354,6 +1344,19 @@ function queueDirectCompletion(bookingId,status="COMPLETED"){
   runStore.shared.pendingDirectStatuses[bookingId]=status;
   if (!runStore.shared.pendingDirectCompletions.includes(bookingId)) runStore.shared.pendingDirectCompletions.push(bookingId);
   save();
+}
+function applyInvoiceClearance(clearance){
+  if(!clearance?.stopIds?.length&&!clearance?.bookingIds?.length)return;
+  const ids=new Set(clearance.stopIds),bookings=new Set(clearance.bookingIds||[]);let changed=false;
+  const pool=allRunStates().flatMap(data=>(data.stops||[]).concat(data.bad||[])).concat(state.unpaid||[],runStore.shared?.unpaid||[]);
+  for(const stop of pool){
+    if(!(ids.has('stop:'+stop.id)||bookings.has(stop.submission_id)||bookings.has(historyBookingKey(stop)))||stop.invoiceAt>clearance.cutoff||stop.invoiceCleared)continue;
+    stop.invoiceCleared=true;stop.reminderId='';stop.reminderDate='';stop.reminderRepeat=0;changed=true;
+    if(stop.submission_id)dismissInvoiceOwing(stop.submission_id);
+  }
+  state.unpaid=(state.unpaid||[]).filter(stop=>!stop.invoiceCleared);
+  runStore.shared.unpaid=(runStore.shared.unpaid||[]).filter(stop=>!stop.invoiceCleared);
+  if(changed){save();render();}
 }
 let directCompletionSyncBusy=false;
 async function flushDirectCompletions(){
@@ -2026,6 +2029,7 @@ async function invoiceDirectBooking(id, askAmount){
 }
 // Same preview window the run uses, pointed at a booking instead of a stop.
 function openBookingInvoicePreview(id){
+  document.getElementById('receiptReviewOption').hidden=true;
   const pending=pendingBookingInvoices[id]; if(!pending) return;
   const wrapEl=document.getElementById("receiptPreview");
   if (receiptPreviewUrl) URL.revokeObjectURL(receiptPreviewUrl);
@@ -2260,6 +2264,7 @@ async function loadDirectBookings(showLoading=false,more=false){
     // that comes back already has them sitting under Done.
     const repushed=await flushExternalBookingSyncs();
     const data=await loadOwnerCollection("bookings",bookingSearchText,more);
+    applyInvoiceClearance(data.invoiceClearance);
     await flushDirectCompletions();
     const nextRows=Array.isArray(data.bookings) ? data.bookings : [];
     if (!showLoading && !repushed && JSON.stringify(nextRows)===JSON.stringify(directBookingRows)) return;
@@ -2487,7 +2492,6 @@ $("#directRefresh").onclick=()=>loadDirectBookings(true);
 $("#customersRefresh").onclick=()=>loadCustomers(true);
 $("#addContactBtn").onclick=()=>addCustomContact();
 $("#addBookingForBtn").onclick=()=>takeBookingFor();
-$("#customerFillBlanks").onclick=()=>fillCustomerBlanksFromJobs();
 $("#bookingSearch").addEventListener("input",event=>{ bookingSearchText=event.target.value.trim().toLowerCase(); renderDirectBookings(); queueOwnerSearch("bookings"); });
 $("#customerSearch").addEventListener("input",event=>{ customerSearchText=event.target.value.trim().toLowerCase(); renderCustomers(); });
 // Tapping List also shuts every card that was opened one at a time. Without
@@ -2784,7 +2788,7 @@ function customerDocumentBox(c){
   const latestInvoice=documents.find(d=>d.kind==="INVOICE");
   const latestReceipt=documents.find(d=>d.kind==="RECEIPT");
   // Same test the bookings list uses: an invoice with no receipt after it is still owed.
-  const owing=Boolean(latestInvoice) && (!latestReceipt || latestInvoice.createdAt>latestReceipt.createdAt);
+  const owing=Boolean(latestInvoice)&&!latestInvoice.cleared && (!latestReceipt || latestInvoice.createdAt>latestReceipt.createdAt);
   const years=[...new Set(documents.map(d=>String(d.createdAt||"").slice(0,4)||"—"))];
   const rowFor=d=>{
     const kind=d.kind==="RECEIPT" ? "Receipt" : "Invoice";
@@ -2826,8 +2830,12 @@ function detailsByEmail(){
     const key=String(email||"").trim().toLowerCase();
     if (!key) return;
     const held=byEmail.get(key);
-    if (held && held.when >= when) return;
-    byEmail.set(key,{ ...details, when });
+    const newer=!held||when>held.when;
+    const merged={...(newer?held:details),...(newer?details:held)};
+    for(const field of ["firstName","lastName","phone","streetAddress","town","area","accessNotes"]){
+      if(!String(merged[field]||"").trim())merged[field]=(newer?held:details)?.[field]||"";
+    }
+    byEmail.set(key,{ ...merged, when:Math.max(held?.when||0,when) });
   };
   // Their jobs on the account come first - that is what Woody is looking at.
   directBookingRows.forEach(b=>remember(b.email,{
@@ -2953,7 +2961,7 @@ function renderCustomers(){
         <div class="mini-body">${body}</div>
       </details>`;
     }).join("");
-    return `<details class="town-group"${customerSearchText||groupIndex===0?" open":""}><summary>📍 ${esc(group.label)} (${group.rows.length})<span class="chev">›</span></summary>${cards}</details>`;
+    return `<details class="town-group"${customerSearchText||groupIndex===0?" open":""}><summary>📍 ${esc(group.label==="No town"?"Town needed":group.label)} (${group.rows.length})<span class="chev">›</span></summary>${cards}</details>`;
   }).join("");
   list.querySelectorAll("[data-delete-customer]").forEach(button=>button.onclick=()=>{
     const id=button.dataset.deleteCustomer;
@@ -6294,7 +6302,7 @@ function addProfileMessage(doc, y, W, M, s){
   doc.setFont("helvetica", "bold"); doc.setFontSize(10);
   doc.textWithLink(hasProfile===true ? "View your account" : "Open the account page", M+5, y+22, {url:s.profileUrl||`${WEBSITE_URL}/account.html`});
 }
-async function buildReceiptPdf(s, amt){
+async function buildReceiptPdf(s, amt, includeReview=s.receiptIncludeReview!==false){
   const { jsPDF } = window.jspdf;
   const doc = new jsPDF({ unit:"mm", format:"a5" });
   const W = 148, M = 14;
@@ -6343,9 +6351,9 @@ async function buildReceiptPdf(s, amt){
   doc.text("Payment received in full — thank you!", M, y);
   y += 10;
   // The account box and the review box travel together — 26 + 4 + 30 tall.
-  y = ensureRoom(doc, y, 60);
+  y = ensureRoom(doc, y, includeReview?60:26);
   addProfileMessage(doc, y, W, M, s);
-  addReviewAsk(doc, y + 30, W, M);
+  if(includeReview)addReviewAsk(doc, y + 30, W, M);
   addPdfFooters(doc, W, M);
   return doc.output("blob");
 }
@@ -6441,6 +6449,17 @@ window.openReceiptPreview = id => {
   const file = pendingReceipts[id]; if (!file) return;
   const s = findStop(id);
   const wrapEl = document.getElementById("receiptPreview");
+  const option=document.getElementById('receiptReviewOption'),toggle=document.getElementById('receiptIncludeReview');
+  option.hidden=false;toggle.checked=s?.receiptIncludeReview!==false;
+  toggle.onchange=async()=>{
+    const wanted=toggle.checked,send=document.getElementById('receiptSendBtn');send.disabled=true;toggle.disabled=true;
+    try{
+      const blob=await buildReceiptPdf(s,Number(s.receiptAmount??s.amount??0),wanted);
+      pendingReceipts[id]=new File([blob],file.name,{type:'application/pdf'});s.receiptIncludeReview=wanted;save();
+      if(wrapEl.style.display!=='none')openReceiptPreview(id);
+    }catch(error){toggle.checked=s?.receiptIncludeReview!==false;alert('Could not update the receipt. Your previous preview is kept.');}
+    finally{send.disabled=false;toggle.disabled=false;}
+  };
   if (receiptPreviewUrl) URL.revokeObjectURL(receiptPreviewUrl);
   receiptPreviewUrl = URL.createObjectURL(file);
   document.getElementById("receiptFrame").src = receiptPreviewUrl;
@@ -6459,6 +6478,7 @@ window.openReceiptPreview = id => {
 window.closeReceiptPreview = () => {
   const wrapEl = document.getElementById("receiptPreview");
   wrapEl.style.display = "none";
+  document.getElementById('receiptReviewOption').hidden=true;
   document.getElementById("receiptFrame").src = "about:blank";
   if (receiptPreviewUrl){ URL.revokeObjectURL(receiptPreviewUrl); receiptPreviewUrl = null; }
 };
@@ -6519,8 +6539,9 @@ window.sendReceipt = async id => {
           items: (s.appliances && s.appliances.length) ? s.appliances : ["Whiteware"],
           address: fullAddr(s),
           profileUrl: s.profileUrl || "",
+          includeReviewRequest:s.receiptIncludeReview!==false,
           profileStatus: s.profileHasAccount===true ? "existing" : s.profileHasAccount===false ? "invite" : "unknown"
-          // The receipt email always asks for a review now — the worker adds the line.
+          // Matches the review choice in the actual PDF preview.
         })
       });
       const out = await res.json().catch(()=>({}));
@@ -6592,6 +6613,7 @@ window.invoiceStop = async (id, askAmount) => {
   openInvoicePreview(id);
 };
 window.openInvoicePreview = id => {
+  document.getElementById('receiptReviewOption').hidden=true;
   const file = pendingInvoices[id]; if (!file) return;
   const s = findStop(id);
   const wrapEl = document.getElementById("receiptPreview");
@@ -6738,7 +6760,7 @@ window.sendInvoice = async id => {
   const earningsBefore=window.nakiEarnings?.capture();
   const markSent = (rid, rdate, rrepeat) => {
     delete pendingInvoices[id];
-    s.invoiceSent = true; s.paid = false;
+    s.invoiceSent = true; s.paid = false;s.invoiceCleared=false;s.invoiceAt=Date.now();
     if (fromRun && !collectedAlready){
       s.invoiceStage = "before";
     } else if (fromRun){

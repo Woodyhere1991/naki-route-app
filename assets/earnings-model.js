@@ -33,7 +33,7 @@ export function bookingRows(rows) {
 }
 export function documentRows(rows) {
   return rows.map(r=>({kind:r.kind==='RECEIPT'?'receipt':'invoice',key:`document:${r.id}`,
-    aliases:[r.booking_id||`document:${r.id}`],at:Number(r.created_at)||0,cents:Number(r.amount_cents)}));
+    aliases:[r.booking_id||`document:${r.id}`],at:Number(r.created_at)||0,cents:Number(r.amount_cents),cleared:r.cleared===true}));
 }
 export function stopRows(store) {
   if(!store || !Array.isArray(store.runs)) return [];
@@ -53,7 +53,7 @@ export function stopRows(store) {
       status:completed?'COMPLETED':s.status==='DONE'?'ADDED_TO_RUN':s.status,
       completedAt:Number(s.collectedAt)||0,at:Number(s.completionChangedAt)||0,pickupDay:validDay(s.confirmedPickupDate)?s.confirmedPickupDate:'',
       cents:moneyCents(amount),receipted:s.receiptSent===true&&completed,
-      owing:s.invoiceSent===true&&s.paid!==true};
+      invoiceAt:Number(s.invoiceAt)||0,owing:s.invoiceSent===true&&s.paid!==true&&s.invoiceCleared!==true};
   });
 }
 export function rowsFromBackup(record) {
@@ -89,7 +89,7 @@ export function buildEntries(rows) {
     const doneStop=latestStop?.at>0&&latestStop.status!=='COMPLETED'?undefined:stops.find(r=>r.status==='COMPLETED');
     const undone=latestStop&&latestStop.status!=='COMPLETED'&&latestStop.at>0&&latestStop.at>(primary?.at||0);
     const completed=Boolean(receipt)||(!undone&&(primary?.status==='COMPLETED'||Boolean(doneStop)));
-    const owing=invoice && (!receipt||invoice.at>receipt.at) ? invoice.cents : stops.some(r=>r.owing)?(primary?.cents??doneStop?.cents??0):0;
+    const owing=invoice?.cleared?0:invoice && (!receipt||invoice.at>receipt.at) ? invoice.cents : stops.some(r=>r.owing)?(primary?.cents??doneStop?.cents??0):0;
     if(!completed && !owing)continue;
     const amount=receipt?.cents??primary?.cents??doneStop?.cents??null;
     const priced=Number.isSafeInteger(amount)&&amount>=0;
@@ -99,6 +99,9 @@ export function buildEntries(rows) {
     const receipted=receipt?receipt.cents:doneStop?.receipted?doneStop.cents:null;
     entries.push({key:primary?.key||doneStop?.key||receipt?.key||invoice?.key,
       aliases:[...group.aliases],cents:completed&&priced?amount:0,completed,day,
+      assumed:completed&&!receipt&&!doneStop&&primary?.assumed===true,
+      priceReviewCents:completed&&!priced?primary?.priceReviewCents??null:null,
+      recalculatedPrice:completed&&!receipt&&primary?.recalculatedPrice===true,
       receiptedCents:completed&&Number.isSafeInteger(receipted)?receipted:null,
       owingCents:Number.isSafeInteger(owing)&&owing>0?owing:0,
       missingPrice:completed&&!priced,dateEstimated:completed&&!actualDate&&Boolean(day),
@@ -113,9 +116,13 @@ export function summarise(entries,today=nzDay()) {
   return {todayCents:total(e=>e.day===today),weekCents:total(e=>e.day>=week&&e.day<=today),
     monthCents:total(e=>e.day.slice(0,7)===today.slice(0,7)&&e.day<=today),allTimeCents:total(()=>true),
     jobs:entries.filter(e=>e.completed).length,
+    assumedJobs:entries.filter(e=>e.completed&&e.assumed).length,
+    assumedCents:total(e=>e.assumed),confirmedCents:total(e=>!e.assumed),
     receiptedCents:entries.reduce((s,e)=>s+(e.receiptedCents??0),0),
     owingCents:entries.reduce((s,e)=>s+e.owingCents,0),
     missingPrices:entries.filter(e=>e.missingPrice).length,
+    pricesToReview:entries.filter(e=>e.priceReviewCents>0).length,
+    recalculatedPrices:entries.filter(e=>e.recalculatedPrice).length,
     undatedJobs:entries.filter(e=>e.completed&&!e.day).length,
     estimatedDates:entries.filter(e=>e.dateEstimated).length,
     firstDay:entries.find(e=>e.completed&&e.day)?.day||''};

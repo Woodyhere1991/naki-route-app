@@ -1,4 +1,7 @@
 import {validDay} from './earnings-model.js';
+export function isTestBooking(name,email=''){
+  return /^(?:test|testing|test (?:customer|booking|person|user)|(?:test|testing)\s+(?:test|testing))$/i.test(String(name||'').trim())||/@(?:example\.(?:test|com)|[^@]+\.test)$/i.test(String(email));
+}
 export function cleanItem(value) {
   const text=String(value??'').replace(/<[^>]*>/g,'').replace(/\s+/g,' ').trim().slice(0,120);
   return /^(?:none|null|n\/?a|select|choose|please select|please choose)(?:\b|$)/i.test(text)?'':text;
@@ -46,10 +49,12 @@ export function mergeStatsRows(rows,entries=[]) {
     const sorted=group.rows.sort((a,b)=>(b.rank||0)-(a.rank||0)),primary=sorted[0];
     const money=[...group.aliases].map(a=>moneyByAlias.get(a)).find(Boolean);
     const find=field=>sorted.find(r=>field==='items'?r.items?.length:field==='town'?r.town&&r.town!=='Town not recorded':r[field]);
-    const cancelled=primary.cancelled===true,completed=!cancelled&&(money?money.completed:primary.completed===true);
+    const cancelled=primary.cancelled===true||primary.test===true||!(primary.rank>0)&&sorted.some(r=>r.cancelled||r.test),completed=!cancelled&&(money?money.completed:sorted.some(r=>r.completed));
     result.push({key:primary.key,aliases:[...group.aliases],name:find('name')?.name||'',customerId:find('customerId')?.customerId||'',
       town:find('town')?.town||'Town not recorded',items:find('items')?.items||[],referral:find('referral')?.referral||'',
-      completed,cancelled,archived:sorted.some(r=>r.archived),cents:completed?(money?.cents??primary.cents??0):primary.cents,
+      completed,cancelled,test:sorted.some(r=>r.test),assumed:money?.assumed??primary.assumed??false,archived:sorted.some(r=>r.archived),cents:money?.cents??sorted.find(r=>Number.isSafeInteger(r.cents)&&r.cents>=0)?.cents??null,
+      priceReviewCents:money?.priceReviewCents??find('priceReviewCents')?.priceReviewCents??null,
+      recalculatedPrice:money?.recalculatedPrice??primary.recalculatedPrice??false,
       requestedDay:find('requestedDay')?.requestedDay||'',completedDay:completed?(money?.day||find('completedDay')?.completedDay||''):'',
       dateEstimated:money?.dateEstimated||false,source:primary.source});
   }
@@ -58,7 +63,7 @@ export function mergeStatsRows(rows,entries=[]) {
   return result;
 }
 export function aggregateStats(rows,{lens='completed',from='',to=''}={}) {
-  const selected=rows.map(r=>({...r,day:lens==='history'?r.requestedDay:r.completedDay})).filter(r=>(lens==='history'||r.completed)&&(!from||r.day>=from)&&(!to||r.day<=to));
+  const selected=rows.map(r=>({...r,day:lens==='history'?r.requestedDay:r.completedDay})).filter(r=>(lens==='history'||r.completed&&(lens!=='confirmed'||!r.assumed))&&(!from||r.day>=from)&&(!to||r.day<=to));
   const items=new Map(),towns=new Map(),customers=new Map(),months=new Map(),weekdays=new Map(),referrals=new Map(),days=new Map();
   let itemTotal=0,multiItemJobs=0,unknownItemJobs=0,totalCents=0,largestJob=null;
   for(const row of selected){
@@ -83,7 +88,7 @@ export function aggregateStats(rows,{lens='completed',from='',to=''}={}) {
   }
   const repeatCustomers=[...customers.values()].filter(c=>c.jobs>1);
   const rank=list=>list.sort((a,b)=>b.jobs-a.jobs||b.cents-a.cents||String(a.label||a.name).localeCompare(String(b.label||b.name)));
-  return {lens,jobs:selected.length,itemTotal,fridges:items.get('Fridges')||0,freezers:items.get('Freezers')||0,
+  return {lens,jobs:selected.length,assumedJobs:selected.filter(r=>r.assumed).length,itemTotal,fridges:items.get('Fridges')||0,freezers:items.get('Freezers')||0,
     fridgeOrFreezer:items.get('Fridge or upright freezer')||0,uniqueCustomers:customers.size,repeatCustomers:repeatCustomers.length,
     repeatJobs:repeatCustomers.reduce((s,c)=>s+c.jobs,0),multiItemJobs,unknownItemJobs,totalCents,
     averageJobCents:selected.length?Math.round(totalCents/selected.length):0,averageItems:selected.length?itemTotal/selected.length:0,

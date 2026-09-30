@@ -4,7 +4,7 @@
   const ready=Promise.all([import('./earnings-model.js'),import('./business-stats.js')]).then(([value,stats])=>{model=value;statsUI=stats;});
   const money=cents=>new Intl.NumberFormat('en-NZ',{style:'currency',currency:'NZD',maximumFractionDigits:2}).format(cents/100);
   const section=document.createElement('section');section.id='earningsPage';section.className='view-panel view-earnings';
-  section.innerHTML=`<div class="earnings-head"><div><h1>Earnings</h1><p>Your completed work, at a glance.</p></div><button id="earningsRefresh" class="ghost">Refresh</button></div>
+  section.innerHTML=`<div class="earnings-head"><div><h1>Earnings</h1><p>Your completed work, at a glance.</p></div><div class="earnings-head-actions"><button class="ghost" onclick="setAppView('customers')">Customers</button><button id="earningsRefresh" class="ghost">Refresh</button></div></div>
     <p class="earnings-note">Owner only · New Zealand dollars · Before expenses</p>
     <div id="earningsStatus" role="status" class="earnings-note"></div>
     <div id="earningsContent" hidden></div>`;
@@ -30,7 +30,7 @@
     return model.stopRows(store);
   }
   function entries() {
-    const local=localRows(),keys=new Set(local.map(r=>r.key));
+    const clearance=report?.invoiceClearance;const local=localRows().map(r=>((clearance?.stopIds||[]).includes(r.key)||r.aliases.some(a=>(clearance?.bookingIds||[]).includes(a)))&&!(r.invoiceAt>clearance.cutoff)?{...r,owing:false}:r),keys=new Set(local.map(r=>r.key));
     const remote=(report?.records||[]).filter(r=>r.kind!=='stop'||!keys.has(r.key));
     return model.buildEntries([...remote,...local]);
   }
@@ -86,9 +86,11 @@
     const number=(label,value,detail,extra='')=>`<div class="earnings-number ${extra}"><span>${label}</span><strong>${money(value)}</strong><small>${detail}</small></div>`;
     const warnings=[];
     if(report.stats?.sources?.unavailable)warnings.push('Historical source snapshot unavailable. These totals contain current saved bookings and receipts only.');
-    if(summary.missingPrices)warnings.push(`${summary.missingPrices} completed job${summary.missingPrices===1?' has':'s have'} no saved price and ${summary.missingPrices===1?'is':'are'} excluded from the money total.`);
+    if(summary.missingPrices)warnings.push(`${summary.missingPrices} completed job${summary.missingPrices===1?' has':'s have'} no usable saved price and ${summary.missingPrices===1?'is':'are'} excluded from the money total.`);
+    if(summary.recalculatedPrices)warnings.push(`${summary.recalculatedPrices} incorrect older calculator prices were recalculated from your current appliance rates and any recorded travel fee.`);
+    if(summary.pricesToReview)warnings.push(`${summary.pricesToReview} older calculator amounts look unusually high and need checking. Their collections count, but these amounts are excluded.`);
     if(summary.undatedJobs)warnings.push(`${summary.undatedJobs} job${summary.undatedJobs===1?' has':'s have'} no completion date. Included in All-time only.`);
-    if(summary.estimatedDates)warnings.push(`${summary.estimatedDates} older job date${summary.estimatedDates===1?' uses':'s use'} the saved pickup day.`);
+    if(summary.estimatedDates)warnings.push(`${summary.estimatedDates} older job date${summary.estimatedDates===1?' uses':'s use'} the saved pickup or submission day.`);
     document.getElementById('earningsStatus').textContent=`Checked ${new Date(report.asOf).toLocaleTimeString('en-NZ',{timeZone:'Pacific/Auckland',hour:'numeric',minute:'2-digit'})} · ${summary.jobs} completed jobs recorded`;
     const tabs=`<div class="earnings-tabs" aria-label="Earnings page"><button data-earnings-tab="earnings" aria-pressed="${tab==='earnings'}">Earnings</button><button data-earnings-tab="stats" aria-pressed="${tab==='stats'}">Business stats</button></div>`;
     if(tab==='stats'){
@@ -102,7 +104,7 @@
       ${number('Today',summary.todayCents,'NZ collection day')}${number('This week',summary.weekCents,'Monday to today')}
       ${number('This month',summary.monthCents,'Month to today')}${number('All-time recorded',summary.allTimeCents,summary.firstDay?'Records from '+label(summary.firstDay):'Available saved history','total')}</div>
       <div class="earnings-secondary"><p>Receipted<b>${money(summary.receiptedCents)}</b></p><p>Invoices still owing<b>${money(summary.owingCents)}</b></p></div>
-      <p class="earnings-note">Completed work uses each booking’s saved price, or its latest saved receipt amount. A Done booking alone does not confirm payment. Totals are before fuel, disposal and other expenses. Older requests without collection evidence are excluded. See Business stats for the wider booking history.</p>
+      <p class="earnings-note">Completed work uses each booking’s saved price, or its latest saved receipt amount. A Done booking alone does not confirm payment. Totals are before fuel, disposal and other expenses. Older bookings are counted as collected unless there is evidence otherwise. Historical dates use the saved pickup or submission day when needed.</p>
       ${warnings.length?`<div class="earnings-warning">${warnings.map(esc).join('<br>')}</div>`:''}
       <div class="card"><div class="earnings-chart-title"><h2>Earnings over time</h2><strong>${money(buckets.reduce((s,b)=>s+b.cents,0))}</strong></div>
       <div class="earnings-periods" aria-label="Chart period">${[['7','7 days'],['30','30 days'],['12','12 months'],['all','All-time']].map(([key,text])=>`<button class="ghost" data-earnings-period="${key}" aria-pressed="${period===key}">${text}</button>`).join('')}</div>

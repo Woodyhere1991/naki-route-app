@@ -5,6 +5,8 @@ import { kidsActivityReport } from "./kids-activity.js";
 import { scoreReviewReason } from "./score-validation.js";
 import { handleApiKeys } from "./api-keys.js";
 import { earningsReport } from './earnings.js';
+import {readInvoiceClearance,clearedDocuments} from './invoice-clearance.js';
+import {customerDirectoryDetails} from './customer-details.js';
 export const OWNER_EMAIL = "nakiwreckremoval@gmail.com";
 // Addresses allowed to sign in as the owner. OWNER_EMAIL stays the one that
 // receives booking alerts; this list is only about who can log in, so Woody can
@@ -1749,6 +1751,7 @@ function bookingDocumentFrom(row) {
     address: row.address || "",
     filename: row.filename || "",
     hasPdf: Boolean(row.r2_key),
+    cleared:row.cleared===true,
     createdAt: new Date(row.created_at).toISOString()
   };
 }
@@ -1758,7 +1761,7 @@ async function customerDocuments(env, address) {
   const rows = await env.CUSTOMER_DB.prepare(
     "SELECT * FROM booking_documents WHERE email = ?1 COLLATE NOCASE ORDER BY created_at DESC LIMIT 50"
   ).bind(address).all();
-  return (rows.results || []).map(bookingDocumentFrom);
+  return clearedDocuments(rows.results||[],await readInvoiceClearance(env)).map(bookingDocumentFrom);
 }
 
 export async function handlePortalRequest({ request, env, path, json, sendMail, integrationSession = null }) {
@@ -3296,7 +3299,8 @@ export async function handlePortalRequest({ request, env, path, json, sendMail, 
         list.push(bookingDocumentFrom(documentRow));
         documentsByEmail.set(key, list);
       }
-      const customers = (rows.results || []).map(row => ({
+      const directoryRows=await customerDirectoryDetails(env,rows.results||[]);
+      const customers = directoryRows.map(row => ({
         id: row.id,
         ...profileFrom(row),
         bookings: Number(row.booking_count || 0),
@@ -3656,7 +3660,7 @@ export async function handlePortalRequest({ request, env, path, json, sendMail, 
           || [];
         const latestInvoice = documents.find(document => document.kind === "INVOICE");
         const latestReceipt = documents.find(document => document.kind === "RECEIPT");
-        const invoiceOwing = Boolean(latestInvoice) && (!latestReceipt || latestInvoice.createdAt > latestReceipt.createdAt);
+        const invoiceOwing = Boolean(latestInvoice)&&!latestInvoice.cleared && (!latestReceipt || latestInvoice.createdAt > latestReceipt.createdAt);
         return {
           ...bookingFrom(row),
           ownerNote:ownerNotes.get(row.id)||"",
@@ -3665,9 +3669,7 @@ export async function handlePortalRequest({ request, env, path, json, sendMail, 
           invoiceOwing
         };
       });
-      return json(request, {
-        bookings, ...pagination
-      });
+      return json(request, {bookings, ...pagination,invoiceClearance:await readInvoiceClearance(env)});
     }
 
     // Photos a customer attached to a website booking.
@@ -4001,5 +4003,6 @@ async function ownerListPage(request, env, query, kind) {
     }
     documentRows.results.sort((a,b)=>Number(b.created_at)-Number(a.created_at));
   }
+  documentRows.results=clearedDocuments(documentRows.results,await readInvoiceClearance(env));
   return {rows,documentRows,pagination:{hasMore,pageSize,nextOffset:offset+rows.results.length}};
 }
