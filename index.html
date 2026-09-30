@@ -891,6 +891,8 @@ let pendingInvoices = {};   // stop id -> built invoice PDF, waiting for the Sen
 // Lives up here with the other state because the Bookings renderer reads it to
 // show "Invoice preview" instead of "Send invoice" while one is waiting.
 const pendingBookingInvoices = {};
+const pendingBookingReceipts = {};
+const bookingReceiptBuildBusy = new Set(), receiptSendBusy = new Set();
 let ownerToken = localStorage.getItem(OWNER_TOKEN_KEY) || "";
 let directBookingRows = [];
 let bookingSearchText = "";
@@ -1801,10 +1803,7 @@ function renderDirectBookings(){
     // in the same row underneath, so no two owing cards are laid out differently.
     const owingBox=b.invoiceOwing ? `<div class="owing-note"><b>💰 Owing · $${owingAmount.toFixed(2)}</b>
       ${stageLine}
-      ${/* No stop on this phone means Mark paid and Send receipt have nothing to
-            act on. Naming the buttons and the exact way to get them back, because
-            "refresh this phone's saved runs" pointed at nothing you can tap. */""}
-      ${unpaid?"":`<div class="small" style="margin-top:6px">This phone hasn't got the pickup record for this invoice, so <b>💰 Mark paid</b> and <b>🧾 Send receipt</b> aren't here. To get them: <b>Add &amp; setup</b> → <b>My runs on other phones</b> → <b>Restore from my account</b>.</div>`}</div>` : "";
+      ${unpaid?"":`<div class="small" style="margin-top:6px">Use <b>🧾 Send receipt</b> below once this collection has been paid.</div>`}</div>` : "";
     const bookingWorkflowActions=b._localOnly ?
       `<button class="ghost sm" onclick="editStop('${b._unpaidStopId}')">✎ Edit pickup</button>` :
       (["CANCELLED","DECLINED"].includes(b.status)
@@ -1822,6 +1821,8 @@ function renderDirectBookings(){
     const invoiceAction=(b._localOnly || unpaid || !goodEmail(b.email)) ? "" : (pendingBookingInvoices[b.id]
       ? `<button class="good sm" data-invoice-direct="${esc(b.id)}">👁 Invoice preview</button><button class="ghost sm" title="Throw this invoice away and start again" data-invoice-cancel="${esc(b.id)}">↺ Redo</button>`
       : `<button class="ghost sm" title="Email this customer an invoice" data-invoice-direct="${esc(b.id)}">📄 ${b.invoiceOwing?"Invoice again":"Send invoice"}</button>`);
+    const receiptAction=(b._localOnly || unpaid || ["CANCELLED","DECLINED"].includes(b.status)) ? "" :
+      `<button class="good sm" data-receipt-direct="${esc(b.id)}" ${bookingReceiptBuildBusy.has(b.id)||receiptSendBusy.has(b.id)?"disabled":""}>🧾 ${pendingBookingReceipts[b.id]?"Receipt preview":b.receiptSent||(b.documents||[]).some(doc=>doc.kind==="RECEIPT")?"Send receipt again":"Send receipt"}</button>`;
     /* Four jobs of work, four labelled rows. One flat row of a dozen buttons made
        reaching the customer, chasing the money, working the job and tidying the
        card all look like the same thing. Nothing is hidden and nothing costs an
@@ -1837,6 +1838,7 @@ function renderDirectBookings(){
     ].filter(Boolean).join("");
     const moneyActions=[
       unpaidMoneyActions,
+      receiptAction,
       invoiceAction,
       remindAction,
       // Taking an invoice off the owing list without pretending it was paid. This
@@ -1968,6 +1970,7 @@ function renderDirectBookings(){
   });
   list.querySelectorAll("[data-owner-document]").forEach(button=>button.onclick=()=>openOwnerDocument(button.dataset.ownerDocument));
   list.querySelectorAll("[data-invoice-direct]").forEach(button=>button.onclick=()=>invoiceDirectBooking(button.dataset.invoiceDirect));
+  list.querySelectorAll("[data-receipt-direct]").forEach(button=>button.onclick=()=>receiptDirectBooking(button.dataset.receiptDirect));
   list.querySelectorAll("[data-invoice-cancel]").forEach(button=>button.onclick=()=>{
     delete pendingBookingInvoices[button.dataset.invoiceCancel];
     renderDirectBookings();
@@ -1985,6 +1988,38 @@ function renderDirectBookings(){
 // build the PDF, show it in the same preview with Change amount / Send - so the
 // invoice is never emailed without being looked at first. Passing the booking's
 // own id is what files it against this booking instead of leaving it floating.
+async function receiptDirectBooking(id, askAmount=false){
+  const b=directBookingRows.find(row=>row.id===id);
+  if(!b || bookingReceiptBuildBusy.has(id) || receiptSendBusy.has(id))return;
+  if(pendingBookingReceipts[id]&&!askAmount)return openReceiptPreview(id);
+  bookingReceiptBuildBusy.add(id);renderDirectBookings();
+  try{
+    await ensurePdf();
+    if(!window.jspdf)throw Error("The PDF maker didn't load — check your connection and try again.");
+    const previous=pendingBookingReceipts[id];
+    let amount=previous?.asStop.receiptAmount??bookingPriceFor(b);
+    if(amount==null||!Number.isFinite(Number(amount))||Number(amount)<0||askAmount){
+      const entered=await openEditForm({title:"🧾 Receipt for "+([b.firstName,b.lastName].filter(Boolean).join(" ")||"this customer"),
+        note:"Sending the receipt marks this booking paid and completed.",saveLabel:"Preview receipt",
+        fields:[{key:"amount",label:"Amount paid ($)",value:amount!=null?String(amount):"",inputmode:"decimal",validate:v=>parseMoney(v)===null?"Enter the amount as a number.":""}]});
+      if(!entered)return;
+      amount=parseMoney(entered.amount);
+    }
+    const asStop={id:"booking:"+id,src:"direct",submission_id:id,
+      first_name:b.firstName||"",last_name:b.lastName||"",street:b.streetAddress||"",town:b.town||"",phone:b.phone||"",email:b.email||"",
+      appliances:b.items?.length?b.items.slice():["Whiteware"],amount,receiptAmount:amount,
+      receiptIncludeReview:previous?.asStop.receiptIncludeReview!==false,
+      reminderId:bookingInvoiceStore()[id]?.reminderId||""};
+    directStatus("Building the receipt…");
+    asStop.profileUrl=await customerProfileLink(asStop);
+    const blob=await buildReceiptPdf(asStop,amount);
+    // A preview is paperwork only. It does not add a Scheduled stop or mark paid.
+    if(!ownerToken||!directBookingRows.some(row=>row.id===id))return;
+    pendingBookingReceipts[id]={asStop,file:new File([blob],`Receipt - ${(fullName(asStop)||"pickup").replace(/[^\w \-]/g,"")}.pdf`,{type:"application/pdf"})};
+    directStatus("");openReceiptPreview(id);
+  }catch(error){directStatus("Couldn't build that receipt: "+error.message,true);}
+  finally{bookingReceiptBuildBusy.delete(id);renderDirectBookings();}
+}
 async function invoiceDirectBooking(id, askAmount){
   const b=directBookingRows.find(row=>row.id===id); if(!b) return;
   const who=[b.firstName,b.lastName].filter(Boolean).join(" ")||"this customer";
@@ -2445,6 +2480,7 @@ async function deleteDirectBooking(id){
     });
     state.unpaid=(state.unpaid||[]).filter(stop=>stop.submission_id!==id && stop.unpaidSourceId!==id);
     const invoices=bookingInvoiceStore(); delete invoices[id];
+    delete pendingBookingReceipts[id];delete pendingBookingInvoices[id];
     restoreInvoiceOwing(id);
     runStore.shared.pendingDirectCompletions=(runStore.shared.pendingDirectCompletions||[]).filter(bookingId=>bookingId!==id);
     save(); render(); if (typeof drawRoute==="function") drawRoute();
@@ -2486,6 +2522,8 @@ $("#ownerCode").addEventListener("keydown",event=>{ if(event.key==="Enter"){even
 $("#ownerLogout").onclick=async()=>{
   const token=ownerToken;
   ownerToken="";localStorage.removeItem(OWNER_TOKEN_KEY);window.nakiEarnings?.clear();
+  for(const id of Object.keys(pendingBookingReceipts))delete pendingBookingReceipts[id];
+  closeReceiptPreview();
   directBookingRows=[];customerRows=[];renderDirectBookings();renderCustomers();refreshCloudBackupInfo();
   if(token){try{const res=await boundedFetch(`${API}/owner/logout`,{method:'POST',headers:{Authorization:`Bearer ${token}`}});if(!res.ok)throw Error('Could not revoke sign-in');}catch{directStatus('Signed out on this phone. Reconnect to revoke the old server sign-in.',true);}}
 };
@@ -6447,8 +6485,9 @@ window.receiptStop = async (id, askAmount) => {
 // Full-screen preview of the built PDF with Close / Send underneath.
 let receiptPreviewUrl = null;
 window.openReceiptPreview = id => {
-  const file = pendingReceipts[id]; if (!file) return;
-  const s = findStop(id);
+  const bookingReceipt=pendingBookingReceipts[id];
+  const file = bookingReceipt?.file||pendingReceipts[id]; if (!file) return;
+  const s = bookingReceipt?.asStop||findStop(id);
   const wrapEl = document.getElementById("receiptPreview");
   const option=document.getElementById('receiptReviewOption'),toggle=document.getElementById('receiptIncludeReview');
   option.hidden=false;toggle.checked=s?.receiptIncludeReview!==false;
@@ -6456,7 +6495,9 @@ window.openReceiptPreview = id => {
     const wanted=toggle.checked,send=document.getElementById('receiptSendBtn');send.disabled=true;toggle.disabled=true;
     try{
       const blob=await buildReceiptPdf(s,Number(s.receiptAmount??s.amount??0),wanted);
-      pendingReceipts[id]=new File([blob],file.name,{type:'application/pdf'});s.receiptIncludeReview=wanted;save();
+      const updated=new File([blob],file.name,{type:'application/pdf'});
+      if(bookingReceipt)bookingReceipt.file=updated;else pendingReceipts[id]=updated;
+      s.receiptIncludeReview=wanted;if(!bookingReceipt)save();
       if(wrapEl.style.display!=='none')openReceiptPreview(id);
     }catch(error){toggle.checked=s?.receiptIncludeReview!==false;alert('Could not update the receipt. Your previous preview is kept.');}
     finally{send.disabled=document.getElementById("receiptFrame").dataset.ready!=="true";toggle.disabled=false;}
@@ -6470,6 +6511,7 @@ window.openReceiptPreview = id => {
   // Wrong amount? Drop the built PDF and re-ask (prefilled with the current amount).
   document.getElementById("receiptRedoBtn").onclick = () => {
     closeReceiptPreview();
+    if(bookingReceipt)return receiptDirectBooking(id,true);
     delete pendingReceipts[id];
     render();
     receiptStop(id, true);
@@ -6490,12 +6532,18 @@ async function fileToBase64(file){
   return btoa(bin);
 }
 window.sendReceipt = async id => {
-  const s = findStop(id);
-  const file = pendingReceipts[id];
+  const bookingReceipt=pendingBookingReceipts[id];
+  const s = bookingReceipt?.asStop||findStop(id);
+  const file = bookingReceipt?.file||pendingReceipts[id];
   if (!s || !file){ render(); return; }
+  const sendKey=s.submission_id||id;
+  if(receiptSendBusy.has(sendKey))return;
+  receiptSendBusy.add(sendKey);renderDirectBookings();
+  try{
   const earningsBefore=window.nakiEarnings?.capture();
   const done = async () => {
     delete pendingReceipts[id];
+    delete pendingBookingReceipts[id];
     s.receiptSent = true;
     s.status = "DONE";
     s.historyStatus = "COMPLETED";
@@ -6507,7 +6555,19 @@ window.sendReceipt = async id => {
     }
     await cancelReminderFor(s);
     if (s.submission_id) dismissInvoiceOwing(s.submission_id);
-    await settleInvoiceTwins(s);
+    if(bookingReceipt){
+      const booking=directBookingRows.find(row=>row.id===id);
+      if(booking){
+        booking.receiptSent=true;booking.invoiceOwing=false;booking.status="COMPLETED";
+        const pool=allRunStates().flatMap(data=>(data.stops||[]).concat(data.bad||[])).concat(state.unpaid||[]);
+        for(const twin of pool.filter(stop=>stopBelongsToBooking(stop,booking))){
+          twin.paid=true;twin.receiptSent=true;twin.status="DONE";twin.historyStatus="COMPLETED";
+          twin.collectedAt=twin.collectedAt||s.collectedAt;twin.receiptAmount=s.receiptAmount;
+          await cancelReminderFor(twin);
+        }
+        rememberBookingInvoice(id,{collected:true,reminderId:"",reminderDate:"",reminderRepeat:0});
+      }
+    }else await settleInvoiceTwins(s);
     save(); render(); drawRoute();
     if (s.src==="direct" && s.submission_id){
       queueDirectCompletion(s.submission_id);
@@ -6583,6 +6643,7 @@ window.sendReceipt = async id => {
   // The Gmail link only opens a COMPOSE window with no attachment. This is a
   // prepared receipt, not a sent one, so it is never marked paid here.
   flash("📄 Receipt prepared — attach the PDF and send it, then tap ✓ Done to mark it paid.");
+  }finally{receiptSendBusy.delete(sendKey);renderDirectBookings();}
 };
 
 /* ---------- Invoices (unpaid pickups) ---------- */
