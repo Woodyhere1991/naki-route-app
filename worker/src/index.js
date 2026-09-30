@@ -790,7 +790,7 @@ async function handlePickupArea(request,env) {
   let address;try{address=JSON.parse(raw);}catch{return json(request,{error:'Check the address and try again.'},400);}
   if(!address||typeof address!=='object'||Array.isArray(address))return json(request,{error:'Check the address and try again.'},400);
   const hash=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(JSON.stringify([address.street,address.town,address.area]))))).map(n=>n.toString(16).padStart(2,'0')).join('');
-  const key=cacheRequest(request,'pickup-distance-20260930-v1',[hash]);
+  const key=cacheRequest(request,'pickup-distance-20261001-v2',[hash]);
   const stored=await caches.default.match(key);if(stored)return noStore(stored);
   const data=await measurePickupArea(address,{lookup:(args,signal)=>pickupAddressLookup(env,args,signal)});
   const response=json(request,data);

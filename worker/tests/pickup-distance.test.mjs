@@ -2,15 +2,16 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import worker,{pickupAddressLookup} from '../src/index.js';
 import coverage from '../src/pickup-coverage.json' with {type:'json'};
-import {distanceBand,measurePickupArea,roadDistances,candidatesFor} from '../src/pickup-distance.js';
+import {distanceBand,measurePickupArea} from '../src/pickup-distance.js';
 import {inGeometry,intersection,metres} from '../src/pickup-geometry.js';
+import {reverseDistances,localRoadDistances} from '../src/pickup-road-graph.js';
 const address={street:'356 Ngatimaru Road',town:'Waitara',area:'Tikorangi'};
 const lookup=async()=>({label:'356 Ngatimaru Road, Tikorangi, Waitara',lat:-39.03418755,lng:174.2788872833,exact:true});
-const fakeTable=(distance=3900)=>async url=>{
- const u=new URL(url),coords=u.pathname.split('/').at(-1).split(';').map(s=>s.split(',').map(Number));
- const indexes=u.searchParams.get('destinations').split(';').map(Number);
- return Response.json({code:'Ok',sources:[{distance:1,location:coords[0]}],destinations:indexes.map(i=>({distance:1,location:coords[i]})),distances:[indexes.map(()=>distance)]});
-};
+const graphFixture=(distance=3900,dir=3)=>({
+ nodes:[[174.278887,-39.034188,distance,distance,0,1],[174.279887,-39.034188,distance+86.37,distance+86.37,0,1]],
+ segments:[[0,1,dir,0,1]],names:['Ngatimaru Road',''],places:['Waitara','Outlying route'],cells:{'17427,-3904':[0],'17428,-3904':[0]}
+});
+const fixtureData=distance=>({towns:[],corridors:[],graph:graphFixture(distance)});
 
 test('distance bands preserve the fees and ask around 5/10 km',()=>{
  for(const [m,key] of [[0,'town'],[3900,'under5km'],[4899,'under5km'],[4900,''],[5000,''],[5100,''],[5101,'6to10km'],[9899,'6to10km'],[10000,''],[10101,'over10km']])assert.equal(distanceBand(m),key,String(m));
@@ -29,16 +30,17 @@ test('road data follows SH3/SH3A and SH45 instead of treating inland shortcuts a
  assert.ok(coverage.towns.find(t=>t.name==='New Plymouth'));
 });
 test('postal main town does not turn a rural street into a free pickup',async()=>{
- const r=await measurePickupArea(address,{lookup,fetcher:fakeTable()});assert.equal(r.key,'under5km');assert.equal(r.distanceKm,3.9);assert.equal(r.cents,500);
+ const r=await measurePickupArea(address,{lookup,});assert.equal(r.key,'under5km');assert.equal(r.distanceKm,3.9);assert.equal(r.cents,500);
 });
 test('outlying rural addresses receive one $10 fee even when distance is under 5 km',async()=>{
- const r=await measurePickupArea({...address,town:'Oakura'},{lookup,fetcher:fakeTable()});assert.equal(r.key,'6to10km');assert.equal(r.cents,1000);
+ const r=await measurePickupArea({...address,town:'Oakura'},{lookup,});assert.equal(r.key,'6to10km');assert.equal(r.cents,1000);
 });
 test('missing, ambiguous, imprecise, out-of-region and failed maps require confirmation',async()=>{
  for(const point of [null,{lat:0,lng:0,exact:true},{lat:-39.03,lng:174.28,exact:false}])assert.equal((await measurePickupArea(address,{lookup:async()=>point})).key,'');
- assert.equal((await measurePickupArea(address,{lookup,fetcher:async()=>{throw Error('Offline');}})).key,'');
+ assert.equal((await measurePickupArea(address,{lookup:async()=>{throw Error('Offline');}})).key,'');
+ assert.equal((await measurePickupArea(address,{lookup,data:{...coverage,graph:null}})).key,'');
  assert.equal((await measurePickupArea({street:'No street number',town:'Waitara'},{lookup})).key,'');
- assert.equal((await measurePickupArea(address,{lookup,fetcher:fakeTable(5000)})).reason,'fee-boundary');
+ assert.equal((await measurePickupArea(address,{lookup,data:fixtureData(5000)})).reason,'fee-boundary');
 });
 test('town boundary and polygon holes are handled conservatively',async()=>{
  const geometry={type:'Polygon',coordinates:[[[174,-39],[174.02,-39],[174.02,-39.02],[174,-39.02],[174,-39]],[[174.005,-39.005],[174.01,-39.005],[174.01,-39.01],[174.005,-39.01],[174.005,-39.005]]]};
@@ -47,23 +49,42 @@ test('town boundary and polygon holes are handled conservatively',async()=>{
  assert.equal((await measurePickupArea(address,{data,lookup:async()=>({lat:-39.00001,lng:174.01,exact:true})})).reason,'town-boundary');
  assert.deepEqual(intersection([0,0],[2,0],[1,-1],[1,1]),[1,0]);
 });
-test('OSRM must return real distances, valid snapping and no crow-flight fallback',async()=>{
- const point=[174.27,-39.04],candidates=[{point:[174.28,-39.04],kind:'main'}];
- for(const change of [d=>d.sources[0].distance=81,d=>d.destinations[0].distance=61,d=>d.fallback_speed_cells=[[0,0]],d=>d.distances=[]]){
-  await assert.rejects(roadDistances(point,candidates,async u=>{const d=await(await fakeTable()(u)).json();change(d);return Response.json(d);}));
- }
- const distances=await roadDistances(point,candidates,async u=>{const d=await(await fakeTable()(u)).json();d.distances[0][0]=null;return Response.json(d);});assert.equal(distances[0].distance,null);
+test('the road graph computes the shortest connected drive and respects one-way roads',()=>{
+ const points=[[174,-39],[174.01,-39],[174.01,-39.01],[174,-39.01],[174.04,-39]],segments=[[0,1,1],[1,2,3],[2,3,3],[3,0,3]];
+ const measured=reverseDistances(5,segments,points,[{at:0,place:0}]);
+ assert.equal(measured.distances[0],0);
+ assert.equal(measured.distances[4],Infinity,'disconnected road is never a crow-flight route');
+ assert.ok(measured.distances[1]>metres(points[0],points[1])*2,'one-way road requires the connected return drive');
+ assert.ok(Math.abs(measured.distances[3]-metres(points[3],points[0]))<.01);
+ const boundary=reverseDistances(2,[[0,1,1]],points.slice(0,2),[{at:0,cost:400,place:2}]);
+ assert.equal(boundary.distances[0],400);assert.equal(boundary.distances[1],Infinity);
 });
-test('branch and bound checks a farther-looking road access that gives a shorter drive',async()=>{
- const point=[174.27,-39.04],gates=Array.from({length:15},(_,i)=>({point:[174.27+(i+1)*.001,-39.04],kind:'main',name:'Access '+i}));
- const data={towns:[],corridors:[],gates};let checked=0;
- const r=await measurePickupArea(address,{data,lookup:async()=>({lat:point[1],lng:point[0],exact:true}),fetcher:async u=>{const d=await(await fakeTable()(u)).json();checked+=d.distances[0].length;d.distances[0]=d.destinations.map(p=>metres(p.location,gates[14].point)<2?600:6000);return Response.json(d);}});
- assert.equal(checked,15);assert.equal(r.distanceKm,.6);assert.equal(r.key,'under5km');
+test('local road snapping requires the registered street and handles partial town boundary edges',()=>{
+ const graph=graphFixture(3900),point=[174.278887,-39.034188];
+ assert.equal(localRoadDistances(point,'Wrong Road',graph),null);
+ assert.equal(localRoadDistances([174.278887,-39.04],'Ngatimaru Road',graph),null);
+ assert.equal(localRoadDistances(point,'Ngatimaru Road',graph).main.distance,3900);
+ graph.segments[0].push([[.5,0]],[],0);
+ assert.ok(localRoadDistances(point,'Ngatimaru Road',graph).main.distance<44);
+ graph.segments[0][2]=2;
+ assert.equal(localRoadDistances(point,'Ngatimaru Road',graph).main.distance,3900,'cannot travel forward on a reverse one-way edge');
 });
-test('a short driveway on a matching covered main road stays free, a different road does not',async()=>{
- const point=[174.27,-39.04],data={towns:[],gates:[{point:[174.2701,-39.04],kind:'main',name:'Junction Road'}],corridors:[{line:[[174.27,-39.05],[174.27,-39.03]],kind:'main',name:'SH3',namedSegments:[{name:'Junction Road',segments:[[[174.27,-39.05],[174.27,-39.03]]]}]}]};
- for(const [road,key] of [['Junction Road','town'],['Other Road','under5km']]){
-  const r=await measurePickupArea({street:'1052 '+road,town:'Inglewood'},{data,lookup:async()=>({label:'1052 '+road,lat:point[1],lng:point[0],exact:true}),fetcher:fakeTable(80)});assert.equal(r.key,key);
+test('a short driveway on a matching covered main road stays free, a side road does not',async()=>{
+ const point=[174.278887,-39.034188],data=fixtureData(10);
+ data.graph.names[0]='Junction Road';data.corridors=[{line:[[174.278887,-39.05],[174.278887,-39.03]],kind:'main',name:'SH3',namedSegments:[{name:'Junction Road',segments:[[[174.278887,-39.05],[174.278887,-39.03]]]}]}];
+ const r=await measurePickupArea({street:'1052 Junction Road',town:'Inglewood'},{data,lookup:async()=>({label:'1052 Junction Road',lat:point[1],lng:point[0],exact:true})});assert.equal(r.key,'town');
+ data.graph.names[0]='Other Road';
+ const side=await measurePickupArea({street:'1 Other Road',town:'Inglewood'},{data,lookup:async()=>({label:'1 Other Road',lat:point[1],lng:point[0],exact:true})});assert.equal(side.key,'under5km');
+});
+test('public rural landmarks match independently checked road distances and fee bands',async()=>{
+ for(const [area,street,town,lat,lng,key,distance] of [
+ ['Ratapiko','4 Ratapiko Road','Inglewood',-39.2003096333,174.3224364667,'6to10km',8.89],
+ ['Kaimata','715 Tarata Road','Inglewood',-39.1619848333,174.2920634333,'6to10km',7.19],
+ ['Egmont Village','1052 Junction Road','Inglewood',-39.14634735,174.1459820833,'town',0],
+ ['Rotokare','365 Sangster Road','Eltham',-39.4511767833,174.39873425,'over10km',12.03],
+ ['Makahu','835 Brewer Road','Stratford',-39.292985,174.6309950333,'over10km',null]]){
+  const r=await measurePickupArea({street,town,area},{lookup:async()=>({lat,lng,label:street+', '+area+', '+town,exact:true})});
+  assert.equal(r.key,key,area);if(distance!==null)assert.ok(Math.abs(r.distanceKm-distance)<=.1,area);else assert.equal(r.distanceKm,undefined);
  }
 });
 test('known town disambiguation recognises Hāwera macrons and never accepts the other Tawa Street',async()=>{
@@ -78,7 +99,7 @@ test('public measurement API validates requests and respects origin/rate limits'
  assert.equal((await worker.fetch(request(),{BOT_RATE_LIMIT:{limit:async()=>({success:false})}})).status,429);
 });
 test('supplied coordinates, rural band and claimed distance cannot override the server measurement',async()=>{
- const r=await measurePickupArea({...address,lat:-39.161,lng:174.205,distanceKm:0,rural:'town'},{lookup,fetcher:fakeTable(3900)});assert.equal(r.key,'under5km');assert.equal(r.cents,500);
+ const r=await measurePickupArea({...address,lat:-39.161,lng:174.205,distanceKm:0,rural:'town'},{lookup,});assert.equal(r.key,'under5km');assert.equal(r.cents,500);
 });
 test('API caches successful checks only and keeps the browser response no-store',async()=>{
  const oldFetch=globalThis.fetch,oldCaches=globalThis.caches,stored=new Map();let calls=0;

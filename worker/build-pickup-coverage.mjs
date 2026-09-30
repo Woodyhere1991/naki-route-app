@@ -2,6 +2,7 @@
 // Run from the business root after downloading the public inputs to tmp/.
 import fs from 'node:fs';
 import {inGeometry,nearestLine,intersection,metres} from './src/pickup-geometry.js';
+import {reverseDistances} from './src/pickup-road-graph.js';
 const root=new URL('../../',import.meta.url);
 const read=name=>JSON.parse(fs.readFileSync(new URL('tmp/'+name,root)));
 const main=new Set(['New Plymouth','Waitara','Inglewood','Stratford','Eltham','Hawera']);
@@ -46,7 +47,7 @@ for(const town of towns){
       if(Math.max(a[0],b[0])<box[0]||Math.min(a[0],b[0])>box[2]||Math.max(a[1],b[1])<box[1]||Math.min(a[1],b[1])>box[3])continue;
       for(const [c,d] of edges){
         if(Math.max(a[0],b[0])<Math.min(c[0],d[0])||Math.min(a[0],b[0])>Math.max(c[0],d[0])||Math.max(a[1],b[1])<Math.min(c[1],d[1])||Math.min(a[1],b[1])>Math.max(c[1],d[1]))continue;
-        const hit=intersection(a,b,c,d);if(hit)gates.push({point:hit,kind:town.kind,name:town.name});
+        const hit=intersection(a,b,c,d);if(hit)gates.push({point:hit,kind:town.kind,name:town.name,aId:way.nodes[i-1],bId:way.nodes[i],t:metres(a,hit)/metres(a,b)});
       }
     }
   }
@@ -58,7 +59,25 @@ for(const corridor of corridors){
   for(const p of [corridor.line[0],corridor.line.at(-1)])gates.push({point:p,kind:corridor.kind,name:corridor.name});
 }
 const unique=[];for(const gate of gates)if(!unique.some(g=>g.kind===gate.kind&&metres(g.point,gate.point)<15))unique.push(gate);
-const data={version:'20260930-v1',builtAt:new Date().toISOString(),sources:{towns:'Stats NZ Urban Rural Areas 2026, high definition, CC BY 4.0',townUrl:'https://services2.arcgis.com/vKb0s8tBIA3bdocZ/ArcGIS/rest/services/Urban_Rural_Areas_2026/FeatureServer/0',roads:'© OpenStreetMap contributors, ODbL; OSRM road routes and public junctions',roadUrl:'https://www.openstreetmap.org/copyright'},towns,corridors,gates:unique};
+const ids=[...new Set(ways.flatMap(w=>w.nodes))],nodeIndexes=new Map(ids.map((id,i)=>[id,i])),points=ids.map(id=>nodes.get(id)),names=[],places=[...towns.map(t=>t.name),...corridors.map(c=>c.name)],seeds={main:[],outlying:[]};
+const nameId=name=>{let i=names.indexOf(name||'');if(i<0){i=names.length;names.push(name||'');}return i;};
+const pairKey=(a,b)=>[pointKey(a),pointKey(b)].sort().join('|');
+const coveredEdges=new Map();for(const c of corridors)for(let i=1;i<c.line.length;i++){const key=pairKey(c.line[i-1],c.line[i]);const entry=coveredEdges.get(key)||{};entry[c.kind]=places.indexOf(c.name);coveredEdges.set(key,entry);}
+const edgeGates=new Map();for(const gate of gates){if(gate.aId===undefined)continue;const key=gate.aId+','+gate.bId;if(!edgeGates.has(key))edgeGates.set(key,[]);edgeGates.get(key).push(gate);}
+for(let i=0;i<points.length;i++)for(let j=0;j<towns.length;j++){const t=towns[j],p=points[i];if(p[0]<t.bounds[0]||p[0]>t.bounds[2]||p[1]<t.bounds[1]||p[1]>t.bounds[3])continue;if(inGeometry(p,t.geometry))seeds[t.kind].push({at:i,cost:0,place:j});}
+const segments=[];
+for(const w of ways){const direction=w.tags.oneway==='-1'?2:['yes','1','true'].includes(w.tags.oneway)||w.tags.junction==='roundabout'||w.tags.highway==='motorway'?1:3;
+ for(let i=1;i<w.nodes.length;i++){const a=nodeIndexes.get(w.nodes[i-1]),b=nodeIndexes.get(w.nodes[i]),length=metres(points[a],points[b]),entry={main:[],outlying:[]};
+  for(const gate of edgeGates.get(w.nodes[i-1]+','+w.nodes[i])||[]){const place=places.indexOf(gate.name);entry[gate.kind].push([gate.t,place]);if(direction&1)seeds[gate.kind].push({at:a,cost:length*gate.t,place});if(direction&2)seeds[gate.kind].push({at:b,cost:length*(1-gate.t),place});}
+  const coveredPlaces=coveredEdges.get(pairKey(points[a],points[b]))||{};let covered=0;
+  for(const [kind,bit] of [['main',1],['outlying',2]])if(coveredPlaces[kind]!==undefined){covered|=bit;const place=coveredPlaces[kind];seeds[kind].push({at:a,cost:0,place},{at:b,cost:0,place});entry[kind].push([0,place],[1,place]);}
+  const segment=[a,b,direction,nameId(w.tags.name),nameId(w.tags.ref)];if(entry.main.length||entry.outlying.length||covered)segment.push(entry.main,entry.outlying,covered);segments.push(segment);
+ }
+}
+const mainDistances=reverseDistances(points.length,segments,points,seeds.main),outlyingDistances=reverseDistances(points.length,segments,points,seeds.outlying),cells={};
+for(let i=0;i<segments.length;i++){const [a,b]=segments[i];for(let x=Math.floor(Math.min(points[a][0],points[b][0])*100);x<=Math.floor(Math.max(points[a][0],points[b][0])*100);x++)for(let y=Math.floor(Math.min(points[a][1],points[b][1])*100);y<=Math.floor(Math.max(points[a][1],points[b][1])*100);y++){const key=x+','+y;(cells[key]||=[]).push(i);}}
+const graph={nodes:points.map((p,i)=>[...p,mainDistances.distances[i],outlyingDistances.distances[i],mainDistances.places[i],outlyingDistances.places[i]]),segments,names,places,cells,corridorPlaces:{main:places.indexOf(corridors[0].name),outlying:places.indexOf(corridors[2].name)}};
+const data={version:'20261001-v2',builtAt:new Date().toISOString(),sources:{towns:'Stats NZ Urban Rural Areas 2026, high definition, CC BY 4.0',townUrl:'https://services2.arcgis.com/vKb0s8tBIA3bdocZ/ArcGIS/rest/services/Urban_Rural_Areas_2026/FeatureServer/0',roads:'© OpenStreetMap contributors, ODbL; public road graph and coverage paths',roadUrl:'https://www.openstreetmap.org/copyright'},towns,corridors,gates:unique,graph};
 const rounded=JSON.stringify(data,(_k,v)=>typeof v==='number'?Math.round(v*1e6)/1e6:v);
 fs.writeFileSync(new URL('./src/pickup-coverage.json',import.meta.url),rounded+'\n');
-console.log({towns:towns.length,corridors:corridors.length,gates:unique.length,bytes:rounded.length});
+console.log({towns:towns.length,corridors:corridors.length,gates:unique.length,roadNodes:points.length,roadSegments:segments.length,bytes:rounded.length});

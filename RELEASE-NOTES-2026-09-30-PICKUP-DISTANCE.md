@@ -16,16 +16,22 @@ retained, and editing an address clears the previous suggestion immediately.
 - Highway paths are derived from actual OpenStreetMap highway references, rather
   than treating every fastest-route shortcut as covered. Eltham Road includes
   its urban approach streets within the covered outlying towns.
-- Public mapped road intersections with town boundaries and corridor junctions
-  provide 594 access points. The closest projection on each covered road is also
-  considered. The runtime evaluates driving distances to every access point that
-  could improve the result, using straight-line distance only as a lower bound
-  to limit routing requests. It never prices an uncertain address from that bound.
+- The bundled public graph has 49,440 nodes and 50,440 road segments. Town
+  boundary intersections provide exact partial-edge access; covered highways
+  provide zero-distance sources. Build-time multi-source shortest-path searches
+  run backwards over directed roads, so the saved distance means driving from
+  the address road to coverage, respecting mapped one-way roads.
+- Runtime matches the geocoded street to a nearby named public-road segment,
+  then uses its precomputed distances and boundary intersections. It makes no
+  request to a public routing server. Straight-line distance is used only to
+  prove an owner quote is required outside mapped coverage, never to set a fee.
 - LINZ exact numbered address matches come first. Ambiguous same-number roads are
   rejected. Exact Google rooftop matches are an optional fallback where configured;
   interpolated, street-centre and OSM-geocoder guesses never establish the fee.
-- OSRM returns distances along its recommended driving routes. Routes can change
-  with map data, closures and access. This is a map estimate, not a surveyed distance.
+- Distances are estimates along the bundled mapped public roads. Private driveways,
+  live closures and turn restrictions are not measured. The graph is a dated
+  snapshot, not a traffic service or a surveyed distance. Unknown or distant
+  street matches require confirmation.
 
 ## Pricing and safeguards
 
@@ -70,14 +76,15 @@ business root's existing ignored `tmp/` folder:
 
 ## Verification
 
-- 251 maintained Naki Worker tests and 49 customer-site unit tests passed.
+- 252 maintained Naki Worker tests and 49 customer-site unit tests passed.
 - Mobile (390 px) and desktop (1280 px) browser tests cover measured selections,
   retries, manual/saved overrides, changed addresses, late replies, boundary
   uncertainty, over-10-km quotes, layout and a single travel fee.
 - Public address checks: Tikorangi School about 3.90 km ($5); Ratapiko School
-  about 8.89 km ($10); Kaimata School about 7.19 km ($10); Ōakura School ($10);
+  about 8.88 km ($10); Kaimata School about 7.17 km ($10); Ōakura School ($10);
   Egmont Village School directly on covered Junction Road (no fee); Rotokare
-  Scenic Reserve about 12.03 km (owner quote), Makahu School (beyond 10 km).
+  Scenic Reserve about 12.02 km (owner quote), Makahu School (beyond 10 km).
+- Final dataset version: `20261001-v2`; compressed Worker bundle about 1.56 MiB.
 - Deployment/live proof is added after release. These are API/browser checks;
   no customer booking is submitted and no physical driver survey is claimed.
 
