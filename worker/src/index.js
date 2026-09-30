@@ -7,6 +7,7 @@ import { metWeather } from "./field-weather.js";
 import { LIVE_SESSION_PATH, RECEPTION_QUOTE_PATH, liveSession, receptionQuote } from "./live-voice.js";
 import { isPhonePath, phoneIncoming, phoneStream, ReceptionCall } from "./phone-reception.js";
 import { handlePortalRequest, retryPendingSheetBackups, purgeExpiredAuth, purgeOldPhotos, recordBookingDocument, snapshotDatabase, sessionFor } from "./customer.js";
+import { measurePickupArea } from "./pickup-distance.js";
 
 const GMS_PLACE_ID = "ChIJI-iQUfZQFG0RorGmjzvMPRE";
 
@@ -677,7 +678,7 @@ function linzCqlFor(q, includeTown, dropSuffix, dropUnit = false) {
   return conds.join(" AND ");
 }
 
-async function linzAddressResults(env, q, limit) {
+async function linzAddressResults(env, q, limit, signal) {
   // Expand "Rd" before asking the register — otherwise an abbreviated street
   // misses the letterbox and the map pins the other road of the same name.
   q = collapseExtraRepeats(expandStreetAbbreviations(String(q || "")));
@@ -702,7 +703,7 @@ async function linzAddressResults(env, q, limit) {
       outputFormat: "application/json", count: String(Math.max(limit, 20)),
       CQL_FILTER: cql
     });
-    const response = await fetch(`https://data.linz.govt.nz/services;key=${env.LINZ_API_KEY}/wfs?${params}`);
+    const response = await fetch(`https://data.linz.govt.nz/services;key=${env.LINZ_API_KEY}/wfs?${params}`, {signal});
     if (!response.ok) continue;
     const payload = await response.json();
     let rows = ((payload || {}).features || []).map(feature => {
@@ -744,9 +745,9 @@ async function linzAddressResults(env, q, limit) {
   return [];
 }
 
-async function googleGeocode(env, address, components, limit) {
+async function googleGeocode(env, address, components, limit, signal) {
   const params = new URLSearchParams({ address, key: env.GOOGLE_API_KEY, region: "nz", components });
-  const response = await fetch(`https://maps.googleapis.com/maps/api/geocode/json?${params}`);
+  const response = await fetch(`https://maps.googleapis.com/maps/api/geocode/json?${params}`, {signal});
   if (!response.ok) return [];
   const payload = await response.json();
   return (payload.results || []).slice(0, limit).map(result => ({
@@ -757,6 +758,46 @@ async function googleGeocode(env, address, components, limit) {
     // guessing along the street, which is how a made-up house number gets a pin.
     exact: ((result.geometry || {}).location_type === "ROOFTOP") && !result.partial_match
   })).filter(result => result.label && Number.isFinite(result.lat) && Number.isFinite(result.lng));
+}
+
+async function pickupAddressLookup(env, {street,town,area}, signal) {
+  const query=collapseExtraRepeats(expandStreetAbbreviations([street,town,area].filter(Boolean).join(', ')));
+  const physical=physicalAddressQuery(query);
+  const roadKey=value=>looseKey(String(value).normalize('NFD').replace(/[\u0300-\u036f]/g,'').split(',')[0].slice(addressNumberParts(value)?.consumed||0));
+  const requestedRoad=roadKey(physical);
+  const withoutMacrons=s=>String(s).normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+  const exactRows=rows=>preferLocalAddressResults(rows.map(row=>({...row,label:withoutMacrons(row.label),originalLabel:row.label})),withoutMacrons(query)).filter(row=>{
+    const road=roadKey(row.label),places=[town,area,...String(row.label).split(',').slice(1)].map(p=>looseKey(withoutMacrons(p||'')));
+    return addressMatchScore(physical,row.label)>=2 && road.length>=3 &&
+      (requestedRoad===road||places.some(place=>place&&requestedRoad===road+place));
+  }).map(row=>({...row,label:row.originalLabel}));
+  if(env.LINZ_API_KEY){
+    const rows=exactRows(await linzAddressResults(env,query,6,signal));
+    if(rows.length===1)return {...rows[0],exact:true};
+    if(rows.length>1)return null; // Same-number roads must never be guessed.
+  }
+  if(env.GOOGLE_API_KEY){
+    const rows=exactRows((await googleGeocode(env,`${physical}, Taranaki, New Zealand`,'country:NZ',6,signal)).filter(r=>r.exact));
+    if(rows.length===1)return {...rows[0],exact:true};
+  }
+  return null; // Street-centre/interpolated map hits cannot establish a price.
+}
+
+async function handlePickupArea(request,env) {
+  if(request.method!=='POST')return json(request,{error:'Use POST to check a pickup address.'},405);
+  if(env.BOT_RATE_LIMIT && !(await env.BOT_RATE_LIMIT.limit({key:'pickup-area:'+String(request.headers.get('CF-Connecting-IP')||'unknown')})).success)return json(request,{error:'Please wait a moment and try again.'},429);
+  const raw=await request.text();if(raw.length>2000)return json(request,{error:'Address is too long.'},400);
+  let address;try{address=JSON.parse(raw);}catch{return json(request,{error:'Check the address and try again.'},400);}
+  if(!address||typeof address!=='object'||Array.isArray(address))return json(request,{error:'Check the address and try again.'},400);
+  const hash=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(JSON.stringify([address.street,address.town,address.area]))))).map(n=>n.toString(16).padStart(2,'0')).join('');
+  const key=cacheRequest(request,'pickup-distance-20260930-v1',[hash]);
+  const stored=await caches.default.match(key);if(stored)return noStore(stored);
+  const data=await measurePickupArea(address,{lookup:(args,signal)=>pickupAddressLookup(env,args,signal)});
+  const response=json(request,data);
+  // Retry failures on the next check. Successful measurements are reusable for
+  // the day; browser responses always remain no-store.
+  if(data.key&&!data.needsConfirmation){const headers=new Headers(response.headers);headers.set('Cache-Control','public, max-age=86400');await caches.default.put(key,new Response(response.clone().body,{headers}));}
+  return response;
 }
 
 async function handleAddress(request, env) {
@@ -1243,6 +1284,7 @@ export default {
     }
     try {
       const dispatch = async () => {
+      if (path === "/pickup-area") return await handlePickupArea(request, env);
       if (path === "/kids/activity") return await recordKidsActivity(request, env, json);
       // Ahead of the portal so the owner router doesn't 404 on it. Hands-free
       // voice: the phone swaps WebRTC details with OpenAI through here.
@@ -1306,6 +1348,7 @@ export default {
 
 export { ReceptionCall };
 export {
+  pickupAddressLookup,
   addressMatchScore, houseNumberOf, linzAddressResults, linzCqlFor, physicalAddressQuery,
   expandStreetAbbreviations, suburbUnexpected, preferLocalAddressResults, addressResultUsable,
   collapseExtraRepeats
