@@ -90,6 +90,11 @@ A mismatch is invisible until a real customer is blocked. This happened: the for
 was relaxed to accept a first name only while the server still demanded a surname,
 so those customers could never save a profile and could never book.
 
+The booking POST must also accept either name box (fixed 1 October 2026):
+checking only `first_name` refused customers whose valid profile used `last_name`.
+Older flat profiles have no address ID. The page uses `saved`, which the booking
+endpoint accepts; an empty option fails the required dropdown before reaching it.
+
 `ITEM_PRICES` and `RURAL_PRICES` in `worker/src/customer.js` must also match the
 `prices`/`travel` maps in `customer-site/account.html` **exactly** — the server
 rejects any item name it does not know.

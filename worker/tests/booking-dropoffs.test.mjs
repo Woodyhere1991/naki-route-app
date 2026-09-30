@@ -111,6 +111,34 @@ test('the drop-off summary needs an owner sign-in', async () => {
   } finally { db.close(); }
 });
 
+test('missing-item attempts are named correctly, including reports from older pages', async () => {
+  const { db, post, read } = await setup();
+  try {
+    await post({ stage: 'booking', reason: 'unknown-error', detail: 'no item chosen' });
+    await post({ stage: 'booking', reason: 'no-item-chosen', detail: 'no item chosen' });
+    await post({ stage: 'booking', reason: 'unknown-error', detail: 'another problem' });
+    const body = await (await read('dropoff-owner')).json();
+    assert.equal(body.summary.find(row => row.reason === 'no-item-chosen').count, 2);
+    assert.equal(body.summary.find(row => row.reason === 'unknown-error').count, 1);
+    assert.equal(body.recent.filter(row => row.reason === 'no-item-chosen').length, 2);
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM booking_dropoffs WHERE reason='unknown-error'").get().n, 2,
+      'original history is preserved');
+  } finally { db.close(); }
+});
+
+test('recent attempts and totals both cover the same last 30 days', async () => {
+  const { db, post, read } = await setup();
+  try {
+    await post({ stage: 'booking', reason: 'no-pickup-area' });
+    db.prepare('UPDATE booking_dropoffs SET created_at=?1').run(Date.now() - 31 * 86400000);
+    await post({ stage: 'booking', reason: 'no-item-chosen' });
+    const body = await (await read('dropoff-owner')).json();
+    assert.equal(body.summary.length, 1);
+    assert.equal(body.recent.length, 1);
+    assert.equal(body.recent[0].reason, 'no-item-chosen');
+  } finally { db.close(); }
+});
+
 test('a flood of reports is capped but still answers ok', async () => {
   const { db, post } = await setup();
   try {

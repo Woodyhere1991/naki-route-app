@@ -106,3 +106,26 @@ test('a saved address id is used exactly as chosen', async () => {
     assert.equal((await response.json()).booking.streetAddress, '12 Devon Street');
   } finally { db.close(); }
 });
+
+test('either name box is enough to book, matching the profile form', async () => {
+  for (const [first, last] of [['Ana', ''], ['', 'Smith']]) {
+    const { db, book } = await setup();
+    try {
+      db.prepare("UPDATE customers SET first_name=?1,last_name=?2 WHERE id='cust-phone'").run(first, last);
+      const response = await book({ items: ITEMS, addressId: 'saved' });
+      assert.equal(response.status, 201);
+      const saved = db.prepare('SELECT first_name,last_name FROM bookings').get();
+      assert.equal(saved.first_name, first);
+      assert.equal(saved.last_name, last);
+    } finally { db.close(); }
+  }
+});
+
+test('a booking with neither name is still blocked and never saved', async () => {
+  const { db, book } = await setup();
+  try {
+    db.prepare("UPDATE customers SET first_name='',last_name='' WHERE id='cust-phone'").run();
+    assert.equal((await book({ items: ITEMS })).status, 400);
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM bookings').get().n, 0);
+  } finally { db.close(); }
+});

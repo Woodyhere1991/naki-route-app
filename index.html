@@ -2671,9 +2671,10 @@ const DROPOFF_LABELS={
   "bounced-to-profile":"Tapped Request a collection but landed back on their details",
   "profile-incomplete":"Their details would not save",
   "no-pickup-area":"Never chose a pickup area",
+  "no-item-chosen":"Tapped Send without choosing an item",
   "server-refused":"The booking was refused by the server",
   "network-failed":"Connection dropped while sending",
-  "unknown-error":"Gave up on the booking form"
+  "unknown-error":"Another problem was reported on the booking form"
 };
 async function loadDropoffs(){
   const card=$("#dropoffCard"), body=$("#dropoffBody");
@@ -2695,7 +2696,7 @@ async function loadDropoffs(){
     }).join("");
     body.innerHTML=`${rows}
       ${failures?`<div style="margin-top:8px">⚠ ${failures} booking email${failures===1?"":"s"} could not be sent — tell those people another way.</div>`:""}
-      <div style="margin-top:8px">Last 30 days. ${total} stuck moment${total===1?"":"s"} — a booking taken by hand instead shows up under Bookings.</div>
+      <div style="margin-top:8px">Last 30 days. ${total} blocked attempt${total===1?"":"s"}; repeat tries can count more than once. Bookings taken by hand show up under Bookings.</div>
       ${recent?`<div style="margin-top:8px"><b>Most recent</b>${recent}</div>`:""}`;
     card.style.display="block";
   }catch(e){ card.style.display="none"; }

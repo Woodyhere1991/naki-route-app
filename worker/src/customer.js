@@ -85,6 +85,7 @@ const DROPOFF_REASONS = new Set([
   "bounced-to-profile",  // tapped Request a collection, landed back on the profile
   "profile-incomplete",  // profile would not save
   "no-pickup-area",      // never chose a pickup area
+  "no-item-chosen",      // submitted without selecting an item
   "server-refused",      // the booking API rejected the request
   "network-failed",      // the request never reached us
   "unknown-error"
@@ -3074,7 +3075,7 @@ export async function handlePortalRequest({ request, env, path, json, sendMail, 
               }
             : null
         );
-      if (!profile || !profile.first_name || !profile.phone || !selectedAddress) {
+      if (!profile || (!profile.first_name && !profile.last_name) || !profile.phone || !selectedAddress) {
         return json(request, { error: "Please finish your profile before booking" }, 400);
       }
       const items = Array.isArray(body.items) ? body.items.map(item => clean(item, 80)).filter(Boolean).slice(0, 10) : [];
@@ -3669,20 +3670,27 @@ export async function handlePortalRequest({ request, env, path, json, sendMail, 
     // struggle to book". Counts by reason plus the most recent few, so Woody can
     // see whether a fix worked without reading any raw log.
     if (path === "/owner/dropoffs" && request.method === "GET") {
+      const cutoff = now() - 30 * 24 * 60 * 60 * 1000;
+      // Older pages reported a missing item as an unknown error. Keep the real
+      // cause visible alongside the new reason without changing saved history.
+      const reported = `SELECT stage, CASE
+        WHEN reason = 'unknown-error' AND detail = 'no item chosen' THEN 'no-item-chosen'
+        ELSE reason END AS reason, detail, created_at FROM booking_dropoffs`;
       const [summary, recent, failures] = await Promise.all([
         env.CUSTOMER_DB.prepare(
-          `SELECT stage, reason, COUNT(*) AS count FROM booking_dropoffs
+          `SELECT stage, reason, COUNT(*) AS count FROM (${reported})
            WHERE created_at > ?1 GROUP BY stage, reason ORDER BY count DESC LIMIT 30`
-        ).bind(now() - 30 * 24 * 60 * 60 * 1000).all(),
+        ).bind(cutoff).all(),
         env.CUSTOMER_DB.prepare(
-          "SELECT stage, reason, detail, created_at FROM booking_dropoffs ORDER BY created_at DESC LIMIT 20"
-        ).all(),
+          `SELECT stage, reason, detail, created_at FROM (${reported})
+           WHERE created_at > ?1 ORDER BY created_at DESC LIMIT 20`
+        ).bind(cutoff).all(),
         // Website bookings the customer's own copy of the email failed to send
         // for, in the same window. Otherwise nobody notices a silent mail failure.
         env.CUSTOMER_DB.prepare(
           `SELECT COUNT(*) AS count FROM booking_events
            WHERE event_type = 'EMAIL_FAILED' AND created_at > ?1`
-        ).bind(now() - 30 * 24 * 60 * 60 * 1000).first()
+        ).bind(cutoff).first()
       ]);
       return json(request, {
         summary: (summary.results || []).map(row => ({
