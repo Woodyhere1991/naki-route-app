@@ -430,6 +430,7 @@
   .weather-town .weather-day{margin-top:8px}
   .completed-pickups>summary{min-height:44px;align-content:center;font-weight:700}
 </style>
+<link rel="stylesheet" href="/assets/earnings.css" />
 </head>
 <body data-scheduled-section="listWrap">
 
@@ -788,6 +789,7 @@
   <button data-view-button="today">Scheduled</button>
   <button data-view-button="bookings">Bookings <span id="bookingCount" class="booking-count" style="display:none">0</span></button>
   <button data-view-button="customers">Customers</button>
+  <button data-view-button="earnings">Earnings</button>
   <button data-view-button="messages">Messages</button>
   <button data-view-button="add">Add &amp; setup</button>
 </nav>
@@ -1257,7 +1259,7 @@ async function deleteActiveRun(){
 }
 
 function applyAppView(view){
-  if (!["today","bookings","customers","messages","add"].includes(view)) view = state.stops.length ? "today" : "add";
+  if (!["today","bookings","customers","messages","earnings","add"].includes(view)) view = state.stops.length ? "today" : "add";
   document.body.dataset.view = view;
   document.querySelectorAll("[data-view-button]").forEach(btn=>btn.classList.toggle("on", btn.dataset.viewButton===view));
   if (view==="today" && map) setTimeout(()=>map.invalidateSize(), 80);
@@ -1265,6 +1267,7 @@ function applyAppView(view){
   if (view==="today" || view==="add") refreshWeather(false);   // panel just became visible
   if (view==="bookings") loadDirectBookings(true);
   if (view==="customers") loadCustomers(true);
+  if (view==="earnings") window.nakiEarnings?.load();
 }
 window.setAppView = view => {
   state.appView = view; save(); applyAppView(view);
@@ -1334,6 +1337,7 @@ async function ownerApi(path, options={}){
       // The 30-day sign-in ran out. Say it in the backup box too, otherwise the
       // cloud copy quietly stops and the buttons just look broken.
       ownerToken=""; localStorage.removeItem(OWNER_TOKEN_KEY);
+      window.nakiEarnings?.clear();
       renderDirectBookings();
       renderCustomers();
       refreshCloudBackupInfo();
@@ -1342,28 +1346,33 @@ async function ownerApi(path, options={}){
   }
   return data;
 }
-function queueDirectCompletion(bookingId){
+function queueDirectCompletion(bookingId,status="COMPLETED"){
   if (!bookingId) return;
   runStore.shared.pendingDirectCompletions = Array.isArray(runStore.shared.pendingDirectCompletions)
     ? runStore.shared.pendingDirectCompletions : [];
-  if (!runStore.shared.pendingDirectCompletions.includes(bookingId)) {
-    runStore.shared.pendingDirectCompletions.push(bookingId);
-    save();
-  }
+  runStore.shared.pendingDirectStatuses=runStore.shared.pendingDirectStatuses||{};
+  runStore.shared.pendingDirectStatuses[bookingId]=status;
+  if (!runStore.shared.pendingDirectCompletions.includes(bookingId)) runStore.shared.pendingDirectCompletions.push(bookingId);
+  save();
 }
+let directCompletionSyncBusy=false;
 async function flushDirectCompletions(){
+  if(directCompletionSyncBusy)return;
   const pending = Array.isArray(runStore.shared.pendingDirectCompletions)
     ? [...runStore.shared.pendingDirectCompletions] : [];
   if (!ownerToken || !pending.length) return;
+  directCompletionSyncBusy=true;let changedDuringSync=false;
   const completed = [];
   for (const bookingId of pending){
+    const status=runStore.shared.pendingDirectStatuses?.[bookingId]||"COMPLETED";
     try{
       await ownerApi(`/owner/bookings/${encodeURIComponent(bookingId)}`, {
-        method:"PATCH", body:JSON.stringify({status:"COMPLETED"})
+        method:"PATCH", body:JSON.stringify({status})
       });
-      completed.push(bookingId);
+      if((runStore.shared.pendingDirectStatuses?.[bookingId]||"COMPLETED")===status)completed.push(bookingId);
+      else changedDuringSync=true;
       const row=directBookingRows.find(item=>item.id===bookingId);
-      if (row) row.status="COMPLETED";
+      if (row) row.status=status;
     }catch(e){
       if (!ownerToken) break;
     }
@@ -1371,8 +1380,11 @@ async function flushDirectCompletions(){
   if (completed.length){
     runStore.shared.pendingDirectCompletions =
       runStore.shared.pendingDirectCompletions.filter(id=>!completed.includes(id));
+    for(const id of completed)if(runStore.shared.pendingDirectStatuses)delete runStore.shared.pendingDirectStatuses[id];
     save();
   }
+  directCompletionSyncBusy=false;
+  if(changedDuringSync||runStore.shared.pendingDirectCompletions.some(id=>!pending.includes(id)))void flushDirectCompletions();
 }
 function directStatus(message, error=false){
   const el=$("#directBookingStatus"); if(!el) return;
@@ -2465,7 +2477,12 @@ $("#ownerCodeVerify").onclick=async()=>{
   finally{ button.disabled=false; }
 };
 $("#ownerCode").addEventListener("keydown",event=>{ if(event.key==="Enter"){event.preventDefault();$("#ownerCodeVerify").click();} });
-$("#ownerLogout").onclick=()=>{ownerToken="";localStorage.removeItem(OWNER_TOKEN_KEY);directBookingRows=[];customerRows=[];renderDirectBookings();renderCustomers();refreshCloudBackupInfo();};
+$("#ownerLogout").onclick=async()=>{
+  const token=ownerToken;
+  ownerToken="";localStorage.removeItem(OWNER_TOKEN_KEY);window.nakiEarnings?.clear();
+  directBookingRows=[];customerRows=[];renderDirectBookings();renderCustomers();refreshCloudBackupInfo();
+  if(token){try{const res=await boundedFetch(`${API}/owner/logout`,{method:'POST',headers:{Authorization:`Bearer ${token}`}});if(!res.ok)throw Error('Could not revoke sign-in');}catch{directStatus('Signed out on this phone. Reconnect to revoke the old server sign-in.',true);}}
+};
 $("#directRefresh").onclick=()=>loadDirectBookings(true);
 $("#customersRefresh").onclick=()=>loadCustomers(true);
 $("#addContactBtn").onclick=()=>addCustomContact();
@@ -5085,12 +5102,16 @@ function invoiceStageTag(s, onTap){
 // Flip a wrong tag by hand.
 window.toggleCollected = id => {
   const s = findStop(id); if (!s) return;
+  const earningsBefore=window.nakiEarnings?.capture();
   const nowCollected = !isCollected(s);
   s.collectedAt = nowCollected ? Date.now() : "";
+  s.completionChangedAt=Date.now();
   if (!nowCollected && s.historyStatus==="COMPLETED") s.historyStatus = "ADDED_TO_RUN";
   if (!s.invoiceStage) s.invoiceStage = nowCollected ? "after" : "before";
   save(); render(); renderDirectBookings();
+  if(s.src==='direct'&&s.submission_id){queueDirectCompletion(s.submission_id,nowCollected?'COMPLETED':'ADDED_TO_RUN');void flushDirectCompletions();}else void syncExternalBooking(s);
   flash(nowCollected ? "✓ Marked as picked up" : "↺ Marked as still to pick up");
+  if(nowCollected)void window.nakiEarnings?.completed(earningsBefore);
 };
 // Spell the reminder out either way, so "no reminder" never looks the same as
 // "reminder set but I can't see the day".
@@ -5715,12 +5736,16 @@ window.clearMessageMarks = () => {
 };
 window.toggleDone = id => {
   const s = findStop(id); if(!s) return;
+  const earningsBefore=window.nakiEarnings?.capture();
   const completed = s.status!=="DONE";
   s.status = completed ? "DONE" : "NEW";
   s.historyStatus = completed ? "COMPLETED" : "ADDED_TO_RUN";
   s.collectedAt = completed ? Date.now() : "";
+  s.completionChangedAt=Date.now();
   save(); render(); drawRoute();
   syncExternalBooking(s);
+  if(!isUnload(s)&&s.src==='direct'&&s.submission_id){queueDirectCompletion(s.submission_id,completed?'COMPLETED':'ADDED_TO_RUN');void flushDirectCompletions();}
+  if(completed)void window.nakiEarnings?.completed(earningsBefore);
 };
 // One tidy popup for editing details, instead of a chain of one-line prompts.
 // Resolves with {key:value} of trimmed values, or null if it was cancelled.
@@ -6447,6 +6472,7 @@ window.sendReceipt = async id => {
   const s = findStop(id);
   const file = pendingReceipts[id];
   if (!s || !file){ render(); return; }
+  const earningsBefore=window.nakiEarnings?.capture();
   const done = async () => {
     delete pendingReceipts[id];
     s.receiptSent = true;
@@ -6470,6 +6496,7 @@ window.sendReceipt = async id => {
       await syncExternalBooking(s);
     }
     if(ownerToken) await loadDirectBookings(false);
+    void window.nakiEarnings?.completed(earningsBefore);
   };
   // Customer has an email: the server emails the PDF for us — no Gmail screen at all.
   if (goodEmail(s.email)){
@@ -6708,6 +6735,7 @@ window.sendInvoice = async id => {
   const collectedAlready = !fromRun || confirm(
     `${fullName(s)||"This pickup"} is still on ${activeRunName()}.\n\nHas it been picked up yet?\n\nOK = yes, already collected\nCancel = no, still to pick up`
   );
+  const earningsBefore=window.nakiEarnings?.capture();
   const markSent = (rid, rdate, rrepeat) => {
     delete pendingInvoices[id];
     s.invoiceSent = true; s.paid = false;
@@ -6742,7 +6770,8 @@ window.sendInvoice = async id => {
     state.unpaid = state.unpaid || [];
     if (!state.unpaid.some(x => x.id === id)) state.unpaid.unshift(s);
     save(); render(); drawRoute();
-    syncExternalBooking(s);
+    if(s.src==='direct'&&s.submission_id){queueDirectCompletion(s.submission_id);void flushDirectCompletions();}else syncExternalBooking(s);
+    void window.nakiEarnings?.completed(earningsBefore);
   };
   // Customer has an email: server sends the PDF and can auto-remind later.
   if (goodEmail(s.email)){
@@ -6877,6 +6906,7 @@ window.markPaid = async id => {
 // Paid means the job is finished, so push it up as COMPLETED — that's what moves
 // it out of Owing and down into Done in Bookings.
 async function settleAsPaid(s){
+  const earningsBefore=window.nakiEarnings?.capture();
   s.paid = true;
   s.status = "DONE";
   s.historyStatus = "COMPLETED";
@@ -6888,6 +6918,7 @@ async function settleAsPaid(s){
   }else await syncExternalBooking(s);
   renderDirectBookings();
   if (ownerToken) await loadDirectBookings(false);
+  void window.nakiEarnings?.completed(earningsBefore);
 }
 // Take an entry off the unpaid ledger (cancels its auto-reminder too).
 window.removeUnpaid = async id => {
@@ -8094,5 +8125,6 @@ attachAutocomplete($("#endAddr"), $("#acEnd"), r => {
 fieldBoot();
 </script>
 <script src="assets/api-access.js"></script>
+<script src="assets/earnings.js"></script>
 </body>
 </html>

@@ -48,7 +48,7 @@ async function ownerActionFetch(url, options={}) {
   if (res.ok || (res.status>=400&&res.status<500&&res.status!==409)) localStorage.removeItem(storageKey);
   if(!res.ok) {
     const data=result;
-    if(res.status===401) {ownerToken='';localStorage.removeItem(OWNER_TOKEN_KEY);paintCloudState('Sign in to save to your account.',true);}
+    if(res.status===401) {ownerToken='';localStorage.removeItem(OWNER_TOKEN_KEY);window.nakiEarnings?.clear();paintCloudState('Sign in to save to your account.',true);}
     throw Error(data.error||'This action could not be completed. Please try again.');
   }
   return res;

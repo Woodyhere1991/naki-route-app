@@ -4,6 +4,7 @@ import { AuthMailError, reserveAuthRequest } from "./auth-limits.js";
 import { kidsActivityReport } from "./kids-activity.js";
 import { scoreReviewReason } from "./score-validation.js";
 import { handleApiKeys } from "./api-keys.js";
+import { earningsReport } from './earnings.js';
 export const OWNER_EMAIL = "nakiwreckremoval@gmail.com";
 // Addresses allowed to sign in as the owner. OWNER_EMAIL stays the one that
 // receives booking alerts; this list is only about who can log in, so Woody can
@@ -1584,7 +1585,7 @@ async function upsertExternalBooking(env, fields, syncToken) {
       total_cents=excluded.total_cents,
       quote_required=excluded.quote_required,
       updated_at=excluded.updated_at,
-      completed_at=excluded.completed_at
+      completed_at=CASE WHEN excluded.status='COMPLETED' THEN COALESCE(external_bookings.completed_at,excluded.completed_at) ELSE NULL END
     WHERE external_bookings.email = excluded.email COLLATE NOCASE`
   ).bind(
     `PICKUP-${crypto.randomUUID()}`, fields.externalKey, await hashToken(syncToken), customerId,
@@ -3188,6 +3189,20 @@ export async function handlePortalRequest({ request, env, path, json, sendMail, 
   if (path.startsWith("/owner/")) {
     const session = integrationSession || await sessionFor(request, env, "owner");
     if (!session) return json(request, { error: "Owner login required" }, 401);
+    if (path === '/owner/earnings' && request.method === 'GET') {
+      if (integrationSession) return json(request, {error:'Owner sign-in required'}, 403);
+      const report=await earningsReport(env, await readRunBackup(env, `backup:${OWNER_EMAIL}`));
+      const response=json(request,report);
+      response.headers.set('Cache-Control','private, no-store, no-transform');
+      response.headers.set('Pragma','no-cache');
+      response.headers.set('X-Content-Type-Options','nosniff');
+      return response;
+    }
+    if (path === '/owner/logout' && request.method === 'POST') {
+      if (integrationSession) return json(request, {error:'Owner sign-in required'}, 403);
+      await env.CUSTOMER_DB.prepare('DELETE FROM sessions WHERE token_hash=?1').bind(await hashToken(authToken(request))).run();
+      return json(request,{ok:true});
+    }
     // Bot dispatch is an explicit allowlist in integration-api.js. Keys never
     // become owner sessions and cannot manage keys, exports, messages or backups.
     if (!integrationSession) {

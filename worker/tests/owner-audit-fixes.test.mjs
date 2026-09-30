@@ -164,7 +164,7 @@ test('the account backup uses one slot whichever owner address signs in', async 
   // Keyed on the business address, not the session email, so signing in with the
   // second owner address cannot read an empty backup.
   assert.doesNotMatch(source, /backup:\$\{session\.email/);
-  assert.equal((source.match(/backup:\$\{OWNER_EMAIL\}/g) || []).length, 3);
+  assert.ok((source.match(/backup:\$\{OWNER_EMAIL\}/g) || []).length >= 3);
 });
 test('pickup note stays with the booking, is owner-only, and never changes the customer note/date',async()=>{
   const {db,call,state}=await setup();
