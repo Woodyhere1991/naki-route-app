@@ -85,6 +85,17 @@ test('private report reads complete history without customer identity or credent
     assert.doesNotMatch(JSON.stringify(report),/private@example|email|pdfBase64|street_address|syncToken|token_hash/);
   }finally{db.close();}
 });
+test('Undo then Done uses the new completion day, while repeated Done syncs preserve it',async()=>{
+  const {db,env}=await fixture();try{
+    const first=Date.parse('2026-09-10T00:00:00Z'),undo=Date.parse('2026-09-20T00:00:00Z'),redo=Date.parse('2026-09-30T00:00:00Z');
+    db.prepare('INSERT INTO bookings VALUES(?,?,?,?,?,?,?,?,?)').run('WEB-redo','COMPLETED',1000,0,0,null,time,'',null);
+    for(const [status,at]of [['COMPLETED',first],['COMPLETED',first+1000],['ADDED_TO_RUN',undo],['COMPLETED',redo],['COMPLETED',time]]){
+      db.prepare('INSERT INTO booking_events VALUES(?,?,?,?)').run('WEB-redo','STATUS',status,at);
+    }
+    const report=await earningsReport(env,null,time),entry=buildEntries(report.records).find(e=>e.key==='WEB-redo');
+    assert.equal(entry.day,'2026-09-30');assert.equal(entry.cents,1000);
+  }finally{db.close();}
+});
 test('anonymous, customers, expired sessions and external origins cannot read financial data',async()=>{
   const {db,env}=await fixture();try{
     for(const [token,origin,status]of [['','https://naki-pickup-run.pages.dev',401],['customer-test','https://naki-pickup-run.pages.dev',401],['expired-test','https://naki-pickup-run.pages.dev',401],['owner-test','https://untrusted.example',403]]){
