@@ -94,7 +94,8 @@ export function buildEntries(rows) {
     const amount=receipt?.cents??primary?.cents??doneStop?.cents??null;
     const priced=Number.isSafeInteger(amount)&&amount>=0;
     const localDate=nzDay(doneStop?.completedAt);
-    const actualDate=localDate||nzDay(primary?.completedAt)||nzDay(receipt?.at);
+    const historicalDate=bookings.map(r=>nzDay(r.completedAt)).find(Boolean);
+    const actualDate=localDate||nzDay(primary?.completedAt)||historicalDate||nzDay(receipt?.at);
     const day=actualDate||primary?.pickupDay||doneStop?.pickupDay||'';
     const receipted=receipt?receipt.cents:doneStop?.receipted?doneStop.cents:null;
     entries.push({key:primary?.key||doneStop?.key||receipt?.key||invoice?.key,
