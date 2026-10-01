@@ -1,5 +1,6 @@
 import {bookingRows,nzDay,rowsFromBackup} from '../../assets/earnings-model.js';
 import {canonicalTown,cleanItem,mergeStatsRows,isTestBooking} from '../../assets/business-stats-model.js';
+import {excludedFromStatistics} from './statistics-exclusions.js';
 export const HISTORY_KEY='owner-analytics/business-history-v1.json';
 export async function readBusinessHistory(env) {
   if(!env.DOCUMENTS)return {jobs:[],sources:{unavailable:true}};
@@ -11,9 +12,9 @@ export async function readBusinessHistory(env) {
     return snapshot;
   }catch{return {jobs:[],sources:{unavailable:true},note:'Historical source snapshot could not be read. Current saved bookings and receipts remain available.'};}
 }
-export function historyFinancialRows(history,today=nzDay()) {
+export function historyFinancialRows(history,today=nzDay(),exclusions={}) {
   // Owner's requested historical assumption. Current live status still wins by rank.
-  return mergeStatsRows(history.jobs||[]).filter(r=>!r.cancelled&&!r.test&&(r.completed||r.requestedDay&&r.requestedDay<today)).map(r=>({kind:'booking',key:r.key,aliases:r.aliases,rank:-1,source:'HISTORICAL_SHEET',
+  return mergeStatsRows(history.jobs||[]).filter(r=>!r.cancelled&&!r.test&&!excludedFromStatistics(r,exclusions)&&(r.completed||r.requestedDay&&r.requestedDay<today)).map(r=>({kind:'booking',key:r.key,aliases:r.aliases,rank:-1,source:'HISTORICAL_SHEET',
     status:'COMPLETED',assumed:!r.completed,at:0,completedAt:r.completedDay?Date.parse(r.completedDay+'T00:00:00+12:00'):0,
     pickupDay:r.requestedDay||'',cents:r.cents,priceReviewCents:r.priceReviewCents,recalculatedPrice:r.recalculatedPrice}));
 }
@@ -24,7 +25,7 @@ export async function customerIdentity(email,phone){
   return [...bytes].map(b=>b.toString(16).padStart(2,'0')).join('');
 }
 function items(value){try{return (Array.isArray(value)?value:JSON.parse(value||'[]')).map(cleanItem).filter(Boolean);}catch{return [];}}
-export async function businessStatistics(env,history,backup,entries){
+export async function businessStatistics(env,history,backup,entries,exclusions={}){
   const [jobs,documents]=await Promise.all([
     env.CUSTOMER_DB.prepare(`SELECT id,first_name,last_name,email,phone,town,items_json,created_at,status,'' AS submission_id,'' AS external_key,'WEBSITE' AS source FROM bookings
       UNION ALL SELECT id,first_name,last_name,email,phone,town,items_json,created_at,status,submission_id,'' AS external_key,'JOTFORM' AS source FROM jotform_bookings
@@ -47,6 +48,7 @@ export async function businessStatistics(env,history,backup,entries){
         completed:r.status==='COMPLETED',completedDay:nzDay(r.completedAt)});
     }
   }
-  return {rows:mergeStatsRows([...(history.jobs||[]).map(r=>({...r,rank:0})),...metadata],entries),sources:history.sources||{},
+  const rows=[...(history.jobs||[]).map(r=>({...r,rank:0})),...metadata].map(row=>excludedFromStatistics(row,exclusions)?{...row,test:true}:row);
+  return {rows:mergeStatsRows(rows,entries),sources:history.sources||{},
     snapshotAt:history.updatedAt||'',note:history.note||'',asOf:new Date().toISOString()};
 }

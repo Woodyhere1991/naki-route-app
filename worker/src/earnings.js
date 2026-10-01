@@ -2,6 +2,7 @@ import {bookingRows,documentRows,rowsFromBackup,buildEntries,summarise,nzDay} fr
 import {readBusinessHistory,historyFinancialRows,businessStatistics} from './business-history.js';
 import {readInvoiceClearance,clearedDocuments,clearFinancialStops} from './invoice-clearance.js';
 import {mergeStatsRows} from '../../assets/business-stats-model.js';
+import {readStatisticsExclusions} from './statistics-exclusions.js';
 
 export async function earningsReport(env, backup, currentTime=Date.now()) {
   // Read all records, without the 300-row inbox / 50-document customer limits.
@@ -21,10 +22,10 @@ export async function earningsReport(env, backup, currentTime=Date.now()) {
     env.CUSTOMER_DB.prepare(`SELECT id,booking_id,kind,amount_cents,created_at FROM booking_documents
       WHERE kind IN ('RECEIPT','INVOICE')`).all()
   ]);
-  const [history,clearance]=await Promise.all([readBusinessHistory(env),readInvoiceClearance(env)]);
-  let records=[...bookingRows(jobs.results||[]),...documentRows(clearedDocuments(documents.results||[],clearance)),...clearFinancialStops(rowsFromBackup(backup),clearance),...historyFinancialRows(history,nzDay(currentTime))];
+  const [history,clearance,exclusions]=await Promise.all([readBusinessHistory(env),readInvoiceClearance(env),readStatisticsExclusions(env)]);
+  let records=[...bookingRows(jobs.results||[]),...documentRows(clearedDocuments(documents.results||[],clearance)),...clearFinancialStops(rowsFromBackup(backup),clearance),...historyFinancialRows(history,nzDay(currentTime),exclusions)];
   let entries=buildEntries(records);
-  const stats=env.DOCUMENTS?await businessStatistics(env,history,backup,entries):null;
+  const stats=env.DOCUMENTS?await businessStatistics(env,history,backup,entries,exclusions):null;
   if(stats){
     const excluded=new Set(stats.rows.filter(r=>r.test).flatMap(r=>r.aliases));
     records=records.filter(r=>!r.aliases.some(a=>excluded.has(a)));entries=buildEntries(records);stats.rows=mergeStatsRows(stats.rows,entries);

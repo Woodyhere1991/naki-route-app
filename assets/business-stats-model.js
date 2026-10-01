@@ -49,7 +49,7 @@ export function mergeStatsRows(rows,entries=[]) {
     const sorted=group.rows.sort((a,b)=>(b.rank||0)-(a.rank||0)),primary=sorted[0];
     const money=[...group.aliases].map(a=>moneyByAlias.get(a)).find(Boolean);
     const find=field=>sorted.find(r=>field==='items'?r.items?.length:field==='town'?r.town&&r.town!=='Town not recorded':r[field]);
-    const cancelled=primary.cancelled===true||primary.test===true||!(primary.rank>0)&&sorted.some(r=>r.cancelled||r.test),completed=!cancelled&&(money?money.completed:sorted.some(r=>r.completed));
+    const cancelled=primary.cancelled===true||sorted.some(r=>r.test)||!(primary.rank>0)&&sorted.some(r=>r.cancelled),completed=!cancelled&&(money?money.completed:sorted.some(r=>r.completed));
     result.push({key:primary.key,aliases:[...group.aliases],name:find('name')?.name||'',customerId:find('customerId')?.customerId||'',
       town:find('town')?.town||'Town not recorded',items:find('items')?.items||[],referral:find('referral')?.referral||'',
       completed,cancelled,test:sorted.some(r=>r.test),assumed:money?.assumed??primary.assumed??false,archived:sorted.some(r=>r.archived),cents:money?.cents??sorted.find(r=>Number.isSafeInteger(r.cents)&&r.cents>=0)?.cents??null,
