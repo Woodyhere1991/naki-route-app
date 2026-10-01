@@ -9,7 +9,9 @@
     currentFile = null;
     renderTask?.cancel(); renderTask = null;
     const previous = loadingTask; loadingTask = null;
-    frame()?.replaceChildren();
+    const host = frame();
+    if (host) { host.dataset.ready = 'false'; host.replaceChildren(); }
+    if (send()) send().disabled = true;
     if (previous) await previous.destroy().catch(() => {});
   }
   async function show(file) {
