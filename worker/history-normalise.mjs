@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {createHash} from 'node:crypto';
-import {cleanItem,canonicalTown} from '../assets/business-stats-model.js';
+import {cleanItem,canonicalTown,isTestBooking,isTestNote,itemQuantity} from '../assets/business-stats-model.js';
 import {moneyCents,validDay} from '../assets/earnings-model.js';
 import {townFromAddress} from './src/customer-details.js';
 import {ITEM_PRICES,RURAL_PRICES} from './src/customer.js';
@@ -11,8 +11,10 @@ const hash=value=>createHash('sha256').update(value).digest('hex');
 const text=value=>String(value??'').replace(/<[^>]*>/g,'').replace(/\s+/g,' ').trim();
 export function repriceHistoricalItems(items,travel=''){
   const legacy={'fridge':'Fridge or upright freezer','refrigerator':'Fridge or upright freezer','refrigerator/upright freezer':'Fridge or upright freezer','oven/stove':'Oven or stove','chest freezer (small/medium)':'Chest freezer (small or medium)',
+    'chest freezer (large)':'Large chest freezer (over 1.5 m)','chest freezer (large - over 1.5m length)':'Large chest freezer (over 1.5 m)',
     'washing machine (top loading)':'Top-loading washing machine','washing machine (front loading)':'Front-loading washing machine','double/french door refrigerator':'Large or French-door fridge'};
-  const pairs=items.map(item=>ITEM_PRICES[item]||ITEM_PRICES[legacy[text(item).toLowerCase()]]);
+  const pairs=[];
+  for(const item of items){const base=text(item).replace(/\s+[×x*]\s*\d+\s*$/i,'');if(/^other$/i.test(base))return null;const pair=ITEM_PRICES[base]||ITEM_PRICES[legacy[base.toLowerCase()]];for(let n=0;n<itemQuantity(item);n++)pairs.push(pair);}
   if(!pairs.length||pairs.some(p=>!p))return null;
   const area=text(travel).toLowerCase();if(/more than 10|over 10|quote|contact us/.test(area))return null;
   let fee=RURAL_PRICES[travel];
@@ -25,7 +27,7 @@ function identity(email,phone,id){
   return p.length>=8?hash('phone:'+p):'';
 }
 export function submissionJob(sub,form) {
-  let name='',email='',phone='',town='',amount=null,referral='',travel='',cancelled=false,test=false,calculator=false;const items=[];
+  let name='',email='',phone='',town='',amount=null,originalAmount=null,referral='',travel='',cancelled=false,test=false,calculator=false;const items=[];
   for(const answer of Object.values(sub.answers||{})){
     const value=answer.answer,label=text(answer.text).toLowerCase(),kind=answer.type,field=text(answer.name).toLowerCase();
     if(kind==='control_fullname'&&value&&typeof value==='object')name=[value.first,value.middle,value.last].filter(Boolean).join(' ');
@@ -33,22 +35,29 @@ export function submissionJob(sub,form) {
     else if(kind==='control_email'&&!/confirm|again/.test(label))email=value||email;
     else if(/phone/.test(label)&&!/confirm|again/.test(label))phone=typeof value==='object'?Object.values(value).join(''):value;
     else if(/^appliance\s*\d+$/.test(label)||/^item\s*\d+$/.test(label)){for(const item of Array.isArray(value)?value:[value]){const clean=cleanItem(item);if(clean)items.push(clean);}}
-    else if(field==='total'||/^(total|estimated price)$/.test(label)){amount=moneyCents(String(value??'').replace(/^\$\s*/,''));calculator=kind==='control_calculation';}
+    else if(field==='total'||/^(total|estimated price)$/.test(label)){
+      const raw=String(value??'').replace(/^\$\s*/,'').trim();amount=moneyCents(raw);calculator=kind==='control_calculation';
+      const numeric=raw&&/^\d+(?:\.\d+)?$/.test(raw)?Number(raw):NaN;
+      originalAmount=Number.isSafeInteger(Math.round(numeric*100))?Math.round(numeric*100):null;
+    }
     else if(/^how did you (hear|find)/.test(label))referral=text(value);
     else if(/^(pickup area|rural|travel)/.test(label)&&typeof value==='string')travel=text(value);
     if(typeof value==='string'&&/additional|comment|note/.test(label)){
       cancelled ||= /\b(?:please cancel|cancel (?:this|my|the) (?:booking|pickup|collection)|booking cancelled|pickup cancelled)\b/i.test(value);
-      test ||= /^(?:test|testing|test booking|test submission)[.! ]*$/i.test(value.trim());
+      test ||= isTestNote(value);
     }
   }
   const id=String(sub.id);
-  // Keep anomalous original calculator values for review; never replace them with today's rates.
-  const priceReviewCents=calculator&&amount>50000&&items.length<=2?amount:null;
+  test ||= isTestNote(town);
+  // Owner-authorised repairs apply only to implausible calculator values for known appliances.
+  // Custom/Other jobs and quoted distant travel have no safe standard-price replacement.
+  const expected=calculator?repriceHistoricalItems(items,travel):null;
+  const priceReviewCents=calculator&&expected!==null&&((originalAmount>50000&&items.length<=2)||(originalAmount>expected*2&&originalAmount-expected>=5000))?originalAmount:null;
   const recalculated=priceReviewCents!==null?repriceHistoricalItems(items,travel):null;
   return {key:'JOTFORM-'+id,aliases:['JOTFORM-'+id,id,'pickup:'+id,'pickup:JOTFORM-'+id],customerId:identity(email,phone,id),
     name:text(name).slice(0,100),town:canonicalTown(town),items,requestedDay:validDay(String(sub.created_at||'').slice(0,10))?sub.created_at.slice(0,10):'',
     cents:priceReviewCents===null?amount:recalculated,priceReviewCents,recalculatedPrice:recalculated!==null,cancelled:cancelled||['CANCELLED','CANCELED','DECLINED'].includes(sub.status),
-    test:test||/^(?:test|testing|test (?:customer|booking|person|user)|(?:test|testing)\s+(?:test|testing))$/i.test(text(name))||/@(?:example\.(?:test|com)|[^@]+\.test)$/i.test(String(email)),
+    test:test||isTestBooking(name,email),
     archived:sub.status==='DELETED',completed:false,source:'Jotform',formId:form?.id||sub.form_id,referral};
 }
 export function sheetJobs(table,source) {

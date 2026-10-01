@@ -7,7 +7,7 @@ const fixture={asOf:new Date().toISOString(),summary:{allTimeCents:5500},records
 const baseline=process.env.NAKI_EARNINGS_FIXTURE?JSON.parse(fs.readFileSync(process.env.NAKI_EARNINGS_FIXTURE)):fixture;
 let expectedJobs,expectedFridges;
 (async()=>{
- const {buildEntries}=await import('../assets/earnings-model.js'),{aggregateStats,mergeStatsRows}=await import('../assets/business-stats-model.js');const stats=aggregateStats(mergeStatsRows(baseline.stats.rows,buildEntries(baseline.records)));expectedJobs=stats.jobs;expectedFridges=stats.fridges;
+ const {buildEntries}=await import('../assets/earnings-model.js'),{aggregateStats,mergeStatsRows}=await import('../assets/business-stats-model.js');const stats=aggregateStats(mergeStatsRows(baseline.stats.rows,buildEntries(baseline.records)));expectedJobs=stats.jobs;expectedFridges=stats.fridgesAndUprightFreezers;
  const browser=process.env.NAKI_BROWSER==='webkit'?await webkit.launch({headless:true}):await chromium.launch({channel:'msedge',headless:true});
  try{
   for(const width of [375,390,1280]){
@@ -33,7 +33,7 @@ let expectedJobs,expectedFridges;
    assert.equal(await page.locator('.earnings-chart rect.bar').count(),12);
    await page.locator('[data-earnings-tab=stats]').click();
    assert.equal(await page.locator('.stats-numbers strong').first().innerText(),expectedJobs.toLocaleString('en-NZ'));
-   assert.match(await page.locator('#earningsContent').innerText(),new RegExp('Fridges collected\\s+'+expectedFridges));
+   assert.equal(await page.locator('.stats-numbers strong').nth(2).innerText(),expectedFridges.toLocaleString('en-NZ'));
    await page.locator('#statsYear').selectOption('2024');
    assert.match(await page.locator('#earningsContent').innerText(),/Older bookings are counted as collected/);
    assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth+1),false,'No horizontal page overflow');

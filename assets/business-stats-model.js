@@ -1,10 +1,18 @@
 import {validDay} from './earnings-model.js';
 export function isTestBooking(name,email=''){
-  return /^(?:test|testing|test (?:customer|booking|person|user)|(?:test|testing)\s+(?:test|testing))$/i.test(String(name||'').trim())||/@(?:example\.(?:test|com)|[^@]+\.test)$/i.test(String(email));
+  return isTestNote(name)||/^(?:test (?:customer|booking|person|user)|(?:test|testing)\s+(?:test|testing))$/i.test(String(name||'').trim())||/@(?:example\.(?:test|com)|[^@]+\.test)$/i.test(String(email));
+}
+export function isTestNote(value){
+  return /^(?:test|testing|test booking|test submission)(?:\s*#?\s*\d+)?[.! ]*$/i.test(String(value||'').trim());
 }
 export function cleanItem(value) {
   const text=String(value??'').replace(/<[^>]*>/g,'').replace(/\s+/g,' ').trim().slice(0,120);
   return /^(?:none|null|n\/?a|select|choose|please select|please choose)(?:\b|$)/i.test(text)?'':text;
+}
+export function itemQuantity(value){
+  const text=cleanItem(value),match=text.match(/\s+[×x*]\s*(\d+)\s*$/i);
+  const quantity=match?Number(match[1]):1;
+  return Number.isSafeInteger(quantity)&&quantity>=1&&quantity<=1000?quantity:1;
 }
 export function itemCategory(raw) {
   const item=cleanItem(raw).toLowerCase();
@@ -27,12 +35,20 @@ export function itemCategory(raw) {
 }
 export function canonicalTown(raw) {
   const text=String(raw||'').replace(/<[^>]*>/g,'').trim().replace(/\s+/g,' ').slice(0,70);
-  const key=text.toLowerCase().replace(/ā/g,'a').replace(/ō/g,'o');
+  const key=text.normalize('NFD').replace(/\p{Diacritic}/gu,'').toLowerCase(),compact=key.replace(/[^a-z0-9]/g,'');
+  const aliases={np:'New Plymouth',npc:'New Plymouth',newp:'New Plymouth',newplymouth:'New Plymouth',newplymouthth:'New Plymouth',newplymouthh:'New Plymouth',newplymoith:'New Plymouth',newplyouth:'New Plymouth',newplymourh:'New Plymouth',newplmyouth:'New Plymouth',newpmymouth:'New Plymouth',newpltmouth:'New Plymouth',neeplymouth:'New Plymouth',newplymoutg:'New Plymouth',newlymouth:'New Plymouth',newplyomuth:'New Plymouth',bellblock:'Bell Block',startford:'Stratford',stratfotd:'Stratford',stratforf:'Stratford',ingkewood:'Inglewood',ingleeood:'Inglewood',inglewoid:'Inglewood',iglewood:'Inglewood',elthome:'Eltham',waiitara:'Waitara'};
+  if(aliases[compact])return aliases[compact];
+  const suburbs=['Westown','Merrilands','Marfell','Vogeltown','Lower Vogeltown','Lwr Vogeltown','Strandon','Moturoa','Motoroa','Fitzroy','Fitroy','Spotswood','Welbourn','Whalers Gate','Lynmouth','Brooklands','Ferndale','Glen Avon','Marfelly','Frankleigh Park','Hurdon'];
+  if(suburbs.some(s=>s.toLowerCase().replace(/[^a-z]/g,'')===compact))return 'New Plymouth';
   const towns=[['new plymouth','New Plymouth'],['bell block','Bell Block'],['waitara','Waitara'],['inglewood','Inglewood'],
     ['stratford','Stratford'],['eltham','Eltham'],['hawera','Hāwera'],['oakura','Ōakura'],['okato','Ōkato'],['opunake','Ōpunake'],
-    ['patea','Pātea'],['waverley','Waverley'],['manaia','Manaia'],['ure nui','Urenui'],['urenui','Urenui'],['hamilton','Hamilton']];
-  const match=towns.find(([name])=>key===name||key.startsWith(name+',')||key.startsWith(name+' '));
-  return match?match[1]:text||'Town not recorded';
+    ['patea','Pātea'],['waverley','Waverley'],['manaia','Manaia'],['ure nui','Urenui'],['urenui','Urenui'],['hamilton','Hamilton'],
+    ...['Egmont Village','Normanby','Kaponga','Midhirst','Lepperton','Tikorangi','Omata','Rahotu','Tarata','Sentry Hill','Auroa','Oaonui','Kaimiro','Tariki','Motonui','Motunui','Huirangi','Cardiff','Okaiawa','Manutahi','Pungarehu','Warea','Tataraimaka','Onaero','Ngaere','Awatuna','Riverlea','Kakaramea','Waitui','Waiongana','Mahoe'].map(t=>[t.toLowerCase(),t])];
+  const segments=key.split(/[,/]/).map(s=>s.trim().replace(/\s+\d{4}$/,''));
+  const match=towns.find(([name])=>compact===name.replace(/\s/g,'')||segments.includes(name)||key===name||key.endsWith(' '+name)||new RegExp('^'+name+'\\s+\\d{4}$').test(key));
+  if(match)return match[1];
+  if(!text||isTestNote(text)||/\d|\b(?:street|st|road|rd|avenue|ave|drive|dr|place|pl|terrace|trc)\b/i.test(text))return 'Town not recorded';
+  return text;
 }
 export function mergeStatsRows(rows,entries=[]) {
   const groups=[],byAlias=new Map();
@@ -51,7 +67,7 @@ export function mergeStatsRows(rows,entries=[]) {
     const find=field=>sorted.find(r=>field==='items'?r.items?.length:field==='town'?r.town&&r.town!=='Town not recorded':r[field]);
     const cancelled=primary.cancelled===true||sorted.some(r=>r.test)||!(primary.rank>0)&&sorted.some(r=>r.cancelled),completed=!cancelled&&(money?money.completed:sorted.some(r=>r.completed));
     result.push({key:primary.key,aliases:[...group.aliases],name:find('name')?.name||'',customerId:find('customerId')?.customerId||'',
-      town:find('town')?.town||'Town not recorded',items:find('items')?.items||[],referral:find('referral')?.referral||'',
+      town:canonicalTown(find('town')?.town||''),items:find('items')?.items||[],referral:find('referral')?.referral||'',
       completed,cancelled,test:sorted.some(r=>r.test),assumed:money?.assumed??primary.assumed??false,archived:sorted.some(r=>r.archived),cents:money?.cents??sorted.find(r=>Number.isSafeInteger(r.cents)&&r.cents>=0)?.cents??null,
       priceReviewCents:money?.priceReviewCents??find('priceReviewCents')?.priceReviewCents??null,
       recalculatedPrice:money?.recalculatedPrice??primary.recalculatedPrice??false,
@@ -65,22 +81,23 @@ export function mergeStatsRows(rows,entries=[]) {
 export function aggregateStats(rows,{lens='completed',from='',to=''}={}) {
   const selected=rows.map(r=>({...r,day:lens==='history'?r.requestedDay:r.completedDay})).filter(r=>(lens==='history'||r.completed&&(lens!=='confirmed'||!r.assumed))&&(!from||r.day>=from)&&(!to||r.day<=to));
   const items=new Map(),towns=new Map(),customers=new Map(),months=new Map(),weekdays=new Map(),referrals=new Map(),days=new Map();
-  let itemTotal=0,multiItemJobs=0,unknownItemJobs=0,totalCents=0,largestJob=null;
+  let itemTotal=0,fridgesAndUprightFreezers=0,multiItemJobs=0,unknownItemJobs=0,totalCents=0,largestJob=null;
   for(const row of selected){
-    const jobItems=(row.items||[]).map(cleanItem).filter(Boolean);itemTotal+=jobItems.length;
-    if(jobItems.length>1)multiItemJobs++;if(!jobItems.length)unknownItemJobs++;
-    for(const item of jobItems){const category=itemCategory(item);items.set(category,(items.get(category)||0)+1);}
+    const jobItems=(row.items||[]).map(cleanItem).filter(Boolean),units=jobItems.reduce((sum,item)=>sum+itemQuantity(item),0);itemTotal+=units;
+    if(units>1)multiItemJobs++;if(!jobItems.length)unknownItemJobs++;
+    for(const item of jobItems){const category=itemCategory(item),quantity=itemQuantity(item);items.set(category,(items.get(category)||0)+quantity);if(category==='Fridges'||category==='Fridge or upright freezer'||/upright freezer/i.test(item))fridgesAndUprightFreezers+=quantity;}
     const town=canonicalTown(row.town),townValue=towns.get(town)||{label:town,jobs:0,items:0,cents:0};
-    townValue.jobs++;townValue.items+=jobItems.length;townValue.cents+=row.cents||0;towns.set(town,townValue);
+    townValue.jobs++;townValue.items+=units;townValue.cents+=row.cents||0;towns.set(town,townValue);
     if(row.customerId){
       const customerKey=row.customerId;
       const customer=customers.get(customerKey)||{name:row.name||'Name not recorded',jobs:0,items:0,cents:0};
-      customer.jobs++;customer.items+=jobItems.length;customer.cents+=row.cents||0;customers.set(customerKey,customer);
+      if(customer.name==='Name not recorded'&&row.name)customer.name=row.name;
+      customer.jobs++;customer.items+=units;customer.cents+=row.cents||0;customers.set(customerKey,customer);
     }
     totalCents+=row.cents||0;
-    if(!largestJob||jobItems.length>largestJob.items)largestJob={items:jobItems.length,town,day:row.day};
+    if(!largestJob||units>largestJob.items)largestJob={items:units,town,day:row.day};
     if(validDay(row.day)){
-      const month=row.day.slice(0,7),entry=months.get(month)||{day:month,jobs:0,items:0,cents:0};entry.jobs++;entry.items+=jobItems.length;entry.cents+=row.cents||0;months.set(month,entry);
+      const month=row.day.slice(0,7),entry=months.get(month)||{day:month,jobs:0,items:0,cents:0};entry.jobs++;entry.items+=units;entry.cents+=row.cents||0;months.set(month,entry);
       const weekday=new Date(row.day+'T12:00:00Z').getUTCDay();weekdays.set(weekday,(weekdays.get(weekday)||0)+1);
       const day=days.get(row.day)||{day:row.day,jobs:0,cents:0};day.jobs++;day.cents+=row.cents||0;days.set(row.day,day);
     }
@@ -88,12 +105,13 @@ export function aggregateStats(rows,{lens='completed',from='',to=''}={}) {
   }
   const repeatCustomers=[...customers.values()].filter(c=>c.jobs>1);
   const rank=list=>list.sort((a,b)=>b.jobs-a.jobs||b.cents-a.cents||String(a.label||a.name).localeCompare(String(b.label||b.name)));
-  return {lens,jobs:selected.length,assumedJobs:selected.filter(r=>r.assumed).length,itemTotal,fridges:items.get('Fridges')||0,freezers:items.get('Freezers')||0,
+  return {lens,jobs:selected.length,assumedJobs:selected.filter(r=>r.assumed).length,itemTotal,fridges:items.get('Fridges')||0,fridgesAndUprightFreezers,freezers:items.get('Freezers')||0,
     fridgeOrFreezer:items.get('Fridge or upright freezer')||0,uniqueCustomers:customers.size,repeatCustomers:repeatCustomers.length,
     repeatJobs:repeatCustomers.reduce((s,c)=>s+c.jobs,0),multiItemJobs,unknownItemJobs,totalCents,
     averageJobCents:selected.length?Math.round(totalCents/selected.length):0,averageItems:selected.length?itemTotal/selected.length:0,
     items:[...items].map(([label,count])=>({label,count})).sort((a,b)=>b.count-a.count||a.label.localeCompare(b.label)),
-    topTowns:rank([...towns.values()]).slice(0,10),topCustomers:rank([...customers.values()]).slice(0,10),
+    missingTownJobs:towns.get('Town not recorded')?.jobs||0,estimatedDateJobs:selected.filter(r=>r.dateEstimated).length,
+    topTowns:rank([...towns.values()].filter(t=>t.label!=='Town not recorded')).slice(0,10),topCustomers:[...customers.values()].sort((a,b)=>lens==='history'?b.jobs-a.jobs||b.cents-a.cents:b.cents-a.cents||b.jobs-a.jobs).slice(0,10),
     months:[...months.values()].sort((a,b)=>a.day.localeCompare(b.day)),weekdays:[0,1,2,3,4,5,6].map(day=>({day,count:weekdays.get(day)||0})),
     referrals:[...referrals].map(([label,count])=>({label,count})).sort((a,b)=>b.count-a.count),largestJob,
     busiestDay:[...days.values()].sort((a,b)=>b.jobs-a.jobs||b.cents-a.cents)[0]||null,

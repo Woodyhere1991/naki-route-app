@@ -1,5 +1,5 @@
 import {createHash} from 'node:crypto';
-import {cleanItem,canonicalTown,isTestBooking} from '../assets/business-stats-model.js';
+import {cleanItem,canonicalTown,isTestBooking,isTestNote} from '../assets/business-stats-model.js';
 import {moneyCents,validDay} from '../assets/earnings-model.js';
 import {repriceHistoricalItems} from './history-normalise.mjs';
 import {townFromAddress} from './src/customer-details.js';
@@ -43,7 +43,7 @@ export function zeoStop(stop){
  if(cents===null&&items.length){cents=repriceHistoricalItems(items,customs.find(x=>/^(?:rural|outlying|more than 10|main town|main road)/i.test(x))||'');if(cents!==null)priceSource='appliance pricing';}
  const e=email(v['Customer Email']),p=phone(v['Customer Mobile']),name=text(v['Customer Name']),status=lower(v['Stop Progress']);
  const waypoint=!text(v['Stop Type'])&&!name&&!e&&!p&&!customs.length&&!text(v.Note)&&!text(v['Delivery Notes']);
- const test=isTestBooking(name,e)||/^chloe\s+heremaia$/i.test(name)||/^(?:test|testing|test booking)[.! ]*$/i.test(text(v.Note));
+ const test=isTestBooking(name,e)||/^chloe\s+heremaia$/i.test(name)||isTestNote(text(v.Note));
  const cancelled=['failed','undo','cancelled','canceled'].includes(status);
  const serial=text(v['Serial No']);
  return {key:`ZEO-${stop.routeId}-${serial||'row'+stop.row}`,aliases:[`ZEO-${stop.routeId}-${serial||'row'+stop.row}`],routeId:stop.routeId,
