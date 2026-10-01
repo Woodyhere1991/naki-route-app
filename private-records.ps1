@@ -1,13 +1,20 @@
 param(
     [string]$ArchivePath=(Join-Path $env:USERPROFILE 'Naki-Private\jotform-final-before-clear-20261001.json.dpapi'),
-    [switch]$VerifyOnly
+    [switch]$VerifyOnly,
+    [switch]$VerifyLayout
 )
 $ErrorActionPreference='Stop'
 Add-Type -AssemblyName System.Security
 
 function Read-NakiArchive([string]$Path) {
     $bytes=[Security.Cryptography.ProtectedData]::Unprotect([IO.File]::ReadAllBytes($Path),$null,[Security.Cryptography.DataProtectionScope]::CurrentUser)
-    try { return [Text.Encoding]::UTF8.GetString($bytes) | ConvertFrom-Json -AsHashtable -Depth 100 }
+    try {
+        $nodeRuntime=Join-Path $env:USERPROFILE '.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe'
+        if(!(Test-Path -LiteralPath $nodeRuntime)){$nodeRuntime=(Get-Command node -ErrorAction Stop).Source}
+        $view=([Text.Encoding]::UTF8.GetString($bytes)|& $nodeRuntime (Join-Path $PSScriptRoot 'private-records-normalise.mjs')|Out-String)
+        if($LASTEXITCODE -ne 0){throw 'Saved records could not be read.'}
+        return $view | ConvertFrom-Json -AsHashtable -Depth 30
+    }
     finally { [Array]::Clear($bytes,0,$bytes.Length) }
 }
 function Format-NakiAnswer($Value) {
@@ -29,19 +36,9 @@ function Get-NakiSearchLiteral([string]$Text) {
 function ConvertTo-NakiTable($Archive) {
     $table=[Data.DataTable]::new('Saved records')
     foreach($column in @('Date','Customer','Address','Phone','Appliances','Original total','Source status','Form','Record ID','Search','Details')){[void]$table.Columns.Add($column,[string])}
-    $formNames=@{};foreach($form in $Archive.forms){$formNames[[string]$form.id]=[string]$form.title}
-    foreach($submission in $Archive.submissions){
-        $answers=@($submission.answers.Values)
-        $nameAnswer=$answers|Where-Object {$_.type -match 'fullname'}|Select-Object -First 1
-        $customer=if($nameAnswer.answer -is [Collections.IDictionary]){(@($nameAnswer.answer.first,$nameAnswer.answer.middle,$nameAnswer.answer.last)|Where-Object {$_}) -join ' '}else{Format-NakiAnswer $nameAnswer.answer}
-        if(!$customer){$customer=($answers|Where-Object {$_.text -match '^(full |customer )?name$|^(first|last) name$'}|ForEach-Object {Format-NakiAnswer $_.answer}) -join ' '}
-        $address=($answers|Where-Object {$_.type -match 'address' -or $_.text -match 'street address|^town$|^city$'}|ForEach-Object {Format-NakiAnswer $_.answer}) -join '; '
-        $phone=($answers|Where-Object {$_.type -match 'phone' -or $_.text -match 'phone|mobile'}|ForEach-Object {Format-NakiAnswer $_.answer}) -join '; '
-        $appliances=($answers|Where-Object {$_.text -match 'appliance|whiteware|fridge|washing machine' -and $_.answer}|ForEach-Object {Format-NakiAnswer $_.answer}) -join '; '
-        $total=($answers|Where-Object {$_.text -match '^total( price| cost)?$|^price$'}|ForEach-Object {Format-NakiAnswer $_.answer}) -join '; '
-        $details=($answers|Sort-Object name|ForEach-Object {if($_.answer -ne $null -and (Format-NakiAnswer $_.answer) -ne ''){'{0}: {1}' -f $_.text,(Format-NakiAnswer $_.answer)}}) -join "`r`n`r`n"
+    foreach($values in $Archive.rows){
         $row=$table.NewRow()
-        $row.ItemArray=@([string]$submission.created_at,[string]$customer,[string]$address,[string]$phone,[string]$appliances,[string]$total,[string]$submission.status,[string]$formNames[[string]$submission.analyticsFormId],[string]$submission.id,[string]$details,[string]$details)
+        $row.ItemArray=$values
         $table.Rows.Add($row)
     }
     return ,$table
@@ -49,13 +46,13 @@ function ConvertTo-NakiTable($Archive) {
 
 try {
     $archive=Read-NakiArchive $ArchivePath
-    if(!$archive.forms -or !$archive.submissions){throw 'This file does not contain a complete Jotform records archive.'}
+    if(!$archive.formsCount -or !$archive.rows){throw 'This file does not contain a complete Jotform records archive.'}
     $table=ConvertTo-NakiTable $archive
-    if($table.Rows.Count -ne $archive.submissions.Count){throw 'The saved-record count did not verify.'}
+    if($table.Rows.Count -ne $archive.rows.Count){throw 'The saved-record count did not verify.'}
     if($VerifyOnly){
         $test=[Data.DataTable]::new();[void]$test.Columns.Add('Search');[void]$test.Rows.Add("Test's [100%]* record")
         foreach($term in @("Test's",'[100%]','*','record')){$test.DefaultView.RowFilter="Search LIKE '%$(Get-NakiSearchLiteral $term)%'";if($test.DefaultView.Count -ne 1){throw 'Search escaping did not verify.'}}
-        [pscustomobject]@{Records=$table.Rows.Count;Forms=$archive.forms.Count;UniqueIDs=@($table.Rows|ForEach-Object {$_['Record ID']}|Sort-Object -Unique).Count;SearchVerified=$true;PlaintextFilesWritten=0}|ConvertTo-Json -Compress
+        [pscustomobject]@{Records=$table.Rows.Count;Forms=$archive.formsCount;UniqueIDs=@($table.Rows|ForEach-Object {$_['Record ID']}|Sort-Object -Unique).Count;SearchVerified=$true;PlaintextFilesWritten=0}|ConvertTo-Json -Compress
         $table.Dispose();return
     }
     Add-Type -AssemblyName System.Windows.Forms
@@ -67,7 +64,7 @@ try {
     $heading=[Windows.Forms.Label]::new();$heading.Text='Your saved Jotform records';$heading.Font=[Drawing.Font]::new('Segoe UI',18,[Drawing.FontStyle]::Bold);$heading.Dock='Fill'
     $search=[Windows.Forms.TextBox]::new();$search.Dock='Fill';$search.PlaceholderText='Search a customer, address, appliance or any saved answer'
     $count=[Windows.Forms.Label]::new();$count.Dock='Fill';$count.Text="$($table.Rows.Count.ToString('N0')) records. Original answers are preserved. Earnings use the corrected figures in your Naki app."
-    $grid=[Windows.Forms.DataGridView]::new();$grid.Dock='Fill';$grid.ReadOnly=$true;$grid.AllowUserToAddRows=$false;$grid.AllowUserToDeleteRows=$false;$grid.MultiSelect=$false;$grid.SelectionMode='FullRowSelect';$grid.AutoSizeColumnsMode='Fill';$grid.RowHeadersVisible=$false;$grid.DataSource=$table.DefaultView
+    $grid=[Windows.Forms.DataGridView]::new();$grid.BindingContext=[Windows.Forms.BindingContext]::new();$grid.Dock='Fill';$grid.ReadOnly=$true;$grid.AllowUserToAddRows=$false;$grid.AllowUserToDeleteRows=$false;$grid.MultiSelect=$false;$grid.SelectionMode='FullRowSelect';$grid.AutoSizeColumnsMode='Fill';$grid.RowHeadersVisible=$false;$grid.DataSource=$table.DefaultView
     foreach($column in @('Search','Details')){$grid.Columns[$column].Visible=$false}
     $grid.Columns['Address'].FillWeight=160;$grid.Columns['Customer'].FillWeight=120;$grid.Columns['Appliances'].FillWeight=145;$grid.Columns['Record ID'].FillWeight=120
     $details=[Windows.Forms.RichTextBox]::new();$details.Dock='Fill';$details.ReadOnly=$true;$details.DetectUrls=$false;$details.BackColor=[Drawing.Color]::White
@@ -88,10 +85,11 @@ try {
         }}catch{[void][Windows.Forms.MessageBox]::Show('Could not save a verified copy. Your original archive is safe.','Naki records')}
         finally{$dialog.Dispose()}
     })
-    [void]$window.ShowDialog()
+    if($VerifyLayout){$window.CreateControl();$window.PerformLayout();if($grid.Columns.Count -ne 11 -or $grid.Columns['Details'].Visible -or !$grid.ReadOnly){throw 'Record viewer controls did not verify.'};[pscustomobject]@{LayoutConstructed=$true;Columns=$grid.Columns.Count;Records=$table.Rows.Count;ReadOnly=$grid.ReadOnly;DetailsHidden=$true}|ConvertTo-Json -Compress}
+    else {[void]$window.ShowDialog()}
     $grid.DataSource=$null;$details.Clear();$table.Clear();$table.Dispose();$archive=$null;$window.Dispose()
 } catch {
-    if($VerifyOnly){throw}
+    if($VerifyOnly -or $VerifyLayout){throw}
     Add-Type -AssemblyName System.Windows.Forms
     [void][Windows.Forms.MessageBox]::Show('Could not open the protected records. Use the Windows account that created the archive, and keep the original file safe.','Naki private records')
     exit 1
