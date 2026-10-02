@@ -2193,7 +2193,7 @@ function stopBelongsToBooking(stop, b){
   return false;
 }
 function syncBookingChangesIntoRuns(rows){
-  const changes=[], removals=[];
+  const changes=[], removals=[], completions=[];
   let touched=false;
   (rows||[]).forEach(b=>{
     const price=bookingPriceFor(b);
@@ -2204,6 +2204,30 @@ function syncBookingChangesIntoRuns(rows){
     runStore.runs.forEach(run=>{
       const data=run.id===runStore.activeRunId ? state : run.data;
       if (!data) return;
+      // Account completion must also settle an older restored run copy. A local
+      // Undo waiting to reach the server takes precedence over a stale response.
+      const pendingStatus=runStore.shared.pendingDirectStatuses?.[b.id];
+      if (b.status==="COMPLETED" && (!pendingStatus || pendingStatus==="COMPLETED")){
+        const finished=[...(data.stops||[]),...(data.bad||[])]
+          .filter(stop=>stopBelongsToBooking(stop,b));
+        for(const stop of finished){
+          if(stop.status==="DONE" && stop.historyStatus==="COMPLETED")continue;
+          stop.status="DONE";stop.historyStatus="COMPLETED";
+          if(!stop.confirmedPickupDate && b.pickupDate)stop.confirmedPickupDate=b.pickupDate;
+          touched=true;completions.push(`${b.firstName||"A pickup"} moved to Done in ${run.name}`);
+        }
+        const ids=new Set(finished.map(stop=>stop.id));
+        const parked=(data.bad||[]).filter(stop=>ids.has(stop.id));
+        if(parked.length){
+          data.stops=(data.stops||[]).concat(parked.filter(stop=>!(data.stops||[]).some(s=>s.id===stop.id)));
+          data.bad=data.bad.filter(stop=>!ids.has(stop.id));touched=true;
+        }
+        if(Array.isArray(data.messageSelectedIds)){
+          const selected=data.messageSelectedIds.filter(id=>!ids.has(id));
+          if(selected.length!==data.messageSelectedIds.length){data.messageSelectedIds=selected;touched=true;}
+        }
+        return;
+      }
       // Cancelled or declined: take it off the run so it is not driven to.
       if (dropped){
         const doomed=[...(data.stops||[]),...(data.bad||[])]
@@ -2253,7 +2277,31 @@ function syncBookingChangesIntoRuns(rows){
     });
   });
   if (touched){ save(); render(); if (typeof drawRoute==="function") drawRoute(); }
-  return { changes, removals };
+  return { changes, removals, completions };
+}
+// A search or the first booking page may omit an old stop. Check further pages
+// only for unfinished linked stops, without replacing the user's visible list.
+async function loadMissingRunBookings(rows,session){
+  const known=new Set(rows.map(b=>b.id)),missing=new Set();
+  for(const run of runStore.runs){
+    const data=run.id===runStore.activeRunId ? state : run.data;
+    for(const stop of [...(data?.stops||[]),...(data?.bad||[])]){
+      if(stop.submission_id && stop.status!=="DONE" && !isCollected(stop) && !known.has(stop.submission_id))missing.add(stop.submission_id);
+    }
+  }
+  const found=[];let offset=0;
+  while(missing.size){
+    const page=await ownerApi('/owner/bookings?offset='+offset);
+    if(ownerToken!==session)throw Error('Owner sign-in changed.');
+    if(!Array.isArray(page.bookings))throw Error('Could not check saved pickup statuses. Please refresh.');
+    for(const booking of page.bookings){
+      if(missing.delete(booking.id))found.push(booking);
+    }
+    if(!page.hasMore)break;
+    if(!Number.isSafeInteger(page.nextOffset) || page.nextOffset<=offset)throw Error('Could not check the next booking page. Please refresh.');
+    offset=page.nextOffset;
+  }
+  return found;
 }
 /* Invoices raised off a booking card never used to write a row into the unpaid
    ledger. The ones sent before that was fixed are still short a row, so their
@@ -2298,30 +2346,37 @@ function backfillMissingUnpaid(rows){
 }
 async function loadDirectBookings(showLoading=false,more=false){
   if (!ownerToken){ renderDirectBookings(); return; }
+  const session=ownerToken;
   if (showLoading) directStatus("Loading bookings…");
   try{
     // Finished pickups the cloud was never told about go up FIRST, so the list
     // that comes back already has them sitting under Done.
     const repushed=await flushExternalBookingSyncs();
-    const data=await loadOwnerCollection("bookings",bookingSearchText,more);
-    applyInvoiceClearance(data.invoiceClearance);
     await flushDirectCompletions();
+    const data=await loadOwnerCollection("bookings",bookingSearchText,more);
+    if(ownerToken!==session)return;
+    applyInvoiceClearance(data.invoiceClearance);
     const nextRows=Array.isArray(data.bookings) ? data.bookings : [];
-    if (!showLoading && !repushed && JSON.stringify(nextRows)===JSON.stringify(directBookingRows)) return;
     directBookingRows=nextRows;
     const repaired=backfillMissingUnpaid(directBookingRows);
     if (dedupeUnpaidLedger()) render();
-    const { changes, removals }=syncBookingChangesIntoRuns(directBookingRows);
+    const synced=syncBookingChangesIntoRuns(directBookingRows);
+    const missingRows=await loadMissingRunBookings(directBookingRows,session);
+    if(ownerToken!==session)return;
+    const extra=syncBookingChangesIntoRuns(missingRows);
+    const changes=synced.changes.concat(extra.changes),removals=synced.removals.concat(extra.removals),completions=synced.completions.concat(extra.completions);
     renderDirectBookings();
     // Customers borrow their details from these jobs, so redraw them too rather
     // than leaving the list blank until the next refresh comes round.
     if (customerRows.length) renderCustomers();
-    if (removals.length){
+    if (completions.length){
+      flash(`✓ ${completions.length} completed pickup${completions.length===1?"":"s"} moved to Done`);
+    }else if (removals.length){
       flash(`✕ ${removals.length} cancelled pickup${removals.length===1?"":"s"} removed from your runs`);
     }else if (changes.length){
       flash(`✓ Updated ${changes.length} pickup${changes.length===1?"":"s"} in your runs`);
     }
-    const notes=[...removals,...changes];
+    const notes=[...completions,...removals,...changes];
     if (repaired.length){
       notes.push(`Payment buttons put back on ${repaired.length} owing booking${repaired.length===1?"":"s"}: ${repaired.join(", ")}.`);
     }
@@ -2441,7 +2496,7 @@ async function completeDirectBooking(id){
   const b=directBookingRows.find(row=>row.id===id); if(!b) return;
   try{
     await ownerApi(`/owner/bookings/${encodeURIComponent(id)}`,{method:"PATCH",body:JSON.stringify({status:"COMPLETED"})});
-    b.status="COMPLETED"; renderDirectBookings();
+    b.status="COMPLETED"; syncBookingChangesIntoRuns([b]); renderDirectBookings();
     flash(`✓ ${b.firstName || "Booking"} marked completed`);
   }catch(e){ directStatus(e.message,true); }
 }
