@@ -45,3 +45,17 @@ test('bulk return unschedules while clearing a completed pickup never reopens it
  const {c,state,stored}=harness();await c.window.sendAllBackToBookings();assert.equal(state.stops.length,0);assert.equal(stored.date,'');
  const done=harness();done.s.status='DONE';await done.c.window.delStop(done.s.id);assert.equal(done.stored.date,'2026-10-02');assert.equal(done.state.stops.length,0);
 });
+test('orphan pickup removal preserves its unsaved note as a draft',async()=>{
+ const {c,s,state}=harness();c.directBookingRows=[];c.ownerApi=async path=>{if(path.endsWith('/owner-note'))throw Object.assign(Error('Booking not found'),{status:404});return {ok:true,removedFromRun:true,missing:true};};
+ await c.window.delStop(s.id);assert.equal(state.stops.length,0);assert.equal(vm.runInContext('bookingNoteDrafts["WEB-1"]',c),'After 10 October');
+});
+test('cancelled and declined run cards can be removed without reopening them',async()=>{
+ for(const status of ['CANCELLED','DECLINED','COMPLETED']){
+  const {c,s,state}=harness();c.ownerApi=async(path,options)=>path.endsWith('/owner-note')?{note:JSON.parse(options.body).note}:{ok:true,removedFromRun:true,booking:{id:'WEB-1',status,pickupDate:'2026-10-02'}};
+  await c.window.delStop(s.id);assert.equal(state.stops.length,0);assert.equal(c.directBookingRows[0].status,status);
+ }
+});
+test('orphan draft storage failure and a run switch retain the original pickup',async()=>{
+ const draft=harness();draft.c.saveJSON=()=>false;draft.c.ownerApi=async()=>{throw Object.assign(Error('Missing'),{status:404});};await draft.c.window.delStop(draft.s.id);assert.equal(draft.state.stops.length,1);
+ const switched=harness();const api=switched.c.ownerApi;switched.c.ownerApi=async(path,options)=>{const result=await api(path,options);if(path.endsWith('/unschedule'))switched.c.state={stops:[]};return result;};await switched.c.window.delStop(switched.s.id);assert.equal(switched.state.stops.length,1);
+});

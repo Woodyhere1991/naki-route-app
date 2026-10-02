@@ -3781,8 +3781,13 @@ export async function handlePortalRequest({ request, env, path, json, sendMail, 
       let body;try{body=await request.json();}catch{return json(request,{error:'Invalid request'},400);}
       if(typeof body.expectedPickupDate!=='string')return json(request,{error:'Refresh the booking before removing it from Scheduled.'},400);
       const row=await env.CUSTOMER_DB.prepare(`SELECT * FROM ${table} WHERE id=?1`).bind(id).first();
-      if(!row)return json(request,{error:'Booking not found'},404);
-      if(['COMPLETED','CANCELLED','DECLINED'].includes(row.status))return json(request,{error:'This booking is already completed or closed. Refresh Bookings first.'},409);
+      // Clearing a leftover run card is idempotent. Missing and closed bookings
+      // need no date/status mutation and must never be reopened as NEW.
+      if(!row)return json(request,{ok:true,removedFromRun:true,missing:true});
+      if(['COMPLETED','CANCELLED','DECLINED'].includes(row.status)){
+        const notes=await ownerNotesFor(env.CUSTOMER_DB,[id]);
+        return json(request,{ok:true,removedFromRun:true,booking:{...bookingFrom({...row,booking_source:table==='bookings'?'WEBSITE':table==='jotform_bookings'?'JOTFORM':'PICKUP_RUN'}),ownerNote:notes.get(id)||''}});
+      }
       const alreadyNew=row.status==='NEW'&&!row.pickup_date&&!row.pickup_window;
       if(!alreadyNew && (row.pickup_date||'')!==body.expectedPickupDate)return json(request,{error:'The pickup date changed. Refresh Bookings before removing this pickup.'},409);
       if(!alreadyNew){

@@ -74,13 +74,30 @@ test('unscheduling clears owner and customer dates while preserving both notes a
   assert.equal((await call(path,{body})).status,200);assert.equal(db.prepare("SELECT count(*) n FROM booking_events WHERE event_type='STATUS'").get().n,1);assert.equal(state.mails.length,0);
  }finally{db.close();}
 });
-test('unscheduling rejects stale dates and completed jobs, including imported bookings without email',async()=>{
+test('unscheduling rejects stale dates and removes closed run copies without reopening, including imported bookings without email',async()=>{
  const {db,call}=await setup();try{
   db.exec(NEW_BOOKING);db.exec("UPDATE bookings SET status='CONFIRMED',pickup_date='2026-10-20'");
   assert.equal((await call('/owner/bookings/WEB-audit-1/unschedule',{body:{expectedPickupDate:'2026-10-02'}})).status,409);
-  db.exec("UPDATE bookings SET status='COMPLETED'");assert.equal((await call('/owner/bookings/WEB-audit-1/unschedule',{body:{expectedPickupDate:'2026-10-20'}})).status,409);
+  db.exec("UPDATE bookings SET status='COMPLETED'");const closed=await call('/owner/bookings/WEB-audit-1/unschedule',{body:{expectedPickupDate:'2026-10-20'}});assert.equal(closed.status,200);assert.equal((await closed.json()).removedFromRun,true);assert.equal(db.prepare("SELECT status FROM bookings WHERE id='WEB-audit-1'").get().status,'COMPLETED');
   db.exec("INSERT INTO jotform_bookings(id,submission_id,form_id,email,status,pickup_date,created_at,updated_at) VALUES('JOTFORM-unschedule','unschedule','form','','CONFIRMED','2026-10-02',0,0); INSERT INTO external_bookings(id,external_key,sync_token_hash,email,status,pickup_date,created_at,updated_at) VALUES('PICKUP-unschedule','unschedule','hash','','CONFIRMED','2026-10-02',0,0)");
   for(const id of ['JOTFORM-unschedule','PICKUP-unschedule']){const res=await call(`/owner/bookings/${id}/unschedule`,{body:{expectedPickupDate:'2026-10-02'}});assert.equal(res.status,200);const b=(await res.json()).booking;assert.equal(b.status,'NEW');assert.equal(b.pickupDate,'');assert.equal(b.source,id.startsWith('JOTFORM')?'JOTFORM':'PICKUP_RUN');}
+ }finally{db.close();}
+});
+test('deleted and cancelled bookings can leave a run without losing history, changing dates or sending mail',async()=>{
+ const {db,call,state}=await setup();try{
+  db.exec(NEW_BOOKING);db.exec("UPDATE bookings SET status='CANCELLED',pickup_date='2026-09-08',cancellation_reason='Owner confirmed cancellation'");
+  for(const status of ['CANCELLED','DECLINED','COMPLETED']){
+   db.prepare("UPDATE bookings SET status=? WHERE id='WEB-audit-1'").run(status);
+   const before=db.prepare("SELECT * FROM bookings WHERE id='WEB-audit-1'").get();
+   const result=await (await call('/owner/bookings/WEB-audit-1/unschedule',{body:{expectedPickupDate:'old'}})).json();
+   assert.equal(result.removedFromRun,true);assert.equal(result.booking.status,status);
+   assert.deepEqual(db.prepare("SELECT * FROM bookings WHERE id='WEB-audit-1'").get(),before);
+  }
+  for(const id of ['WEB-missing','JOTFORM-missing','PICKUP-missing']){
+   const result=await call(`/owner/bookings/${id}/unschedule`,{body:{expectedPickupDate:''}});assert.equal(result.status,200);assert.equal((await result.json()).missing,true);
+  }
+  assert.equal((await call('/owner/bookings/WEB-missing/unschedule',{token:'cust-audit-token',body:{expectedPickupDate:''}})).status,401);
+  assert.equal(state.mails.length,0);assert.equal(db.prepare('SELECT count(*) n FROM booking_events').get().n,0);
  }finally{db.close();}
 });
 

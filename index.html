@@ -1339,7 +1339,7 @@ async function ownerApi(path, options={}){
       renderCustomers();
       refreshCloudBackupInfo();
     }
-    throw new Error(data.error || "Bookings could not be loaded");
+    throw Object.assign(new Error(data.error || "Bookings could not be loaded"),{status:res.status});
   }
   return data;
 }
@@ -5959,7 +5959,7 @@ function pickupNoteBookingId(s){
   return b?.id || (/^(?:WEB|PHONE|JOTFORM|PICKUP)-/.test(s.submission_id||"") ? s.submission_id : "");
 }
 const pickupNoteSaves=new Map();
-async function syncPickupNote(s){
+async function syncPickupNote(s,{allowMissing=false}={}){
   if(!s || (!s.note && !s.ownerNotePending))return true;
   if(!s.ownerNotePending && s.ownerNoteSynced===s.note)return true;
   if(pickupNoteSaves.has(s.id))return pickupNoteSaves.get(s.id);
@@ -5983,7 +5983,15 @@ async function syncPickupNote(s){
       const b=directBookingRows.find(row=>row.id===bookingId);if(b)b.ownerNote=result.note;
       save();renderDirectBookings();
       return !s.ownerNotePending;
-    }catch(error){s.ownerNotePending=true;save();flash("Pickup note kept on this phone. "+error.message);return false;}
+    }catch(error){
+      if(allowMissing && error.status===404){
+        // A deleted booking cannot accept notes. Keep the note as a backed-up
+        // owner draft so removing its leftover run card does not lose it.
+        const id=pickupNoteBookingId(s);
+        if(id){bookingNoteDrafts[id]=String(s.note||"");if(saveJSON("naki_booking_note_drafts_v1",bookingNoteDrafts)===false)return false;save();return true;}
+      }
+      s.ownerNotePending=true;save();flash("Pickup note kept on this phone. "+error.message);return false;
+    }
   })();
   pickupNoteSaves.set(s.id,work);
   try{return await work;}finally{pickupNoteSaves.delete(s.id);}
@@ -5998,7 +6006,7 @@ async function unschedulePickup(s){
   if(!s)return true;
   if(unschedulingPickups.has(s.id))return unschedulingPickups.get(s.id);
   const work=(async()=>{
-    if(!await syncPickupNote(s))return false;
+    if(!await syncPickupNote(s,{allowMissing:true}))return false;
     // Clearing collected jobs is tidying history, not undoing collection.
     if(s.status==='DONE'||s.collectedAt||s.historyStatus==='COMPLETED'||isUnload(s))return true;
     const id=pickupNoteBookingId(s);
@@ -6010,6 +6018,10 @@ async function unschedulePickup(s){
       if(!ownerToken)throw new Error('Sign in to update the customer’s booking.');
       const b=directBookingRows.find(row=>row.id===id);
       const result=await ownerApi(`/owner/bookings/${encodeURIComponent(id)}/unschedule`,{method:'POST',body:JSON.stringify({expectedPickupDate:b?.pickupDate ?? s.confirmedPickupDate ?? ''})});
+      if(result.removedFromRun===true && (result.missing===true || ['COMPLETED','CANCELLED','DECLINED'].includes(result.booking?.status))){
+        if(result.booking){const index=directBookingRows.findIndex(row=>row.id===id);if(index>=0)directBookingRows[index]=result.booking;}
+        return true;
+      }
       if(!result.booking||result.booking.status!=='NEW'||result.booking.pickupDate||result.booking.pickupWindow)throw new Error('The unscheduled booking was not confirmed. Please retry.');
       const index=directBookingRows.findIndex(row=>row.id===id);
       if(index>=0)directBookingRows[index]=result.booking;
@@ -7321,14 +7333,17 @@ window.delStop = async id => {
   if(removingStops.has(id))return;
   const runState=state;
   const s = findStop(id);
+  if(!s)return;
   const who = s ? (fullName(s) || fullAddr(s) || "this stop") : "this stop";
   if (!confirm(`Remove ${who} from ${activeRunName()}?\n\nThis takes it off the scheduled run.`)) return;
   removingStops.add(id);
   try{
     if(!await unschedulePickup(s))return;
+    if(state!==runState){flash('Run changed while removing the pickup. Return to its run and retry.');return;}
     runState.stops = runState.stops.filter(x=>x.id!==id);
     if (Array.isArray(runState.messageSelectedIds)) runState.messageSelectedIds = runState.messageSelectedIds.filter(x=>x!==id);
     save(); render(); drawRoute(); renderDirectBookings();
+    flash(`✓ ${who} removed from ${activeRunName()}`);
   }finally{removingStops.delete(id);}
 };
 // Tidy the run at the end of the day: take every completed pickup off this run
