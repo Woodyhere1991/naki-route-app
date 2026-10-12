@@ -455,7 +455,6 @@
     background-position:calc(100% - 19px) center,calc(100% - 14px) center;background-size:5px 5px;background-repeat:no-repeat}
 </style>
 <link rel="stylesheet" href="/assets/earnings.css" />
-<link rel="stylesheet" href="/assets/run-suggestions.css" />
 </head>
 <body data-scheduled-section="listWrap">
 
@@ -874,7 +873,7 @@ const RUNS_LS = "naki_pickup_runs_v1";                 // named runs + shared un
 const GEO = "naki_geocache_v10";                        // v9 drops refused rural RAPID pins that had no Navigate button
 const PIN_FIX = 8;                                     // bump to re-pin saved stops after a geocode fix
 const UA  = "NakiPickupRun/1.0 (whiteware pickup route planner; nakiwreckremoval@gmail.com)";
-const API = new URLSearchParams(location.search).get('suggestions-demo')==='1' ? '/demo-api' : "https://naki-route-api.nakiwreckremoval.workers.dev/v2";
+const API = "https://naki-route-api.nakiwreckremoval.workers.dev/v2";
 const OWNER_TOKEN_KEY = "naki_owner_token_v1";
 const AREA_COLORS = { North:"var(--north)", South:"var(--south)", Coastal:"var(--coastal)", "":"var(--none)" };
 const AREA_HEX    = { North:"#3ba0ff", South:"#ff8a3d", Coastal:"#27c08a", "":"#8a93a3" };
@@ -1864,7 +1863,7 @@ function renderDirectBookings(){
       // Text is always here. With a confirmed day it pre-fills the confirmation;
       // without one it just opens an empty message, which still beats copying the
       // number out by hand.
-      b.phone?`<a class="ghost sm" href="sms:${esc(String(b.phone).replace(/[^\d+]/g,""))}${pickupDay?`?body=${smsText}`:""}">💬 ${pickupDay?"Text details":"Text"}</a>`:"",
+      b.phone?`<a class="ghost sm" href="sms:${esc(smsPhoneNumber(b.phone))}${pickupDay?`?body=${smsText}`:""}">💬 ${pickupDay?"Text details":"Text"}</a>`:"",
       navAddress?`<a class="ghost sm" target="_blank" rel="noopener" href="https://www.google.com/maps/search/?api=1&amp;query=${encodeURIComponent(navAddress)}">🧭 Navigate</a>`:""
     ].filter(Boolean).join("");
     const moneyActions=[
@@ -3057,7 +3056,7 @@ function renderCustomers(){
         ${c.accessNotes?`<div class="small muted">📝 ${esc(c.accessNotes)}</div>`:""}
         ${customerDocumentBox(c)}
         <div class="direct-actions">
-          ${c.phone?`<a class="ghost sm" href="sms:${esc(String(c.phone).replace(/[^\d+]/g,""))}">💬 Text</a>`:""}
+          ${c.phone?`<a class="ghost sm" href="sms:${esc(smsPhoneNumber(c.phone))}">💬 Text</a>`:""}
           ${c.phone?`<a class="ghost sm" href="tel:${esc(String(c.phone).replace(/[^\d+]/g,""))}">📞 Call</a>`:""}
           ${c.email?`<a class="ghost sm" href="mailto:${encodeURIComponent(c.email)}">✉️ Email</a>`:""}
           ${address?`<a class="ghost sm" target="_blank" rel="noopener" href="https://www.google.com/maps/search/?api=1&amp;query=${encodeURIComponent(safeMapsAddress(c.streetAddress,c.town,c.area))}">🧭 Navigate</a>`:""}
@@ -4277,13 +4276,9 @@ function mapRow(raw){
     if (m) email = m[0];
   }
   if (!phone){
-    // A NZ phone-shaped value: starts 0 or +64, 9–12 digits, phone characters only.
-    // The leading-0/+64 rule skips dates (2026-05-01), 2-digit totals, 19-digit
-    // submission IDs and decimal lat/lng.
-    const hit = allVals.find(v => {
-      const d = v.replace(/\D/g,"");
-      return /^(\+?64|0)[\d\s()\-]{6,}$/.test(v.trim()) && d.length>=9 && d.length<=12;
-    });
+    // Recognise NZ and Australian contact numbers while excluding dates,
+    // short totals, submission IDs and decimal lat/lng.
+    const hit = allVals.find(goodPhone);
     if (hit) phone = hit;
   }
   // Rescue the submission ID too: jumbled rows (extra confirm-phone/email columns)
@@ -5292,8 +5287,19 @@ function renderStart(){
 }
 
 // Contact helpers for individual and bulk messaging (pending stops only).
+function australianPhoneNumber(value){
+  const v=String(value||"").trim();
+  if(!/^\+?[\d\s()\-]+$/.test(v))return "";
+  const compact=v.replace(/[\s()\-]/g,"");
+  if(/^04\d{8}$/.test(compact))return "+61"+compact.slice(1);
+  const international=compact.replace(/^(?:\+?61|0061)0?/,"");
+  if(international!==compact && /^[23478]\d{8}$/.test(international))return "+61"+international;
+  return "";
+}
+function smsPhoneNumber(value){ return australianPhoneNumber(value)||String(value||"").replace(/[^\d+]/g,""); }
 function goodPhone(value){
   const v=String(value||"").trim(), digits=v.replace(/\D/g,"");
+  if(australianPhoneNumber(v))return true;
   return /^(\+?64|0)[\d\s()\-]{6,}$/.test(v) && digits.length>=9 && digits.length<=12;
 }
 function goodEmail(value){ return /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(String(value||"").trim()); }
@@ -5598,7 +5604,7 @@ function dedupeBy(values, keyOf){
   return out;
 }
 function selectedNumbers(){
-  return dedupeBy(selectedRecipients().map(s=>(s.phone||"").trim()).filter(goodPhone), v=>v.replace(/\D/g,""));
+  return dedupeBy(selectedRecipients().map(s=>(s.phone||"").trim()).filter(goodPhone).map(smsPhoneNumber), v=>v.replace(/\D/g,""));
 }
 // Default reminder is one text that lists every town's time. Sending a single
 // group is the optional split, used for an Oakura/Okato run.
@@ -5615,7 +5621,7 @@ function messageBatches(recipients, groupId){
     : [{ id:"confirmation", label:"All selected customers", recipients, message:bulkMessage() }];
 }
 function batchPhoneNumbers(batch){
-  return dedupeBy(batch.recipients.map(s=>(s.phone||"").trim()).filter(goodPhone), v=>v.replace(/\D/g,""));
+  return dedupeBy(batch.recipients.map(s=>(s.phone||"").trim()).filter(goodPhone).map(smsPhoneNumber), v=>v.replace(/\D/g,""));
 }
 async function sendReminderEmailBatch(batch){
   const recipients=batch.recipients.filter(s=>goodEmail(s.email));
@@ -6172,7 +6178,7 @@ function openGmail(fields){
     if (!appOpened && document.visibilityState !== "hidden") location.href = webUrl;
   }, 1400);
 }
-window.textStop = id => { const s=findStop(id); if(s&&s.phone) location.href="sms:"+s.phone.replace(/\s+/g,""); };
+window.textStop = id => { const s=findStop(id); if(s&&s.phone) location.href="sms:"+smsPhoneNumber(s.phone); };
 window.setMessageMode = m => { if(bulkSendBusy)return;reminderMoveId=""; state.messageMode = m==="reminder" ? "reminder" : "confirm"; save(); renderContacts(); };
 function saveReminderWindows(windows){
   state.reminderWindows=windows.map(w=>({
@@ -8370,6 +8376,5 @@ fieldBoot();
 <script src="assets/document-preview.js"></script>
 <script src="assets/api-access.js"></script>
 <script src="assets/earnings.js"></script>
-<script type="module" src="assets/run-suggestions.js"></script>
 </body>
 </html>

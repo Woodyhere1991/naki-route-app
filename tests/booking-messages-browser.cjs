@@ -7,12 +7,12 @@ const root=path.resolve(__dirname,'..'),origin=process.env.NAKI_PUBLIC_ORIGIN||'
   const page=await browser.newPage({viewport:{width,height:950},serviceWorkers:'block'}),errors=[],sends=[],reads=[],moves=[];
   let failPage=false,failMail=true,holdMove,failMove=false,review='';
   const rows=[
-   {id:'WEB-waiting-123',firstName:'Waiting',phone:'0211111111',email:'waiting@example.test',streetAddress:'1 Example Street',town:'Waitara',status:'NEW'},
+   {id:'WEB-waiting-123',firstName:'Waiting',phone:'0491 570 159',email:'waiting@example.test',streetAddress:'1 Example Street',town:'Waitara',status:'NEW'},
    {id:'JOTFORM-scheduled-123',firstName:'Scheduled',phone:'0212222222',email:'scheduled@example.test',streetAddress:'2 Example Street',town:'Waitara',status:'CONFIRMED',pickupDate:'2026-11-01'},
    {id:'WEB-finished-123',firstName:'Finished',email:'finished@example.test',status:'COMPLETED'},
    {id:'WEB-cancelled-123',firstName:'Cancelled',email:'cancelled@example.test',status:'CANCELLED'},
    {id:'PHONE-later-123',firstName:'Later page',email:'later@example.test',status:'NEW'},
-   {id:'WEB-duplicate-123',firstName:'Second booking',phone:'0211111111',email:'WAITING@example.test',status:'NEW'}
+   {id:'WEB-duplicate-123',firstName:'Second booking',phone:'+61 491 570 159',email:'WAITING@example.test',status:'NEW'}
   ];
   page.on('pageerror',e=>errors.push(e.message));page.on('dialog',async d=>{if(d.type()==='confirm')review=d.message();await d.accept();});
   await page.route('**/*',async route=>{
@@ -43,6 +43,8 @@ const root=path.resolve(__dirname,'..'),origin=process.env.NAKI_PUBLIC_ORIGIN||'
    return route.fulfill({status,contentType:'application/json',body:JSON.stringify(data)});
   });
   await page.goto(origin+'/',{waitUntil:'domcontentloaded'});await page.waitForFunction(()=>typeof window.bulkSend==='function');
+  assert.equal(await page.locator('#suggestRuns, #suggestThisRun, #runSuggestionsDialog').count(),0,'Suggestion controls removed');
+  assert.equal(await page.evaluate(()=>typeof window.nakiRunSuggestions),'undefined','Suggestion feature no longer loads');
   await page.evaluate(()=>{
    ownerToken='synthetic';cloudBackupBusy=true;clearTimeout(cloudBackupTimer);bookingSearchText='would hide unscheduled';
    state.stops=[];state.bad=[];state.unpaid=[];state.confirmationDate='2020-01-01';state.messageHistory={};
@@ -71,6 +73,7 @@ const root=path.resolve(__dirname,'..'),origin=process.env.NAKI_PUBLIC_ORIGIN||'
   assert.match(review,/I'm injured/);assert.match(review,/waiting@example.test/,'Full draft and recipients shown before send');
   assert.equal(await page.evaluate(()=>state.confirmationDate),'2020-01-01','Old collection dates do not block or change the update');
   assert.equal(await page.evaluate(()=>batchPhoneNumbers({recipients:selectedRecipients()}).length),2,'One text per number');
+  assert.match(await page.locator('#bulkSendStatus a').getAttribute('href'),/^sms:\+61491570159;0213333333\?body=/,'Australian mobile included once with +61 in the real text handoff');
   failMail=false;await page.locator('#bulkSendButton').click();await page.waitForFunction(()=>!bulkSendBusy);
   assert.equal(sends.length,2);assert.deepEqual(sends[1].messages.map(m=>m.to),['later@example.test'],'Retry skips successful emails');
   await page.getByRole('button',{name:'Select new only',exact:true}).click();assert.equal(await page.locator('#selectedCount').innerText(),'1 selected customer');

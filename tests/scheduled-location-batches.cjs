@@ -6,7 +6,7 @@ context.window=context; context.save=()=>{};context.render=()=>{};context.drawRo
 context.findStop=id=>context.state.stops.find(s=>s.id===id);
 context.messageCandidates=()=>context.pickupsOnly(context.state.stops).filter(s=>s.status!=='DONE');
 vm.createContext(context);
-for(const name of ['originalStopLocation','setPickupLocation','pickupKeys','historyBookingKey','historyBookingStatus','historyBookingPayload','bulkBookingRecipient','defaultReminderWindows','reminderWindowsAreStale','reminderWindows','bulkRecipients','dedupeBy','batchPhoneNumbers','batchSmsUrl'])vm.runInContext(extract(name),context);
+for(const name of ['originalStopLocation','setPickupLocation','pickupKeys','historyBookingKey','historyBookingStatus','historyBookingPayload','bulkBookingRecipient','defaultReminderWindows','reminderWindowsAreStale','reminderWindows','bulkRecipients','dedupeBy','australianPhoneNumber','smsPhoneNumber','batchPhoneNumbers','batchSmsUrl'])vm.runInContext(extract(name),context);
 vm.runInContext('const PICKUP_LOCATION_FIELDS = ["street","town","area","lat","lng","geoLabel","addrDiffers","pinFix"];',context);
 vm.runInContext(html.slice(html.indexOf('window.restorePickupLocation ='),html.indexOf('\n};',html.indexOf('window.restorePickupLocation ='))+3),context);
 const original={id:'one',src:'sheet',street:'10 Home Road',town:'Kaponga',area:'South Taranaki',lat:-39.43,lng:174.15,geoLabel:'10 Home Road, Kaponga',phone:'021 1234567',email:'test@example.test',appliances:['Fridge'],amount:30};
