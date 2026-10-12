@@ -4,6 +4,7 @@ function extract(name){const start=html.indexOf('function '+name+'(');assert(sta
 const context={state:{stops:[]},navigator:{userAgent:'Android'},pickupsOnly:rows=>rows.filter(s=>s.kind!=='unload'),selectedRecipients:()=>[],goodPhone:n=>/^\+?\d[\d ]{6,}$/.test(n||''),normKey:s=>String(s||'').toLowerCase(),fullAddr:s=>[s.street,s.town].filter(Boolean).join(', ')};
 context.window=context; context.save=()=>{};context.render=()=>{};context.drawRoute=()=>{};context.flash=()=>{};
 context.findStop=id=>context.state.stops.find(s=>s.id===id);
+context.messageCandidates=()=>context.pickupsOnly(context.state.stops).filter(s=>s.status!=='DONE');
 vm.createContext(context);
 for(const name of ['originalStopLocation','setPickupLocation','pickupKeys','historyBookingKey','historyBookingStatus','historyBookingPayload','bulkBookingRecipient','defaultReminderWindows','reminderWindowsAreStale','reminderWindows','bulkRecipients','dedupeBy','batchPhoneNumbers','batchSmsUrl'])vm.runInContext(extract(name),context);
 vm.runInContext('const PICKUP_LOCATION_FIELDS = ["street","town","area","lat","lng","geoLabel","addrDiffers","pinFix"];',context);
@@ -37,7 +38,7 @@ console.log('PASS: one-off address isolation, pin clearing, reload/restore, stab
 // Run the real send handler with fake transport: denied clipboard must still
 // hand all recipients to SMS, and a custom batch must stay within its members.
 Object.assign(context,{
- bulkSendBusy:false,pendingTextBatches:[],location:{},
+ bulkSendBusy:false,runChangeBusy:false,pendingTextBatches:[],location:{},
  document:{getElementById:()=>null},
  messageMode:()=> 'reminder',bulkMessage:()=> 'Same message to everyone',
  reminderMessageForWindow:()=> 'Second batch message',reminderWindowPlaces:w=>w.label,

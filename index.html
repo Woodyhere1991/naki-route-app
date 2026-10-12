@@ -17,6 +17,7 @@
 
 <link rel="stylesheet" href="/assets/vendor/leaflet.css" />
 <script src="/assets/field-tools.js"></script>
+<script src="/assets/booking-messages.js"></script>
 
 <style>
   :root{
@@ -899,6 +900,7 @@ let routeTiming = {};       // id -> {order, driveSec} cumulative drive time fro
 let importBusy = false;     // a sheet load is still geocoding — block overlapping loads
 let runChangeBusy = false;  // a GPS/address action must finish before changing runs
 let bulkSendBusy = false;   // one bulk send at a time — prevents accidental duplicate emails
+let returnBookingsBusy=false,returnBookingsProgress="";
 let reminderMoveId = "";    // which reminder group is showing the move menus
 let pendingReceipts = {};   // stop id -> built PDF File, waiting for the Send tap
 let pendingInvoices = {};   // stop id -> built invoice PDF, waiting for the Send tap
@@ -1271,7 +1273,7 @@ function applyAppView(view){
   document.body.dataset.view = view;
   document.querySelectorAll("[data-view-button]").forEach(btn=>btn.classList.toggle("on", btn.dataset.viewButton===view||view==="earnings"&&btn.dataset.viewButton==="customers"));
   if (view==="today" && map) setTimeout(()=>map.invalidateSize(), 80);
-  if (view==="messages") setTimeout(fitMessagePreview, 0);
+  if (view==="messages") {setTimeout(fitMessagePreview, 0);if(messageScope()==="bookings")void loadBookingMessageRecipients();}
   if (view==="today" || view==="add") refreshWeather(false);   // panel just became visible
   if (view==="bookings") loadDirectBookings(true);
   if (view==="customers") loadCustomers(true);
@@ -5145,7 +5147,7 @@ function renderList(){
 
   wrap.innerHTML =
     `<div class="sectitle">${pickupsOnly(pending).length} pickups left${pending.length-pickupsOnly(pending).length ? ` · ${pending.length-pickupsOnly(pending).length} GMS drop-off${pending.length-pickupsOnly(pending).length===1?"":"s"}` : ""} · ${esc(activeRunName())} ${state.manual?'· manual order':''} · hold &amp; drag to reorder</div>
-     ${pickupsOnly(pending).length+(state.bad||[]).length ? `<div class="row" style="margin:0 0 10px"><button class="ghost grow" onclick="sendAllBackToBookings()">↩ Send all back to Bookings</button></div>` : ""}
+     ${pickupsOnly(pending).length+(state.bad||[]).length ? `<div style="margin:0 0 10px"><button id="sendBackBookings" class="ghost" style="width:100%" onclick="sendAllBackToBookings()" ${returnBookingsBusy?'disabled aria-busy="true"':''}>${returnBookingsBusy?'Moving pickups… please wait':'↩ Send all back to Bookings'}</button><div id="returnBookingsStatus" class="small" role="status" style="margin-top:6px">${returnBookingsBusy?'<span class="spinner"></span> '+esc(returnBookingsProgress):''}</div></div>` : ""}
      <div id="pendingList">${pendRows || `<div class="empty" style="padding:16px 8px">Nothing pending — all picked up 🎉</div>`}</div>` +
     (done.length ? `<details class="card completed-pickups"${completedOpen?" open":""}><summary>Completed (${done.length})</summary>
       <div class="row" style="margin:10px 0 12px"><button class="ghost grow" onclick="clearCompletedStops()">🧹 Clear completed off this run</button></div>
@@ -5481,10 +5483,11 @@ function confirmationMessage(value){
   const when = d===1 ? "this evening" : d===0 ? "shortly" : "the evening before";
   return `Hey Woody here, just confirming ${day} for whiteware collection. Welcome to leave whiteware inside your property line somewhere with $ inside if easier. I will send a reminder and rough time schedule ${when} too. Thanks :)`;
 }
-function messageMode(){ return state.messageMode==="reminder" ? "reminder" : "confirm"; }
+function messageMode(){ return messageScope()==="bookings" ? "update" : state.messageMode==="reminder" ? "reminder" : "confirm"; }
 // Woody's own wording wins over the automatic one, in both modes. This is what
 // actually gets texted and emailed, not just what the box shows.
 function bulkMessage(){
+  if (messageMode()==="update") return (bookingMessageState().draft ?? injuryUpdateMessage()).trim();
   if (messageMode()==="reminder") return (state.reminderMessage || reminderBulkMessage()).trim();
   return (state.confirmationMessage || confirmationMessage(state.confirmationDate)).trim();
 }
@@ -5493,8 +5496,11 @@ function bulkMessage(){
 function messageDay(){ return state.confirmationDate || localIso(new Date()); }
 // Confirmations and reminders go to the same people for the same run, so each mode
 // gets its own bucket - sending one must not wipe the other's "already sent" marks.
-function messageBucket(){ return `${messageMode()}:${messageDay()}`; }
-function messageHistory(){ return state.messageHistory || {}; }
+function messageBucket(){ return messageMode()==="update" ? `update:${localIso(new Date())}:${bulkMessage()}` : `${messageMode()}:${messageDay()}`; }
+function messageHistory(){
+  const data=messageSelectionState();
+  return data.messageHistory=data.messageHistory||{};
+}
 // Marks hang off the stable pickup key, not the stop id: a sheet reload that drops
 // and re-adds someone hands out a brand new id, which used to lose their mark.
 function messageMarkKey(s){ return s ? (pickupKeys(s)[0] || "stop:" + s.id) : ""; }
@@ -5502,7 +5508,7 @@ function markFor(s){
   if (!s) return {};
   const history = messageHistory();
   const bucket = history[messageBucket()] || {};
-  const legacy = history[messageDay()] || {};   // marks saved by older versions
+  const legacy = messageMode()==="update" ? {} : history[messageDay()] || {};   // marks saved by older versions
   return bucket[messageMarkKey(s)] || bucket[s.id] || legacy[messageMarkKey(s)] || legacy[s.id] || {};
 }
 function isContacted(stop){
@@ -5511,16 +5517,16 @@ function isContacted(stop){
   return !!(mark.contacted || mark.email || mark.text); // also keeps your existing marks
 }
 function selectedRecipientIds(){
-  const bucket = messageBucket();
-  if (state.messageSelectionDay !== bucket){
-    state.messageSelectionDay = bucket;
-    state.messageSelectedIds = pickupsOnly(state.stops).filter(s => s.status!=="DONE" && !isContacted(s)).map(s=>s.id);
+  const bucket = messageSelectionBucket(), data=messageSelectionState();
+  if (data.messageSelectionDay !== bucket){
+    data.messageSelectionDay = bucket;
+    data.messageSelectedIds = messageCandidates().filter(s=>!isContacted(s)).map(s=>s.id);
   }
-  return new Set(state.messageSelectedIds||[]);
+  return new Set(data.messageSelectedIds||[]);
 }
 function selectedRecipients(){
   const selected = selectedRecipientIds();
-  return pickupsOnly(state.stops).filter(s => s.status!=="DONE" && selected.has(s.id));
+  return messageCandidates().filter(s=>selected.has(s.id));
 }
 function bulkBookingRecipient(s){
   s = originalStopLocation(s);
@@ -5570,8 +5576,8 @@ async function publishBulkPickupDate(recipients,pickupDate=state.confirmationDat
 // pickupDate is only the date that was actually saved to accounts, so it stays
 // blank unless Woody chose one - the bucket the marks live in is separate.
 function markRecipientsSentLocally(recipients,pickupDate=state.confirmationDate||"",datesSaved=false){
-  state.messageHistory=state.messageHistory||{};
-  const bucket=state.messageHistory[messageBucket()]=state.messageHistory[messageBucket()]||{};
+  const history=messageHistory();
+  const bucket=history[messageBucket()]=history[messageBucket()]||{};
   recipients.forEach(s=>{
     const key=messageMarkKey(s);
     const mark=bucket[key]=bucket[key]||{};
@@ -5619,7 +5625,7 @@ async function sendReminderEmailBatch(batch){
   for(let i=0;i<messages.length;i+=40){
     const chunk=messages.slice(i,i+40);
     try{
-      const res=await ownerActionFetch(`${API}/send-bulk`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({subject:messageMode()==="confirm"?"Whiteware collection confirmation":"Whiteware collection reminder",messages:chunk})});
+      const res=await ownerActionFetch(`${API}/send-bulk`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({subject:messageMode()==="update"?"Whiteware collection update":messageMode()==="confirm"?"Whiteware collection confirmation":"Whiteware collection reminder",messages:chunk})});
       const out=await res.json(); const accepted=new Set(out.sentTo||[]);
       sent+=Number(out.sent||0);
       recordMessageDelivery(recipients.filter(s=>accepted.has(s.email.trim().toLowerCase())),{email:true,emailFailed:false,emailMessage:batch.message});
@@ -5673,8 +5679,9 @@ function renderContacts(){
   // Rebuilding this card then destroys the input and the picker slams shut
   // before the tick/Done button. Keep the same field on screen until blur.
   if (messagesPickerOpen()){ pickerNeedsRedraw = true; return; }
-  const pend = pickupsOnly(state.stops.filter(s => s.status!=="DONE"));
-  if (!pend.length){ wrap.innerHTML = `<div class="view-title">Messages</div><div class="card empty"><b>No customers yet</b><p>Add pickups first, then come back here to message them.</p><button onclick="setAppView('add')">Add pickups</button></div>`; return; }
+  const scopeControls=messageScopeControls();
+  const pend = messageCandidates();
+  if (!pend.length){ wrap.innerHTML = `<div class="view-title">Messages</div><div class="card">${scopeControls}<p>${messageScope()==="bookings"?'No bookings to show yet. Load bookings above or change who to include.':'No pending pickups on this run. Choose All bookings to message unscheduled customers too.'}</p></div>`; return; }
   const selected = selectedRecipientIds();
   const selCount = selectedRecipients().length; // count only stops that still exist, not stale ids
   const missing = pend.map(s => {
@@ -5687,8 +5694,8 @@ function renderContacts(){
   const recipientRows = pend.map(s => {
     const flags = messageDeliveryLabel(s);
     return `<label class="missing-contact" style="display:flex;gap:8px;align-items:flex-start;cursor:pointer">
-      <input type="checkbox" data-recipient="${s.id}" ${selected.has(s.id)?"checked":""} onchange="setRecipientSelected('${s.id}',this.checked)" style="width:auto;margin-top:3px" />
-      <span><b>${esc(fullName(s)||fullAddr(s)||"Unnamed pickup")}</b><br><span class="small muted">${esc(flags)}</span></span>
+      <input type="checkbox" aria-label="Select ${esc(fullName(s)||fullAddr(s))}" data-recipient="${esc(s.id)}" ${selected.has(s.id)?"checked":""} onchange="setRecipientSelected(this.dataset.recipient,this.checked)" style="width:auto;margin-top:3px" ${bulkSendBusy?'disabled':''}/>
+      <span><b>${esc(fullName(s)||fullAddr(s)||"Unnamed pickup")}</b><br><span class="small muted">${esc(fullAddr(s))}${s.messageStatus?` · ${esc(s.messageStatus)}`:''}<br>${esc(flags)}</span></span>
     </label>`;
   }).join("");
   const mode = messageMode();
@@ -5697,7 +5704,7 @@ function renderContacts(){
       <button class="${mode==='confirm'?'good':'ghost'} sm grow" onclick="setMessageMode('confirm')">Confirmation</button>
       <button class="${mode==='reminder'?'good':'ghost'} sm grow" onclick="setMessageMode('reminder')">Reminder + times</button>
     </div>`;
-  const windows = reminderWindows();
+  const windows = mode==="update" ? [] : reminderWindows();
   const windowRows=windows.map(w=>{
     const people=w.stopIds.map(findStop).filter(Boolean);
     return `<div class="card reminder-group"><h3>${esc(w.label||"Batch")} · ${people.length}</h3>
@@ -5709,34 +5716,34 @@ function renderContacts(){
   const reminderControls=`<details data-message-batches style="margin-top:10px" ${(batchesOpen ?? windows.length>1)?"open":""}><summary>Optional batches · ${windows.length}</summary>
     <p class="small muted">Everyone starts together. Add a batch, then move whoever you want into it — any town.</p>
     ${windowRows}<button class="ghost sm" onclick="addReminderWindow()">＋ Add batch</button> <button class="ghost sm" onclick="resetReminderWindows()">Put everyone in one batch</button></details>`;
-  const previewPlaceholder = mode==="reminder"
+  const previewPlaceholder = mode==="update" ? "Type your booking update" : mode==="reminder"
     ? "Add scheduled pickups first"
     : "Choose a collection day above";
-  const previewHint = mode==="reminder"
+  const previewHint = mode==="update" ? "Edit this update, untick anyone you want to leave out, then send selected. Pickup dates stay as they are." : mode==="reminder"
     ? `Use Select all to include everyone, then Send selected only. Optional batches let you split the schedule.`
     : `Choose the day and the message is made automatically — or type in the box to word it yourself.`;
   const edited = Boolean(messageOverride().trim());
   const confirmMessage = `<label style="margin-top:10px">Message</label>
-    <textarea id="messagePreview" placeholder="${previewPlaceholder}" oninput="saveMessageDraft(this.value)">${esc(bulkMessage())}</textarea>
+    <textarea id="messagePreview" placeholder="${previewPlaceholder}" oninput="saveMessageDraft(this.value)" ${bulkSendBusy?'disabled':''}>${esc(bulkMessage())}</textarea>
     <div style="display:flex;gap:6px;margin-top:6px">
       <button class="ghost sm" onclick="copyText('messagePreview',this)">Copy message</button>
       <button class="ghost sm" id="messageResetBtn" onclick="resetMessageDraft()" style="display:${edited?"inline-block":"none"}">↺ Use the automatic message</button>
     </div>
     <p class="small muted" id="messageHint">${edited ? EDITED_MESSAGE_HINT : previewHint}</p>`
     + `<section style="margin-top:10px"><h3>Customers &amp; message status</h3>
-    <p class="small muted">Select new only skips people already messaged for this day and message type. Then use Send selected only.</p>
+    <p class="small muted">${mode==="update"?'Select new only skips people already sent this exact update today. Each phone number and email address is included once.':'Select new only skips people already messaged for this day and message type.'} Then use Send selected only.</p>
     <div style="display:flex;gap:6px;margin:6px 0"><button class="ghost sm" onclick="selectRecipients('all')">Select all</button><button class="ghost sm" onclick="selectRecipients('new')">Select new only</button><button class="ghost sm" onclick="selectRecipients('none')">Unselect all</button></div>
     <div class="recipient-list">${recipientRows}</div></section>`;
-  const preview = `${modeToggle}<label style="margin-top:10px">Collection day</label>
+  const preview = `${scopeControls}${mode==="update"?'':`${modeToggle}<label style="margin-top:10px">Collection day</label>
     <div class="date-field-shell"><input type="date" value="${esc(state.confirmationDate||"")}" oninput="setConfirmationDate(this.value)" onchange="setConfirmationDate(this.value)" onblur="finishDateTimePicker(this)" /></div>
-    ${reminderControls}
+    ${reminderControls}`}
     ${confirmMessage}
-    <button class="ghost sm" style="margin-top:6px" onclick="clearMessageMarks()">Clear sent marks for this day</button>`;
+    <button class="ghost sm" style="margin-top:6px" onclick="clearMessageMarks()">Clear sent marks for ${mode==="update"?'this update':'this day'}</button>`;
   const sendHint = mode==="reminder"
     ? "Opens your text app with the numbers and message filled in. Check the recipients, then tap Send."
     : "Opens your text app with the numbers and message filled in. Check the recipients, then tap Send.";
   const actions = `<div class="message-actions"><b id="selectedCount">${selCount} selected customer${selCount!==1?'s':''}</b>
-    <div class="row" style="margin-top:6px"><button id="bulkSendButton" class="good grow" onclick="bulkSend('',true)" ${bulkSendBusy?'disabled aria-busy="true"':''}>${bulkSendBusy?'Sending… please wait':'Send selected only'}</button></div>
+    <div class="row" style="margin-top:6px"><button id="bulkSendButton" class="good grow" onclick="bulkSend('',true)" ${bulkSendBusy||mode==="update"&&(bookingMessageLoading||bookingMessageError||bookingMessageSession!==ownerToken)?'disabled':''} ${bulkSendBusy?'aria-busy="true"':''}>${bulkSendBusy?'Sending… please wait':'Send selected only'}</button></div>
     <div id="bulkSendStatus" class="small" aria-live="polite" style="margin-top:6px;${bulkSendBusy?'color:var(--warn)':''}">${bulkSendBusy?'<span class="spinner"></span> Sending now — please do not press it again.':''}</div>
     <p class="small muted" style="margin:6px 0 0">${sendHint} Use your phone's <b>Mass text / individual SMS</b> setting for separate customer conversations.</p>
     ${preparedTextBatchControls()}</div>`;
@@ -5792,6 +5799,7 @@ function esc(s){ return String(s==null?"":s).replace(/[&<>"]/g, c=>({"&":"&amp;"
 
 /* ---------- Per-stop actions (exposed for inline onclick) ---------- */
 window.setConfirmationDate = value => {
+  if(bulkSendBusy)return;
   value = String(value || "");
   if (value === (state.confirmationDate || "")) return;
   state.confirmationDate = value;
@@ -5805,6 +5813,7 @@ window.setConfirmationDate = value => {
 // Woody's own wording for the mode on screen, if he's typed over the automatic
 // message. Empty means the message is still being made for him.
 function messageOverride(){
+  if(messageMode()==="update")return bookingMessageState().draft||"";
   return (messageMode()==="reminder" ? state.reminderMessage : state.confirmationMessage) || "";
 }
 function clearMessageOverrides(){
@@ -5819,8 +5828,10 @@ const EDITED_MESSAGE_HINT = "Edited — your wording is what gets texted and ema
 // Typed straight into the preview box. Re-rendering the whole card mid-type would
 // shut the keyboard and lose the cursor, so only the hint and the button change.
 window.saveMessageDraft = value => {
+  if(bulkSendBusy)return;
   const text = String(value==null ? "" : value);
-  if (messageMode()==="reminder") state.reminderMessage = text; else state.confirmationMessage = text;
+  if (messageMode()==="update") bookingMessageState().draft=text;
+  else if (messageMode()==="reminder") state.reminderMessage = text; else state.confirmationMessage = text;
   save();
   const edited = Boolean(text.trim());
   const resetBtn = document.getElementById("messageResetBtn");
@@ -5830,7 +5841,9 @@ window.saveMessageDraft = value => {
   fitMessagePreview();
 };
 window.resetMessageDraft = () => {
-  if (messageMode()==="reminder") delete state.reminderMessage; else delete state.confirmationMessage;
+  if(bulkSendBusy)return;
+  if (messageMode()==="update") delete bookingMessageState().draft;
+  else if (messageMode()==="reminder") delete state.reminderMessage; else delete state.confirmationMessage;
   save(); renderContacts();
   flash("↺ Back to the automatic message");
 };
@@ -5841,29 +5854,32 @@ function updateSelectedCustomerCount(){
   el.textContent = `${count} selected customer${count!==1?'s':''}`;
 }
 window.setRecipientSelected = (id, checked) => {
+  if(bulkSendBusy)return;
   const selected = selectedRecipientIds();
   if (checked) selected.add(id); else selected.delete(id);
-  state.messageSelectedIds = [...selected]; save();
+  messageSelectionState().messageSelectedIds = [...selected]; save();
   document.querySelectorAll("[data-recipient]").forEach(el=>{ el.checked=selected.has(el.dataset.recipient); });
   updateSelectedCustomerCount();
 };
 window.selectRecipients = mode => {
-  const candidates = pickupsOnly(state.stops).filter(s => s.status!=="DONE");
-  state.messageSelectedIds = mode==="all" ? candidates.map(s=>s.id)
+  if(bulkSendBusy)return;
+  const candidates = messageCandidates(), data=messageSelectionState();
+  data.messageSelectedIds = mode==="all" ? candidates.map(s=>s.id)
     : mode==="new" ? candidates.filter(s=>!isContacted(s)).map(s=>s.id)
     : [];
-  state.messageSelectionDay = messageBucket(); save();
-  const selected = new Set(state.messageSelectedIds);
+  data.messageSelectionDay = messageSelectionBucket(); save();
+  const selected = new Set(data.messageSelectedIds);
   document.querySelectorAll("[data-recipient]").forEach(el=>{ el.checked=selected.has(el.dataset.recipient); });
   updateSelectedCustomerCount();
 };
 window.clearMessageMarks = () => {
-  const history = state.messageHistory || {};
+  if(bulkSendBusy)return;
+  const history = messageHistory(), data=messageSelectionState();
   if (!history[messageBucket()] && !history[messageDay()]) return;
-  if (!confirm("Clear the email and text sent marks for this collection day?")) return;
-  delete state.messageHistory[messageBucket()];
-  delete state.messageHistory[messageDay()];   // clear any old-format marks too
-  state.messageSelectionDay = ""; state.messageSelectedIds = [];
+  if (!confirm("Clear the email and text sent marks for this message?")) return;
+  delete history[messageBucket()];
+  if(messageMode()!=="update")delete history[messageDay()];   // clear any old-format marks too
+  data.messageSelectionDay = ""; data.messageSelectedIds = [];
   save(); render();
 };
 window.toggleDone = id => {
@@ -6061,8 +6077,11 @@ async function unschedulePickup(s){
   unschedulingPickups.set(s.id,work);
   try{return await work;}finally{unschedulingPickups.delete(s.id);}
 }
-async function unschedulePickups(stops){
-  for(const stop of stops)if(!await unschedulePickup(stop))return false;
+async function unschedulePickups(stops,onProgress=()=>{}){
+  for(let i=0;i<stops.length;i++){
+    onProgress(i+1,stops.length);
+    if(!await unschedulePickup(stops[i]))return false;
+  }
   return true;
 }
 const bookingNoteDrafts=loadJSON("naki_booking_note_drafts_v1",{});
@@ -6154,7 +6173,7 @@ function openGmail(fields){
   }, 1400);
 }
 window.textStop = id => { const s=findStop(id); if(s&&s.phone) location.href="sms:"+s.phone.replace(/\s+/g,""); };
-window.setMessageMode = m => { reminderMoveId=""; state.messageMode = m==="reminder" ? "reminder" : "confirm"; save(); renderContacts(); };
+window.setMessageMode = m => { if(bulkSendBusy)return;reminderMoveId=""; state.messageMode = m==="reminder" ? "reminder" : "confirm"; save(); renderContacts(); };
 function saveReminderWindows(windows){
   state.reminderWindows=windows.map(w=>({
     id:w.id, label:String(w.label||"").trim().slice(0,90), stopIds:[...new Set(w.stopIds)], start:w.start, end:w.end
@@ -7152,7 +7171,7 @@ function setBulkSendBusy(isBusy, recipientCount=0){
   if (btn){
     btn.disabled = isBusy;
     btn.setAttribute("aria-busy", isBusy ? "true" : "false");
-    btn.textContent = isBusy ? "Sending… please wait" : "📣 Text & email everyone";
+    btn.textContent = isBusy ? "Sending… please wait" : "Send selected only";
   }
   if (status && isBusy){
     status.style.color = "var(--warn)";
@@ -7185,7 +7204,7 @@ function showBulkSendResult(message, hasProblem=false){
    page write to the clipboard while it is still handling the tap, so it cannot
    wait behind a network call. */
 function bulkRecipients(group, selectedOnly=false){
-  const recipients=selectedOnly ? selectedRecipients() : pickupsOnly(state.stops).filter(s=>s.status!=="DONE");
+  const recipients=selectedOnly ? selectedRecipients() : messageCandidates();
   return recipients.filter(s=>!group || group.stopIds.includes(s.id));
 }
 function batchSmsUrl(batch){
@@ -7195,6 +7214,8 @@ function batchSmsUrl(batch){
 }
 window.bulkSend = async (groupId, selectedOnly=false) => {
   if (bulkSendBusy) return;
+  const updating=messageMode()==="update";
+  if(updating && (bookingMessageLoading||bookingMessageError||bookingMessageSession!==ownerToken))return alert("Refresh all bookings and wait for them to finish loading before sending.");
   groupId = String(groupId||"");
   const group = groupId ? reminderWindows().find(w=>w.id===groupId) : null;
   if (groupId && !group) return alert("That group is gone.");
@@ -7209,10 +7230,11 @@ window.bulkSend = async (groupId, selectedOnly=false) => {
   if (!nums.length && !mailable.length){
     return alert("None of the selected customers have a phone number or an email address.");
   }
-  if (state.confirmationDate && daysUntil(state.confirmationDate)<0) return alert("That collection day has already been. Choose the new day first.");
+  if (!updating && state.confirmationDate && daysUntil(state.confirmationDate)<0) return alert("That collection day has already been. Choose the new day first.");
   const message = group && messageMode()==="reminder" ? reminderMessageForWindow(group) : bulkMessage();
   if (messageMode()==="reminder" && !reminderWindows().some(w=>w.stopIds.length)) return alert("Add pickups first.");
-  if (messageMode()!=="reminder" && !message) return alert("Choose the collection day first, then check the message preview.");
+  if (!message) return alert(updating?"Type your update first.":"Choose the collection day first, then check the message preview.");
+  if(updating && message.length>4000)return alert("Keep your update under 4000 characters so the full message can be emailed.");
   const confirming = messageMode()==="confirm";
   if (confirming && !state.confirmationDate) return alert("Choose the collection day first.");
   const day = collectionDayLabel(state.confirmationDate) || "the chosen day";
@@ -7223,10 +7245,12 @@ window.bulkSend = async (groupId, selectedOnly=false) => {
   if (mailable.length) lines.push(`Email the same message to ${mailable.length} of them`);
   if (confirming) lines.push(`Save ${day} to their online accounts`);
   lines.push("Mark texts as sent when Messages opens and show which emails succeeded");
-  if (!confirm(`${confirming?"Send the confirmation":(who ? `Send the ${who} reminder` : "Send the reminder")} to ${recipients.length} customer${recipients.length!==1?"s":""}?\n\n`
-    + lines.map(line => `• ${line}`).join("\n"))) return;
+  if (!confirm(`${updating?"Send this booking update":confirming?"Send the confirmation":(who ? `Send the ${who} reminder` : "Send the reminder")} to ${recipients.length} ${updating?'selected booking':'customer'}${recipients.length!==1?"s":""}?\n\n`
+    + lines.map(line => `• ${line}`).join("\n")+(updating?`\n\nMessage:\n${message}\n\nRecipients:\n${recipients.map(s=>`${fullName(s)||fullAddr(s)} · ${[s.phone,s.email].filter(Boolean).join(' / ')||'No contact details'}`).join('\n')}`:""))) return;
   bulkSendBusy = true;
+  const previousRunBusy=runChangeBusy;runChangeBusy=true;
   setBulkSendBusy(true, recipients.length);
+  renderContacts();
   let datesSaved=false, emailed=0, problem="";
   try{
     // Start the copy inside the tap, then wait on it before anything slow runs.
@@ -7275,6 +7299,7 @@ window.bulkSend = async (groupId, selectedOnly=false) => {
     save();
   } finally {
     bulkSendBusy = false;
+    runChangeBusy=previousRunBusy;
     pendingTextBatches = phoneBatches.length>1 ? phoneBatches : [];
     state.pendingTextGroups=pendingTextBatches.map(b=>({id:b.id,label:b.label,message:b.message,stopIds:b.recipients.map(s=>s.id)}));save();
     render();
@@ -7423,21 +7448,33 @@ window.clearCompletedStops = async () => {
 // still needing an address) comes off, so those bookings drop back to New.
 // Completed pickups and GMS drop-offs stay put.
 window.sendAllBackToBookings = async () => {
+  if(returnBookingsBusy||runChangeBusy||bulkSendBusy)return;
   const back = pickupsOnly(state.stops).filter(s => s.status!=="DONE");
   const bad = state.bad||[];
   const n = back.length + bad.length;
   if (!n) return;
   if (!confirm(`Send all ${n} pickup${n===1?"":"s"} on ${activeRunName()} back to Bookings as New?`)) return;
   const returningState=state;
-  if(!await unschedulePickups([...back,...bad]))return;
+  returnBookingsBusy=true;runChangeBusy=true;returnBookingsProgress=`Moving 1 of ${n} pickups back to Bookings…`;
+  renderList();
+  try{
+  const moved=await unschedulePickups([...back,...bad],(current,total)=>{
+    returnBookingsProgress=`Moving ${current} of ${total} pickups back to Bookings… please wait.`;
+    const status=document.getElementById('returnBookingsStatus');
+    if(status)status.innerHTML='<span class="spinner"></span> '+esc(returnBookingsProgress);
+  });
+  if(!moved){alert("The move stopped before finishing. The remaining pickups are kept on this run. Check the connection or sign-in, then try again.");return;}
   if(state!==returningState)return;
   const ids = new Set(back.map(s => s.id));
   state.stops = state.stops.filter(s => !ids.has(s.id));
-  state.bad = [];
+  const badIds=new Set(bad.map(s=>s.id));
+  state.bad = (state.bad||[]).filter(s=>!badIds.has(s.id));
   if (Array.isArray(state.messageSelectedIds))
     state.messageSelectedIds = state.messageSelectedIds.filter(x => !ids.has(x));
   save(); render(); drawRoute(); renderDirectBookings();
   flash(`✓ ${n} sent back to Bookings`);
+  }catch(error){alert(`Couldn't finish moving pickups: ${error.message}. Please retry.`);}
+  finally{returnBookingsBusy=false;runChangeBusy=false;returnBookingsProgress="";renderList();}
 };
 window.copyText = (id, btn) => {
   const el = document.getElementById(id); if(!el) return;

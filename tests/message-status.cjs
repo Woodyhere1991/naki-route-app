@@ -4,6 +4,8 @@ const helpers=fs.readFileSync('assets/field-tools.js','utf8');
 for(const match of html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/g))new vm.Script(match[1]);
 function extract(source,name){const start=source.indexOf('function '+name+'(');assert(start>=0,name);const lineEnd=source.indexOf('\n',start);if(source.slice(start,lineEnd).trimEnd().endsWith('}'))return source.slice(start,lineEnd);const end=source.indexOf('\n}',start);return source.slice(start,end+2);}
 const ctx=vm.createContext({state:{stops:[],messageHistory:{}},save(){},messageBucket:()=> 'confirm:2026-09-10',messageDay:()=> '2026-09-10',messageMarkKey:s=>s.key,findStop:id=>ctx.state.stops.find(s=>s.id===id)});
+ctx.messageSelectionState=()=>ctx.state;
+ctx.messageMode=()=> 'confirm';
 for(const name of ['messageHistory','markFor','isContacted'])vm.runInContext(extract(html,name),ctx);
 ctx.goodPhone=value=>/^021/.test(value||'');
 for(const name of ['messageDeliveryLabel','recordMessageDelivery','markTextsSentOnOpen'])vm.runInContext(extract(helpers,name),ctx);

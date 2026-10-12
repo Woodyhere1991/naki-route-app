@@ -112,8 +112,8 @@ function messageDeliveryLabel(s) {
   return m.contacted||m.text?'Previously sent':'Not sent';
 }
 function recordMessageDelivery(recipients, changes) {
-  state.messageHistory=state.messageHistory||{};
-  const bucket=state.messageHistory[messageBucket()]=state.messageHistory[messageBucket()]||{};
+  const history=messageHistory();
+  const bucket=history[messageBucket()]=history[messageBucket()]||{};
   recipients.forEach(s=>{const k=messageMarkKey(s);bucket[k]={...markFor(s),...(bucket[k]||{}),stopId:s.id,deliveryVersion:2,...changes};});
   save();
 }
