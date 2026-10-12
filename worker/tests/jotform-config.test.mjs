@@ -6,6 +6,7 @@ import { JOTFORM_FORM_CONFIG } from "../src/customer.js";
 test("supports every live whiteware Jotform with its own field layout", () => {
   assert.deepEqual(Object.keys(JOTFORM_FORM_CONFIG).sort(), [
     "240411186193047",
+    "241746187390867",
     "251768488640874",
     "252021546019044"
   ]);
