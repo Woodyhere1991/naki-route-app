@@ -1540,7 +1540,7 @@ const PICKUP_TOWNS = [
 // Proper spelling for a group heading, where plain title case gets it wrong.
 const TOWN_LABELS = {
   "new plymouth":"New Plymouth", "bell block":"Bell Block", "egmont village":"Egmont Village",
-  "hawera":"H\u0101wera", "opunake":"\u014Cpunake", "patea":"P\u0101tea"
+  "hawera":"H\u0101wera", "opunake":"\u014Cpunake", "patea":"P\u0101tea", "oakura":"\u014cakura"
 };
 function townKey(value){
   // Macrons (Hāwera vs Hawera) are the same town typed two ways - strip them for
@@ -1563,6 +1563,20 @@ function townKey(value){
   const part=Object.keys(TOWN_ALIASES).find(suburb=>new RegExp(`\\b${suburb}\\b`).test(cleaned));
   if (part) return TOWN_ALIASES[part];
   return cleaned;
+}
+// A known pickup town (or a suburb of one) for this text, or "" if none.
+function knownTownKey(value){
+  const key=townKey(value);
+  return key && (PICKUP_TOWNS.includes(key) || Object.values(TOWN_ALIASES).includes(key)) ? key : "";
+}
+// Customers often leave Town blank or type just "Taranaki" while the street
+// line says "122A Wairau Road, Oakura". When Town names no pickup town, take
+// the town named in the address instead, so the booking isn't "No town".
+function fillTownFromAddress(row){
+  if (!row || knownTownKey(row.town)) return row;
+  const fromAddress=knownTownKey(row.streetAddress) || knownTownKey(row.area);
+  if (fromAddress) row.town=townLabel(fromAddress);
+  return row;
 }
 function townLabel(value){
   const key=townKey(value);
@@ -2366,7 +2380,7 @@ async function loadDirectBookings(showLoading=false,more=false){
     const data=await loadOwnerCollection("bookings",bookingSearchText,more);
     if(ownerToken!==session)return;
     applyInvoiceClearance(data.invoiceClearance);
-    const nextRows=Array.isArray(data.bookings) ? data.bookings : [];
+    const nextRows=(Array.isArray(data.bookings) ? data.bookings : []).map(fillTownFromAddress);
     directBookingRows=nextRows;
     const repaired=backfillMissingUnpaid(directBookingRows);
     if (dedupeUnpaidLedger()) render();
