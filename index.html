@@ -61,6 +61,15 @@
     white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .stats{margin-left:auto;display:flex;gap:clamp(8px,3vw,14px);text-align:center;flex:0 0 auto}
   .stat{min-width:25px}.stat b{display:block;font-size:18px;line-height:1;color:#fff8e9} .stat span{font-size:10px;color:#b8cbd1;text-transform:uppercase}
+  /* Items count opens a list of exactly what is still to collect on this run. */
+  button.stat{background:none;border:0;padding:0;margin:0;min-height:0;font:inherit;color:inherit;cursor:pointer}
+  button.stat span::after{content:" ▾"}
+  button.stat[aria-expanded="true"] span::after{content:" ▴"}
+  .item-tally{max-width:760px;margin:0 auto;padding:8px 12px 10px}
+  .item-tally[hidden]{display:none}
+  .item-tally ul{list-style:none;margin:6px 0 0;padding:0}
+  .item-tally li{display:flex;justify-content:space-between;gap:10px;padding:7px 2px;border-bottom:1px solid var(--line);font-size:15px}
+  .item-tally li b{color:#ffd36b;min-width:2.5em;text-align:right}
 
   /* Named pickup runs: always visible so switching never depends on the current tab. */
   .run-switcher{background:#08273bf2;border-bottom:1px solid var(--line)}
@@ -455,9 +464,10 @@
     <div class="stats">
       <div class="stat"><b id="stCount">0</b><span>Stops</span></div>
       <div class="stat"><b id="stKm">–</b><span>Km</span></div>
-      <div class="stat"><b id="stApp">0</b><span>Items</span></div>
+      <button type="button" class="stat" id="stAppBtn" aria-expanded="false" aria-controls="itemTally" title="Show what's being picked up"><b id="stApp">0</b><span>Items</span></button>
     </div>
   </div>
+  <section class="item-tally" id="itemTally" aria-label="Items still to pick up" hidden></section>
   <section class="run-switcher" aria-label="Pickup run switcher">
     <div class="run-switcher-inner">
       <div class="run-label"><strong>Pickup run</strong><span id="runCountLabel"></span></div>
@@ -4925,6 +4935,7 @@ function updateStats(km, mins){
   const pending = pickupsOnly(state.stops.filter(s=>s.status!=="DONE"));
   $("#stCount").textContent = pending.length;
   $("#stApp").textContent = pending.reduce((n,s)=>n + (s.appliances?s.appliances.length:0), 0);
+  renderItemTally(pending);
   if (km==null){ $("#stKm").textContent = "–"; return; }
   $("#stKm").textContent = Math.round(km);
 }
@@ -6311,6 +6322,27 @@ async function loadReceiptLogo(){
 // Logo and PDF library are loaded when a receipt or invoice is requested.
 // "Fridge, Fridge, Washing machine" reads as three different jobs. Roll the
 // repeats up into "Fridge x2" — shorter to read and shorter on the page.
+// Each item and how many of it are still to collect on this run, most first.
+function renderItemTally(pending){
+  const counts=new Map();
+  pending.forEach(s=>(s.appliances||[]).forEach(raw=>{
+    const name=String(raw==null?"":raw).trim();
+    if (!name) return;
+    const key=name.toLowerCase();
+    if (!counts.has(key)) counts.set(key,{name,count:0});
+    counts.get(key).count++;
+  }));
+  const rows=[...counts.values()].sort((a,b)=>b.count-a.count||a.name.localeCompare(b.name));
+  $("#itemTally").innerHTML = rows.length
+    ? `<div class="small muted">Still to pick up on ${esc(activeRunName())}</div><ul>${rows.map(r=>`<li><span>${esc(r.name)}</span><b>× ${r.count}</b></li>`).join("")}</ul>`
+    : `<div class="small muted">No items left to pick up on this run.</div>`;
+}
+function toggleItemTally(){
+  const panel=$("#itemTally"), open=panel.hidden;
+  panel.hidden=!open;
+  $("#stAppBtn").setAttribute("aria-expanded",String(open));
+}
+
 function groupItems(list){
   const order=[], seen=new Map();
   (list||[]).forEach(raw=>{
@@ -7556,6 +7588,7 @@ async function loadFromSheet(url){
   importBusy=false;
   addFileStops(rows, "Google Sheet", setSheetStatus);
 }
+$("#stAppBtn").onclick = toggleItemTally;
 $("#sheetLoad").onclick = () => loadFromSheet($("#sheetUrl").value);
 if (state.sheetUrl) $("#sheetUrl").value = state.sheetUrl;   // remember the last sheet
 

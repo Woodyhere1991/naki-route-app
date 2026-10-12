@@ -142,6 +142,12 @@ export const JOTFORM_FORM_CONFIG = Object.freeze({
     applianceQids: [7, 8, 54, 55, 56, 57, 58, 59, 60, 61],
     referralSourceQid: 69,
     referralDetailsQid: 70
+  },
+  // "Whiteware collection form" on the Naki Jotform account.
+  "241746187390867": {
+    applianceQids: [7, 8, 9, 10, 11, 12, 13, 14, 28, 29],
+    referralSourceQid: 50,
+    referralDetailsQid: 51
   }
 });
 let googleToken = { value: "", expiresAt: 0 };
