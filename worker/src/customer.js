@@ -1,5 +1,6 @@
 import {ownerBookingNote,ownerNotesFor} from './owner-booking-notes.js';
 import { readRunBackup, writeRunBackup } from "./run-backup.js";
+import {handleRunSuggestions} from './run-suggestions.js';
 import { AuthMailError, reserveAuthRequest } from "./auth-limits.js";
 import { kidsActivityReport } from "./kids-activity.js";
 import { scoreReviewReason } from "./score-validation.js";
@@ -3198,6 +3199,10 @@ export async function handlePortalRequest({ request, env, path, json, sendMail, 
   if (path.startsWith("/owner/")) {
     const session = integrationSession || await sessionFor(request, env, "owner");
     if (!session) return json(request, { error: "Owner login required" }, 401);
+    if(path.startsWith('/owner/run-suggestions/')){
+      if(integrationSession)return json(request,{error:'Owner sign-in required'},403);
+      return await handleRunSuggestions(request,env,`backup:${OWNER_EMAIL}`,path,json)||json(request,{error:'Not found'},404);
+    }
     if (path === '/owner/earnings' && request.method === 'GET') {
       if (integrationSession) return json(request, {error:'Owner sign-in required'}, 403);
       const report=await earningsReport(env, await readRunBackup(env, `backup:${OWNER_EMAIL}`));

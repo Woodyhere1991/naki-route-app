@@ -454,6 +454,7 @@
     background-position:calc(100% - 19px) center,calc(100% - 14px) center;background-size:5px 5px;background-repeat:no-repeat}
 </style>
 <link rel="stylesheet" href="/assets/earnings.css" />
+<link rel="stylesheet" href="/assets/run-suggestions.css" />
 </head>
 <body data-scheduled-section="listWrap">
 
@@ -872,7 +873,7 @@ const RUNS_LS = "naki_pickup_runs_v1";                 // named runs + shared un
 const GEO = "naki_geocache_v10";                        // v9 drops refused rural RAPID pins that had no Navigate button
 const PIN_FIX = 8;                                     // bump to re-pin saved stops after a geocode fix
 const UA  = "NakiPickupRun/1.0 (whiteware pickup route planner; nakiwreckremoval@gmail.com)";
-const API = "https://naki-route-api.nakiwreckremoval.workers.dev/v2";
+const API = new URLSearchParams(location.search).get('suggestions-demo')==='1' ? '/demo-api' : "https://naki-route-api.nakiwreckremoval.workers.dev/v2";
 const OWNER_TOKEN_KEY = "naki_owner_token_v1";
 const AREA_COLORS = { North:"var(--north)", South:"var(--south)", Coastal:"var(--coastal)", "":"var(--none)" };
 const AREA_HEX    = { North:"#3ba0ff", South:"#ff8a3d", Coastal:"#27c08a", "":"#8a93a3" };
@@ -8332,5 +8333,6 @@ fieldBoot();
 <script src="assets/document-preview.js"></script>
 <script src="assets/api-access.js"></script>
 <script src="assets/earnings.js"></script>
+<script type="module" src="assets/run-suggestions.js"></script>
 </body>
 </html>
