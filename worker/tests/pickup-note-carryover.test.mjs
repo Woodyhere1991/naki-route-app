@@ -7,7 +7,7 @@ const slice=(a,b)=>html.slice(html.indexOf(a),html.indexOf(b,html.indexOf(a)));
 function harness(fail=false){
  const s={id:'stop',submission_id:'WEB-1',note:'After 10 October',additional_info:'Customer access note',confirmedPickupDate:'2026-10-02'},state={stops:[s],bad:[]},stored={note:'',date:'2026-10-02'};
  const c=vm.createContext({state,directBookingRows:[{id:'WEB-1',ownerNote:''}],ownerToken:'owner',window:{},loadJSON:()=>({}),saveJSON(){},save(){},render(){},drawRoute(){},renderDirectBookings(){},flash(){},confirm:()=>true,activeRunName:()=> 'Test run',fullName:()=> 'Synthetic Customer',fullAddr:()=>'',findStop:id=>state.stops.find(s=>s.id===id),goodEmail:()=>false,stopBelongsToBooking:(stop,b)=>stop.submission_id===b.id,
-  isUnload:()=>false,
+  isUnload:()=>false,returnBookingsBusy:false,runChangeBusy:false,bulkSendBusy:false,returnBookingsProgress:'',renderList(){},alert(){},document:{getElementById:()=>null},esc:value=>String(value),
   ownerApi:async(path,options)=>{if(fail)throw Error('offline');const body=JSON.parse(options.body);if(path.endsWith('/unschedule')){assert.equal(body.expectedPickupDate,stored.date);stored.date='';return {booking:{id:'WEB-1',status:'NEW',pickupDate:'',pickupWindow:'',ownerNote:stored.note}};}assert.equal(body.expectedNote,stored.note);stored.note=body.note;return {note:stored.note};}
  });
  vm.runInContext(slice('function pickupNoteBookingId(', 'window.editStop = async id => {'),c);
@@ -24,7 +24,7 @@ test('offline removal keeps pickup and pending note; retry safely completes',asy
  c.ownerApi=async(p,o)=>p.endsWith('/unschedule')?{booking:{id:'WEB-1',status:'NEW',pickupDate:'',ownerNote:s.note}}:{note:JSON.parse(o.body).note};await c.window.delStop(s.id);assert.equal(state.stops.length,0);assert.equal(s.ownerNotePending,false);
 });
 test('bulk return cannot discard notes when the save fails',async()=>{
- const {c,state}=harness(true);await c.window.sendAllBackToBookings();assert.equal(state.stops.length,1);
+ const {c,state,stored}=harness(true);await c.window.sendAllBackToBookings();assert.equal(state.stops.length,1);assert.equal(stored.note,'');assert.equal(c.returnBookingsBusy,false);assert.equal(c.runChangeBusy,false);
 });
 test('duplicate taps share a save and cannot remove a different stop',async()=>{
  const {c,s,state}=harness();let release,count=0;const original=c.ownerApi;c.ownerApi=(p,o)=>{if(p.endsWith('/unschedule'))return original(p,o);count++;return new Promise(resolve=>release=()=>resolve({note:s.note}));};
@@ -42,7 +42,7 @@ test('date-clear failure retains the pickup even when its note already saved',as
  const {c,s,state,stored}=harness();const api=c.ownerApi;c.ownerApi=(p,o)=>{if(p.endsWith('/unschedule'))throw Error('offline');return api(p,o);};await c.window.delStop(s.id);assert.equal(state.stops.length,1);assert.equal(stored.note,s.note);assert.equal(stored.date,'2026-10-02');c.ownerApi=api;await c.window.delStop(s.id);assert.equal(state.stops.length,0);
 });
 test('bulk return unschedules while clearing a completed pickup never reopens it',async()=>{
- const {c,state,stored}=harness();await c.window.sendAllBackToBookings();assert.equal(state.stops.length,0);assert.equal(stored.date,'');
+ const {c,state,stored}=harness();await c.window.sendAllBackToBookings();assert.equal(state.stops.length,0);assert.equal(stored.date,'');assert.equal(c.returnBookingsBusy,false);assert.equal(c.returnBookingsProgress,'');
  const done=harness();done.s.status='DONE';await done.c.window.delStop(done.s.id);assert.equal(done.stored.date,'2026-10-02');assert.equal(done.state.stops.length,0);
 });
 test('orphan pickup removal preserves its unsaved note as a draft',async()=>{
