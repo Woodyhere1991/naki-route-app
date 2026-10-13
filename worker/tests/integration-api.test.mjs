@@ -86,6 +86,9 @@ test('idempotent booking creation writes once and sends the customer one booking
   // Woody, 25 Sept: everyone who books gets the what-happens-next email, phone bookings included.
   assert.equal(state.botMails.length,1);assert.equal(state.botMails[0].to,sample.email);assert.equal(state.botMails[0].subject,'Whiteware Collection');
   assert.match(state.botMails[0].text,/can't take any packaging, boxes etc/);
+  assert.match(state.botMails[0].text,/https:\/\/nakiwhitewareremoval\.vip\/account/);
+  assert.match(state.botMails[0].text,/same email address you gave us/);
+  assert.match(state.botMails[0].text,/6-digit sign-in code/);
   const retry=await api('/bookings','POST',sample,{'Idempotency-Key':'same-create-1'});
   assert.equal(retry.status,201);assert.equal(retry.headers.get('Idempotency-Replayed'),'true');assert.deepEqual(await retry.json(),body);
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM bookings').get().n,1);

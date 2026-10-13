@@ -73,6 +73,9 @@ test('the booking confirmation explains what happens, including no packaging, in
     assert.match(text, /Please note we can't take any packaging, boxes etc - only the items you've booked\./);
     assert.ok(text.includes('Collections in Hāwera,'));
     assert.ok(text.includes('Thank you! \u{1F60A}'));
+    assert.match(text, /create or sign in to your account at https:\/\/nakiwhitewareremoval\.vip\/account/);
+    assert.match(text, /same email address you gave us/);
+    assert.match(text, /6-digit sign-in code, so there is no password to remember/);
     assert.doesNotMatch(text, /[ÂÃÄâð][\u0080-¿Œ-™]/, 'no double-encoded characters');
   } finally { db.close(); }
 });

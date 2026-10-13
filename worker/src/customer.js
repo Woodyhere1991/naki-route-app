@@ -862,6 +862,8 @@ Please note we can't take any packaging, boxes etc - only the items you've booke
 
 Please make sure any furry friends are securely put away if needed. Please ensure no food is left inside any appliances, but no cleaning is required. Thank you! 😊
 
+You can create or sign in to your account at https://nakiwhitewareremoval.vip/account to see your booking details. Use the same email address you gave us; we will email you a 6-digit sign-in code, so there is no password to remember.
+
 ${bookingDetails(profile, items, additionalInfo, price)}
 
 Naki Whiteware Removal`;
