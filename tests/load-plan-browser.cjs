@@ -25,10 +25,14 @@ const root=path.resolve(__dirname,'..'),origin=process.env.NAKI_PUBLIC_ORIGIN||'
     await page.locator('.load-shortcut').click();
     assert(await page.locator('#loadPlanDialog').evaluate(d=>d.open));
     assert.equal(await page.locator('.lp-block.big').count(),2);assert.equal(await page.locator('.lp-block').count(),10);
-    assert((await page.locator('#loadPlanPicture').innerText()).includes('11 / 18'));
-    assert((await page.locator('.lp-summary').innerText()).includes('Washer × 2'));
+    assert((await page.locator('#loadPlanPicture').textContent()).includes('11 / 18'));
+    assert((await page.locator('.lp-summary').textContent()).includes('Washer × 2'));
     const overflow=await page.locator('#loadPlanDialog').evaluate(d=>d.scrollWidth>d.clientWidth+1);assert.equal(overflow,false);
+    assert.equal(await page.locator('#loadPictureDetails').getAttribute('open'),null,'Picture stays out of the way by default');
+    assert((await page.locator('#loadPlanSummary').innerText()).includes('About 7 spaces left'));
+    assert((await page.locator('#loadPlanSummary').innerText()).includes('For the gaps'));
     if(width===390&&!process.env.NAKI_PUBLIC_ORIGIN){await page.screenshot({path:path.join(root,'output','load-plan-phone.png')});}
+    await page.locator('#loadPictureDetails > summary').click();
     await page.locator('.lp-block.box').first().click();
     assert.equal(await page.locator('.lp-ute .lp-chip').count(),1);
     assert((await page.locator('#loadPlanStatus').innerText()).includes('saved'));
@@ -38,6 +42,7 @@ const root=path.resolve(__dirname,'..'),origin=process.env.NAKI_PUBLIC_ORIGIN||'
     await page.reload();await page.waitForFunction(()=>typeof state==='object');
     await page.locator('#stAppBtn').click();
     assert.equal(await page.locator('.lp-ute .lp-chip').count(),1,'Ute choices survive reload');
+    await page.locator('#loadPictureDetails > summary').click();
     await page.locator('.lp-ute .lp-chip').click();assert.equal(await page.locator('.lp-ute .lp-chip').count(),0);
     await page.locator('.lp-gap-list .lp-chip').first().click();assert.equal(await page.locator('.lp-ute .lp-chip').count(),1,'Gap candidates can move to ute gaps');
     // No items disappear when the standard-space count exceeds the trailer.

@@ -19,6 +19,9 @@ assert.equal(plan.build(JSON.parse(before),JSON.parse(JSON.stringify({[key]:true
 const split=plan.build([stop(['Fridge x18']),{id:'yard',kind:'unload'},stop(['Washing machine x18'],{id:'b'})]);assert.equal(split.length,2);assert(split.every(l=>l.overflow.length===0));
 assert.equal(plan.build([stop([])])[0].check[0].missing,true,'Missing appliance details must remain visible');
 const unsafe=plan.render([stop(['<img src=x onerror=alert(1)>'])]);assert(!unsafe.includes('<img'));assert(unsafe.includes('&lt;img'));
+const simple=plan.summary([stop(['Fridge x3','Large fridge x2','Dryer','TV x2','Chest freezer'])]);
+assert(simple.includes('About 11 spaces left'));assert(simple.includes('Trailer appliances'));assert(simple.includes('For the gaps'));assert(simple.includes('Check separately'));
+assert(!simple.includes('data-load-key'),'Default summary has no placement controls to interpret');
 // Many mixes: every item remains accounted for, each row stays within three
 // standard spaces, the two wide fridges never overlap, and no top block floats.
 for(let big=0;big<=8;big++)for(let standard=0;standard<=20;standard++){

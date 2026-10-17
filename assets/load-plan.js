@@ -115,6 +115,29 @@
       ${p.overflow.length?`<section class="lp-warning"><h4>${p.overflow.length} appliance${p.overflow.length===1?'':'s'} not placed</h4><p class="lp-note">Check the ute or plan an unload. Big fridges are kept on the bottom layer.</p><div class="lp-chips">${p.overflow.map(i=>chip(i,'overflow')).join('')}</div></section>`:''}
       ${p.check.length?`<section class="lp-warning"><h4>Check these sizes / details</h4><div class="lp-chips">${p.check.map(i=>i.missing?`<p>Pickup #${i.number}: items not recorded</p>`:chip(i,'check')).join('')}</div></section>`:''}</section>`).join('');
   }
-  const api={parse,classify,items,pack,build,render};
+  function countRows(list){
+    const counts=new Map();
+    for(const item of list){
+      const name=item.group==='big'?'Big fridges':item.group==='tall'?'Fridges / upright freezers':item.label;
+      const key=name.toLowerCase();
+      if(!counts.has(key))counts.set(key,{name,count:0});counts.get(key).count++;
+    }
+    return `<ul class="ls-counts">${[...counts.values()].map(i=>`<li><span>${esc(i.name)}</span><b>× ${i.count}</b></li>`).join('')}</ul>`;
+  }
+  function summary(stops,uteKeys={}){
+    const plans=build(stops,uteKeys);
+    if(!plans.some(p=>p.itemCount||p.check.length))return '<p>No items left scheduled on this run.</p>';
+    return plans.map(p=>{
+      const main=[...p.placements,...p.overflow],left=Math.max(0,18-p.units);
+      return `<section class="ls-load">${plans.length>1?`<h3>Load ${p.index+1} · before the next unload</h3>`:''}
+        <div class="ls-capacity"><b>${p.units}<small> / 18 trailer spaces</small></b><span>${p.units>18?`${p.units-18} over — allow for ute or unload`:`About ${left} spaces left`}</span><progress max="18" value="${Math.min(18,p.units)}" aria-label="Estimated trailer appliance spaces"></progress></div>
+        ${main.length?`<section class="ls-group"><h3>Trailer appliances</h3>${countRows(main)}<p class="lp-note">Big fridge = 1½ spaces. Everything else here = 1.</p></section>`:''}
+        ${p.gaps.length?`<section class="ls-group ls-gaps"><h3>For the gaps</h3>${countRows(p.gaps)}<p class="lp-note">Thin items for the trailer gap or ute. Check their sizes.</p></section>`:''}
+        ${p.ute.length?`<section class="ls-group"><h3>Set aside for the ute</h3>${countRows(p.ute)}</section>`:''}
+        ${p.check.length?`<section class="ls-group ls-check"><h3>Check separately</h3>${countRows(p.check)}</section>`:''}
+      </section>`;
+    }).join('');
+  }
+  const api={parse,classify,items,pack,build,render,summary};
   if(typeof module==='object'&&module.exports)module.exports=api;else root.NakiLoadPlan=api;
 })(typeof window==='object'?window:globalThis);

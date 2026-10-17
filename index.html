@@ -496,19 +496,21 @@
       <button class="ghost" data-scheduled-button="weatherPanel" aria-pressed="false" onclick="jumpToScheduled('weatherPanel')">Run info</button>
       <button class="ghost" data-scheduled-button="mapPanel" aria-pressed="false" onclick="jumpToScheduled('mapPanel')">Map</button>
     </nav>
-    <button type="button" class="ghost load-shortcut" onclick="toggleItemTally()">Trailer &amp; ute · load picture</button>
+    <button type="button" class="ghost load-shortcut" onclick="toggleItemTally()">What’s on this run?</button>
   </section>
 
 </header>
 
 <dialog id="loadPlanDialog" class="load-dialog" aria-labelledby="loadPlanTitle">
-  <div class="load-dialog-head"><h2 id="loadPlanTitle">Trailer &amp; ute</h2><button type="button" class="ghost" onclick="document.getElementById('loadPlanDialog').close()">Close</button></div>
+  <div class="load-dialog-head"><h2 id="loadPlanTitle">What’s on this run?</h2><button type="button" class="ghost" onclick="document.getElementById('loadPlanDialog').close()">Close</button></div>
   <div class="load-dialog-body">
     <p class="lp-note" id="loadPlanRun"></p>
     <p class="lp-note" id="loadPlanStatus" role="status"></p>
-    <p class="lp-note">Space preview for remaining pickups. Already loaded items are not included. Check actual sizes, weight, balance and tie-downs.</p>
-    <div id="loadPlanPicture"></div>
+    <p class="lp-note">Remaining pickups only · already loaded items aren’t counted.</p>
+    <div id="loadPlanSummary"></div>
+    <details id="loadPictureDetails"><summary>Optional loading picture</summary><div id="loadPlanPicture"></div></details>
     <details><summary>Full item breakdown</summary><section class="item-tally" id="itemTally" aria-label="Items still to pick up"></section></details>
+    <p class="lp-note">Space estimate only. Check actual sizes, weight and tie-downs.</p>
   </div>
 </dialog>
 
@@ -6389,6 +6391,7 @@ function toggleItemTally(){
 }
 function renderLoadPicture(){
   $('#loadPlanRun').textContent=activeRunName();
+  $('#loadPlanSummary').innerHTML=NakiLoadPlan.summary(state.stops,state.loadPlanUte||{});
   $('#loadPlanPicture').innerHTML=NakiLoadPlan.render(state.stops,state.loadPlanUte||{});
 }
 $('#loadPlanDialog').addEventListener('close',()=>$('#stAppBtn').setAttribute('aria-expanded','false'));
