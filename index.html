@@ -17,6 +17,7 @@
 
 <link rel="stylesheet" href="/assets/vendor/leaflet.css" />
 <script src="/assets/field-tools.js"></script>
+<script src="/assets/route-restrictions.js"></script>
 <script src="/assets/booking-messages.js"></script>
 
 <style>
@@ -4467,19 +4468,7 @@ function routeMatrixFallback(points){
   return points.map(from=>points.map(to=>haversine(from,to)/45*3600));
 }
 async function roadTimeMatrix(points){
-  // OSRM's Table service returns the fastest driving time between every pair.
-  // The old optimiser used straight lines here, which is why a route could look
-  // tidy mathematically but still backtrack once real roads and turn-offs applied.
-  if(points.length>50) throw new Error("too many stops for one road-time table");
-  const coords=points.map(p=>`${p.lng},${p.lat}`).join(";");
-  const controller=new AbortController(), timeout=setTimeout(()=>controller.abort(),12000);
-  try{
-    const res=await fetch(`https://router.project-osrm.org/table/v1/driving/${coords}?annotations=duration`,{signal:controller.signal});
-    const data=await res.json();
-    if(!res.ok || data.code!=="Ok" || !Array.isArray(data.durations)) throw new Error(data.message||"road-time table unavailable");
-    const fallback=routeMatrixFallback(points);
-    return data.durations.map((row,i)=>row.map((seconds,j)=>Number.isFinite(seconds)?seconds:fallback[i][j]));
-  }finally{ clearTimeout(timeout); }
+  return NakiRouting.matrix(points);
 }
 function routeSequenceCost(order,matrix,startIndex,endIndex){
   if(!order.length) return endIndex==null?0:matrix[startIndex][endIndex];
@@ -4633,11 +4622,13 @@ async function optimise(){
   let usedRoadTimes=true, optimised=false;
   try{
     let matrix;
-    try{matrix=await roadTimeMatrix(points);}
-    catch(e){matrix=routeMatrixFallback(points);usedRoadTimes=false;}
+    matrix=await roadTimeMatrix(points);
     const currentIds=routeStops().map(s=>s.id).join("|");
     if(currentIds!==all.map(s=>s.id).join("|")) return false;
     const best=orderRunAroundUnloads(all,matrix,0,endIndex);
+    // Verify the actual road geometry before accepting any automatic ordering.
+    await NakiRouting.safeRoute([start,...best,...(back?[back]:[])]);
+    if(routeStops().map(s=>s.id).join('|')!==all.map(s=>s.id).join('|'))return false;
     // Re-seat optimised stops at the front of state.stops, keep DONE + others after.
     const ids = best.map(s=>s.id);
     const rest = state.stops.filter(s => !ids.includes(s.id));
@@ -4645,9 +4636,11 @@ async function optimise(){
     state.manual = false;
     save(); render();
     optimised = true;
+  }catch(e){
+    alert(NakiRouting.failure+' Your pickup order has been kept.');
   }finally{
     setRouteOptimiseBusy(false);
-    if(optimised) flash(usedRoadTimes?"✓ Route optimised using real driving times":"⚠ Road timings were unavailable — route optimised using distance estimates");
+    if(optimised) flash("✓ Route optimised · Bertrand Road Bridge avoided");
     else busy("");
   }
   // Do not wait for the map line. That request can take several seconds, and
@@ -4656,7 +4649,7 @@ async function optimise(){
   return optimised ? usedRoadTimes : false;
 }
 
-/* ---------- Map drawing + OSRM road line (best-effort) ---------- */
+/* ---------- Map drawing + verified bridge-safe road line ---------- */
 function initMap(){
   if(map || !window.L) return;
   // rotate/touchRotate come from the leaflet-rotate plugin: twist two fingers to
@@ -4697,6 +4690,8 @@ async function drawRoute(){
   const bounds = [];
   // The route timing also works when the map has not been opened.
   if(map){
+  L.circle([NakiRouting.bridge.lat,NakiRouting.bridge.lng],{radius:100,color:'#d83b3b',fillOpacity:.25})
+    .bindPopup('<b>Bertrand Road Bridge — blocked for this vehicle</b><br>Routes must use another crossing.').addTo(markerLayer);
   // Start marker.
   L.marker([start.lat,start.lng], { icon: pinIcon("S","",true) })
     .bindPopup("Start").addTo(markerLayer);
@@ -4722,34 +4717,28 @@ async function drawRoute(){
   }
   if (!pts.length){ updateStats(0); routeTiming = {}; onTimingChanged(); return; }
 
-  // Try OSRM for a real road line + distance; fall back to straight lines.
+  // Only show a road line after the bridge restriction has been verified.
   const seq = [start, ...pts];
   if (endPoint()) seq.push(endPoint());
-  const coords = seq.map(p=>`${p.lng},${p.lat}`).join(";");
   setBanner("#bannerOsrm","");
   let drewRoad = false;
   try{
-    const url = `https://router.project-osrm.org/route/v1/driving/${coords}?overview=full&geometries=geojson`;
-    const data = await fetchRouteData(url);
+    const r = await NakiRouting.safeRoute(seq);
     if (drawVersion!==routeDrawVersion) return;
-    if (data && data.routes && data.routes[0]){
-      const r = data.routes[0];
+    if (r){
       if(map) L.geoJSON({ type:"Feature", geometry:r.geometry },
         { style:{ color:"#2f80ff", weight:5, opacity:.85 } }).addTo(routeLayer);
       updateStats(r.distance/1000, r.duration/60);
       setRouteTiming(pts, r.legs);
+      setBanner('#bannerOsrm','Bertrand Road Bridge blocked for this vehicle'+(r.detours.length?' · route goes via SH3.':'.'));
       drewRoad = true;
     }
   }catch(e){ /* OSRM down or rate-limited — fall through */ }
   if (drawVersion!==routeDrawVersion) return;
   if (!drewRoad){
-    // Straight-line fallback + great-circle distance estimate.
-    if(map) L.polyline(seq.map(p=>[p.lat,p.lng]),
-      { color:"#2f80ff", weight:4, opacity:.6, dashArray:"6 8" }).addTo(routeLayer);
-    let km=0; for (let i=0;i<seq.length-1;i++) km += haversine(seq[i],seq[i+1]);
-    updateStats(km, null);
-    setRouteTimingFallback(seq, pts);
-    setBanner("#bannerOsrm","Showing straight-line distance (road routing unavailable right now). Navigation still works.");
+    routeTiming={};onTimingChanged();
+    updateStats(null);
+    setBanner('#bannerOsrm',NakiRouting.failure);
   }
 }
 
@@ -7367,14 +7356,41 @@ function mapsDirUrl(s){
                     : (isFinite(s.lat) && isFinite(s.lng) ? `${s.lat},${s.lng}` : "");
   return dest ? `https://www.google.com/maps/dir/?api=1&travelmode=driving&dir_action=navigate&destination=${dest}` : "";
 }
-window.navStop = id => {
+let navRouteBusy=false;
+window.navStop = async id => {
+  if(navRouteBusy)return false;
   const s = findStop(id); if(!s) return;
   const url = mapsDirUrl(s); if (!url) return;
-  // window.open only survives a real tap. When the voice assistant calls this
-  // there has been no gesture, so the phone blocks the popup or leaves a blank
-  // tab sitting there - go straight to the maps app instead.
-  const opened = window.open(url, "_blank");
-  if (!opened || opened.closed) location.href = url;
+  navRouteBusy=true;
+  const buttons=[...document.querySelectorAll('.nav-action')];
+  const labels=buttons.map(b=>b.textContent);
+  buttons.forEach(b=>{b.disabled=true;b.textContent='Checking safe route…';});
+  busy('Checking route · avoiding Bertrand Road Bridge…');
+  try{
+    if(!navigator.geolocation)throw Error('Enable location to check a route avoiding Bertrand Road Bridge.');
+    const position=await new Promise((resolve,reject)=>navigator.geolocation.getCurrentPosition(resolve,
+      ()=>reject(Error('Location is needed to check the bridge detour. Enable location and retry.')),
+      {enableHighAccuracy:true,timeout:10000,maximumAge:30000}));
+    const from={lat:position.coords.latitude,lng:position.coords.longitude};
+    let to=s;
+    if(!Number.isFinite(to.lat)||!Number.isFinite(to.lng))to=await geocode(navAddress(s));
+    if(!to)throw Error('Could not confirm this pickup location. Please check its address.');
+    const route=await NakiRouting.safeRoute([from,to]);
+    if(findStop(id)!==s)throw Error('The run changed while checking. Please tap Navigate again.');
+    const target=new URL(url);
+    target.searchParams.set('origin',`${from.lat},${from.lng}`);
+    if(route.detours.length){
+      target.searchParams.set('waypoints',route.detours[0].via.map(p=>`${p.lat},${p.lng}`).join('|'));
+      // Keep the verified destination pin for the bridge-sensitive handoff.
+      target.searchParams.set('destination',`${to.lat},${to.lng}`);
+    }
+    location.href=target.href;
+    return true;
+  }catch(e){alert(e.message||NakiRouting.failure);return false;}
+  finally{
+    navRouteBusy=false;busy('');
+    buttons.forEach((b,i)=>{b.disabled=false;b.textContent=labels[i];});
+  }
 };
 // Stops saved before this check existed carry no confirmed address, so the card
 // couldn't show where Navigate would really take Woody. Fill them in quietly.

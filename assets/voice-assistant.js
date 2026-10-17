@@ -320,12 +320,12 @@ function voiceStopDetails(query) {
   return { stop: voiceStopBrief(found.stop, true) };
 }
 
-function voiceNavigate(query) {
+async function voiceNavigate(query) {
   const found = voiceResolveStop(query);
   if (!found.stop) return found;
   const stop = found.stop;
   if (!fullAddr(stop)) return { error: 'There is no address on ' + (fullName(stop) || 'that stop') + ' to navigate to.' };
-  navStop(stop.id);
+  if(!await navStop(stop.id))return {error:'Navigation could not start. Check location and connection so the bridge detour can be verified.'};
   return { ok: true, navigating_to: (fullName(stop) || 'the next stop') + ', ' + fullAddr(stop) };
 }
 
