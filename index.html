@@ -468,7 +468,7 @@
     <div class="stats">
       <div class="stat"><b id="stCount">0</b><span>Stops</span></div>
       <div class="stat"><b id="stKm">–</b><span>Km</span></div>
-      <button type="button" class="stat" id="stAppBtn" aria-expanded="false" aria-controls="loadPlanDialog" title="Show trailer and ute load picture"><b id="stApp">0</b><span>Items</span></button>
+      <button type="button" class="stat" id="stAppBtn" aria-expanded="false" aria-controls="loadPlanDialog" title="Show trailer list and leftover items"><b id="stApp">0</b><span>Items</span></button>
     </div>
   </div>
   <section class="run-switcher" aria-label="Pickup run switcher">
@@ -505,10 +505,9 @@
   <div class="load-dialog-head"><h2 id="loadPlanTitle">What’s on this run?</h2><button type="button" class="ghost" onclick="document.getElementById('loadPlanDialog').close()">Close</button></div>
   <div class="load-dialog-body">
     <p class="lp-note" id="loadPlanRun"></p>
-    <p class="lp-note" id="loadPlanStatus" role="status"></p>
     <p class="lp-note">Remaining pickups only · already loaded items aren’t counted.</p>
     <div id="loadPlanSummary"></div>
-    <details id="loadPictureDetails"><summary>Optional loading picture</summary><div id="loadPlanPicture"></div></details>
+    <p class="lp-note">Fridges first: up to 12 standard fridge/freezer spaces. Big fridges and chest freezers over 1.5 m use 1½ spaces each.</p>
     <details><summary>Full item breakdown</summary><section class="item-tally" id="itemTally" aria-label="Items still to pick up"></section></details>
     <p class="lp-note">Space estimate only. Check actual sizes, weight and tie-downs.</p>
   </div>
@@ -6380,30 +6379,19 @@ function renderItemTally(pending){
   $("#itemTally").innerHTML = rows.length
     ? `<div class="small muted">Still to pick up on ${esc(activeRunName())}</div><ul>${rows.map(r=>`<li><span>${esc(r.name)}</span><b>× ${r.count}</b></li>`).join("")}</ul>`
     : `<div class="small muted">No items left to pick up on this run.</div>`;
-  if($('#loadPlanDialog').open)renderLoadPicture();
+  if($('#loadPlanDialog').open)renderLoadSummary();
 }
 function toggleItemTally(){
   const panel=$('#loadPlanDialog');
   if(panel.open){panel.close();return;}
-  renderLoadPicture();panel.showModal();
-  $('#loadPlanStatus').textContent='';
+  renderLoadSummary();panel.showModal();
   $('#stAppBtn').setAttribute('aria-expanded','true');
 }
-function renderLoadPicture(){
+function renderLoadSummary(){
   $('#loadPlanRun').textContent=activeRunName();
-  $('#loadPlanSummary').innerHTML=NakiLoadPlan.summary(state.stops,state.loadPlanUte||{});
-  $('#loadPlanPicture').innerHTML=NakiLoadPlan.render(state.stops,state.loadPlanUte||{});
+  $('#loadPlanSummary').innerHTML=NakiLoadPlan.summary(state.stops);
 }
 $('#loadPlanDialog').addEventListener('close',()=>$('#stAppBtn').setAttribute('aria-expanded','false'));
-$('#loadPlanPicture').addEventListener('click',event=>{
-  const button=event.target.closest('[data-load-key]');if(!button)return;
-  const key=button.dataset.loadKey;
-  state.loadPlanUte={...(state.loadPlanUte||{})};
-  if(button.dataset.loadMove==='ute')state.loadPlanUte[key]=true;else delete state.loadPlanUte[key];
-  save();renderLoadPicture();
-  $('#loadPlanStatus').textContent=fieldLocalSaveFailed?'Change is not saved on this phone. Keep the app open and retry saving.':button.dataset.loadMove==='ute'?'Moved to the ute plan · saved':'Returned to automatic placement · saved';
-  [...$('#loadPlanPicture').querySelectorAll('[data-load-key]')].find(b=>b.dataset.loadKey===key)?.focus();
-});
 
 function groupItems(list){
   const order=[], seen=new Map();

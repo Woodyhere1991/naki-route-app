@@ -1,38 +1,42 @@
-const assert=require('node:assert/strict'),plan=require('../assets/load-plan.js');
+const assert=require('node:assert/strict'),fs=require('node:fs'),plan=require('../assets/load-plan.js');
 const stop=(appliances,extra={})=>({id:'a',appliances,...extra});
+const load=appliances=>plan.build([stop(appliances)])[0];
 assert.deepEqual(plan.parse('Fridge x3'),{name:'Fridge',quantity:3});
 assert.deepEqual(plan.parse('2 × Dryer'),{name:'Dryer',quantity:2});
-for(const name of ['French-door fridge','Double door fridge','Large or French-door fridge','side-by-side refrigerator'])assert.equal(plan.classify(name).half,3);
-for(const name of ['Fridge or upright freezer','Fridge/freezer','Upright freezer'])assert.equal(plan.classify(name).half,2);
-for(const name of ['Washing machine','Dryer','Dishwasher'])assert.equal(plan.classify(name).group,'box');
-for(const name of ['TV','Bicycle','Exercise bike','Elliptical trainer','Lawn mower','Microwave'])assert.equal(plan.classify(name).group,'gap');
-for(const name of ['Freezer','Chest freezer','Oven','Other'])assert.equal(plan.classify(name).group,'check');
-let p=plan.build([stop(Array(18).fill('Fridge'))])[0];assert.equal(p.units,18);assert.equal(p.placements.length,18);assert.equal(p.overflow.length,0);
-p=plan.build([stop(['Large or French-door fridge x2','Fridge x3'])])[0];
-assert.equal(p.units,6);assert.equal(p.placements.filter(i=>i.group==='big'&&i.row===2&&i.level===0).length,2);
-assert.equal(p.placements.filter(i=>i.group==='tall'&&i.row===2&&i.level===1).length,3,'Three standard fridges sit above two wide fridge spaces');
-p=plan.build([stop(['Washing machine x19'])])[0];assert.equal(p.overflow.length,1);assert.equal(p.placements.length,18);assert.equal(p.units,19);
-const mixed=[stop(['Fridge','Microwave','TV','Unknown thing']),stop(['Dryer x2'],{id:'b'}),stop(['Dishwasher'],{id:'done',status:'DONE'}),stop(['Fridge'],{id:'cancelled',status:'CANCELLED'})];
-const before=JSON.stringify(mixed);p=plan.build(mixed)[0];assert.equal(p.units,3);assert.equal(p.gaps.length,2);assert.equal(p.check.length,1);assert.equal(JSON.stringify(mixed),before);
-const key=p.placements[0].key,move=plan.build(mixed,{[key]:true})[0];assert.equal(move.ute.length,1);assert.equal(move.units,2);
-assert.equal(plan.build(JSON.parse(before),JSON.parse(JSON.stringify({[key]:true})))[0].ute.length,1,'Stable identity survives reload');
-const split=plan.build([stop(['Fridge x18']),{id:'yard',kind:'unload'},stop(['Washing machine x18'],{id:'b'})]);assert.equal(split.length,2);assert(split.every(l=>l.overflow.length===0));
-assert.equal(plan.build([stop([])])[0].check[0].missing,true,'Missing appliance details must remain visible');
-const unsafe=plan.render([stop(['<img src=x onerror=alert(1)>'])]);assert(!unsafe.includes('<img'));assert(unsafe.includes('&lt;img'));
-const simple=plan.summary([stop(['Fridge x3','Large fridge x2','Dryer','TV x2','Chest freezer'])]);
-assert(simple.includes('About 11 spaces left'));assert(simple.includes('Trailer appliances'));assert(simple.includes('For the gaps'));assert(simple.includes('Check separately'));
-assert(!simple.includes('data-load-key'),'Default summary has no placement controls to interpret');
-// Many mixes: every item remains accounted for, each row stays within three
-// standard spaces, the two wide fridges never overlap, and no top block floats.
-for(let big=0;big<=8;big++)for(let standard=0;standard<=20;standard++){
-  const raw=[...Array(big).fill('Large fridge'),...Array(standard).fill('Washing machine')];
-  const load=plan.build([stop(raw)])[0];
-  assert.equal(load.placements.length+load.overflow.length,big+standard);
-  const used=new Set();for(const item of load.placements){
-    assert(item.col+item.half<=6);for(let col=item.col;col<item.col+item.half;col++){
-      const key=`${item.level}:${item.row}:${col}`;assert(!used.has(key));used.add(key);
-      if(item.level===1)assert(load.cells[0][item.row][col]);
-    }
+for(const name of ['French-door fridge','Double door fridge','Large or French-door fridge','side-by-side refrigerator','Large chest freezer (over 1.5 m)','Chest freezer 1.8m','Chest freezer 160cm','Chest freezer over 150 cm','Chest freezer 1600mm'])assert.equal(plan.classify(name).half,3,name);
+for(const name of ['Fridge or upright freezer','Upright freezer','Chest freezer (small or medium)','Chest freezer 1.5m','Chest freezer 150cm','Freezer','Oven or stove'])assert.equal(plan.classify(name).half,2,name);
+for(const name of ['TV','Bicycle','Exercise bike','Lawn mower','Microwave','Other','Other - small bits'])assert.equal(plan.classify(name).group,'small',name);
+let p=load(['Fridge x14','Washing machine x8','Other x3']);
+assert.equal(p.units,18);assert.equal(p.trailer.length,18);assert.equal(p.trailer.filter(i=>i.fridge).length,12);assert.equal(p.leftover.length,4);assert.equal(p.small.length,3);
+p=load(['Washing machine x19']);assert.equal(p.units,18);assert.equal(p.trailer.length,18);assert.equal(p.leftover.length,1);
+p=load(['Fridge x18']);assert.equal(p.units,12);assert.equal(p.trailer.length,12);assert.equal(p.leftover.length,6,'Keep the owner-specified 12-fridge limit');
+p=load(['Fridge x10','Large fridge x2','Dryer x6']);
+assert.equal(p.units,18);assert.equal(p.trailer.filter(i=>i.fridge).length,11);assert.equal(p.trailer.filter(i=>i.half===3).length,2,'Choose an equally fridge-rich combination that fills 18, instead of leaving 0.5 unused');
+p=load(['Fridge x9','Large chest freezer (over 1.5 m) x2','Dryer x6']);assert.equal(p.units,18);assert.equal(p.trailer.length,17);assert.equal(p.coldUnits,12);
+p=load(['Fridge x10','Large fridge','Washing machine x7','Other']);assert.equal(p.units,17.5);assert.equal(p.leftover.length,1);assert.equal(p.small.length,1);
+assert(plan.summary([stop(['Fridge x10','Large fridge','Washing machine x7'])]).includes('½ space spare'));
+// Chest freezers must not displace fridges just because they appear first.
+p=load(['Chest freezer x12','Fridge x12','Dryer x6']);assert.equal(p.trailer.filter(i=>i.fridge).length,12);assert.equal(p.units,18);
+const stops=[stop(['Fridge','Microwave','Other','Unspecified furniture']),stop(['Dryer x2'],{id:'b'}),stop(['Dishwasher'],{id:'done',status:'DONE'}),stop(['Fridge'],{id:'cancelled',status:'CANCELLED'})];
+const before=JSON.stringify(stops);p=plan.build(stops)[0];assert.equal(p.units,3);assert.equal(p.small.length,2);assert.equal(p.check.length,1);assert.equal(JSON.stringify(stops),before);
+const split=plan.build([stop(['Fridge x12','Dryer x6']),{id:'yard',kind:'unload'},stop(['Washing machine x18'],{id:'b'})]);assert.equal(split.length,2);assert(split.every(l=>l.units===18&&l.leftover.length===0));
+assert.equal(plan.build([stop([])])[0].check[0].missing,true);
+const unsafe=plan.summary([stop(['<img src=x onerror=alert(1)>'])]);assert(!unsafe.includes('<img'));assert(unsafe.includes('&lt;img'));
+const html=fs.readFileSync('index.html','utf8'),css=fs.readFileSync('assets/load-plan.css','utf8');
+for(const removed of ['loadPlanPicture','loadPictureDetails','loadPlanUte','lp-block','lp-layer'])assert(!html.includes(removed)&&!css.includes(removed),removed+' fully removed');
+assert.equal(plan.render,undefined,'No picture renderer remains');
+// Independent exhaustive count search proves the intended priority order:
+// most fridges, then fullest trailer, then most whole appliances.
+let cases=0;
+for(let regular=0;regular<=14;regular++)for(let big=0;big<=6;big++)for(let standard=0;standard<=20;standard++){
+  const p=load([...Array(regular).fill('Fridge'),...Array(big).fill('Large fridge'),...Array(standard).fill('Dryer')]);
+  let best=[-1,0,0];
+  for(let a=0;a<=regular;a++)for(let b=0;b<=big;b++)if(a*2+b*3<=24)for(let c=0;c<=standard;c++)if(a*2+b*3+c*2<=36){
+    const score=[a+b,a*2+b*3+c*2,a+b+c];
+    if(score[0]>best[0]||score[0]===best[0]&&(score[1]>best[1]||score[1]===best[1]&&score[2]>best[2]))best=score;
   }
+  assert.deepEqual([p.trailer.filter(i=>i.fridge).length,p.units*2,p.trailer.length],best);
+  assert.equal(p.trailer.length+p.leftover.length,regular+big+standard);assert(p.units<=18&&p.coldUnits<=12);
+  assert.equal(new Set(p.trailer.map(i=>i.key)).size,p.trailer.length);cases++;
 }
-console.log('PASS: 18 spaces, 1.5-width big fridges, preferred rows, gap candidates, overflow, ute moves, unloads, quantities, missing details, escaping and 189 packing mixes');
+console.log(`PASS: no pictures, fridge priority, 18-space fill, 12-fridge space limit, 1.5m chest boundary, leftovers, small Other, unloads and ${cases} exhaustive packing cases`);

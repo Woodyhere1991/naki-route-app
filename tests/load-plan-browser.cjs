@@ -18,38 +18,31 @@ const root=path.resolve(__dirname,'..'),origin=process.env.NAKI_PUBLIC_ORIGIN||'
     });
     await page.goto(origin);await page.waitForFunction(()=>typeof NakiLoadPlan==='object'&&typeof state==='object');
     await page.evaluate(()=>{
-      state.stops=[{id:'test-load',status:'NEW',street:'Example Street',town:'Waitara',appliances:['Large or French-door fridge x2','Fridge x3','Washing machine x2','Dryer x2','Dishwasher','TV x2','Microwave','Bicycle','Lawn mower']}];
+      state.stops=[{id:'test-load',status:'NEW',street:'Example Street',town:'Waitara',appliances:['Fridge x14','Washing machine x8','Other x3','TV x2','Microwave']}];
+      // Previous versions' manual ute choices no longer alter automatic filling.
+      state.loadPlanUte=Object.fromEntries(NakiLoadPlan.items(state.stops).map(i=>[i.key,true]));
       applyAppView('today');save();render();
     });
-    assert.equal(await page.locator('#stApp').innerText(),'15');
+    assert.equal(await page.locator('#stApp').innerText(),'28');
     await page.locator('.load-shortcut').click();
     assert(await page.locator('#loadPlanDialog').evaluate(d=>d.open));
-    assert.equal(await page.locator('.lp-block.big').count(),2);assert.equal(await page.locator('.lp-block').count(),10);
-    assert((await page.locator('#loadPlanPicture').textContent()).includes('11 / 18'));
-    assert((await page.locator('.lp-summary').textContent()).includes('Washer × 2'));
-    const overflow=await page.locator('#loadPlanDialog').evaluate(d=>d.scrollWidth>d.clientWidth+1);assert.equal(overflow,false);
-    assert.equal(await page.locator('#loadPictureDetails').getAttribute('open'),null,'Picture stays out of the way by default');
-    assert((await page.locator('#loadPlanSummary').innerText()).includes('About 7 spaces left'));
-    assert((await page.locator('#loadPlanSummary').innerText()).includes('For the gaps'));
-    if(width===390&&!process.env.NAKI_PUBLIC_ORIGIN){await page.screenshot({path:path.join(root,'output','load-plan-phone.png')});}
-    await page.locator('#loadPictureDetails > summary').click();
-    await page.locator('.lp-block.box').first().click();
-    assert.equal(await page.locator('.lp-ute .lp-chip').count(),1);
-    assert((await page.locator('#loadPlanStatus').innerText()).includes('saved'));
+    assert((await page.locator('.ls-capacity').innerText()).includes('18 / 18'));
+    assert((await page.locator('.ls-trailer').innerText()).includes('18 appliances'));
+    assert((await page.locator('.ls-leftover').innerText()).includes('left over · 4'));
+    assert((await page.locator('.ls-small').innerText()).includes('gaps · 6'));
+    assert.equal(await page.locator('#loadPlanDialog img,#loadPlanDialog svg,#loadPlanDialog canvas,.lp-block,#loadPictureDetails').count(),0,'Loading pictures completely removed');
+    assert.equal(await page.locator('#loadPlanDialog').evaluate(d=>d.scrollWidth>d.clientWidth+1),false);
+    if(width===390&&!process.env.NAKI_PUBLIC_ORIGIN)await page.screenshot({path:path.join(root,'output','load-plan-phone.png')});
     await page.locator('.load-dialog-head button').click();
     await page.waitForFunction(()=>document.querySelector('#stAppBtn').getAttribute('aria-expanded')==='false');
-    assert.equal(await page.locator('#stAppBtn').getAttribute('aria-expanded'),'false');
-    await page.reload();await page.waitForFunction(()=>typeof state==='object');
-    await page.locator('#stAppBtn').click();
-    assert.equal(await page.locator('.lp-ute .lp-chip').count(),1,'Ute choices survive reload');
-    await page.locator('#loadPictureDetails > summary').click();
-    await page.locator('.lp-ute .lp-chip').click();assert.equal(await page.locator('.lp-ute .lp-chip').count(),0);
-    await page.locator('.lp-gap-list .lp-chip').first().click();assert.equal(await page.locator('.lp-ute .lp-chip').count(),1,'Gap candidates can move to ute gaps');
-    // No items disappear when the standard-space count exceeds the trailer.
-    await page.evaluate(()=>{state.stops=[{id:'full',status:'NEW',appliances:Array(19).fill('Fridge')}];render();});
-    assert.equal(await page.locator('.lp-block').count(),18);assert((await page.locator('.lp-warning').innerText()).includes('1 appliance not placed'));
-    assert.equal(await page.locator('.lp-warning .lp-chip').count(),1);
+    await page.reload();await page.waitForFunction(()=>typeof state==='object');await page.locator('#stAppBtn').click();
+    assert((await page.locator('.ls-trailer').innerText()).includes('18 appliances'));
+    await page.evaluate(()=>{state.stops=[{id:'cold',status:'NEW',appliances:['Fridge x9','Large chest freezer (over 1.5 m) x2','Dryer x6','Other']}];render();});
+    assert((await page.locator('.ls-capacity').innerText()).includes('18 / 18'));
+    assert((await page.locator('.ls-trailer').innerText()).includes('17 appliances'));
+    assert((await page.locator('.ls-trailer').innerText()).includes('Large chest freezers'));
+    assert((await page.locator('.ls-small').innerText()).includes('gaps · 1'));
     assert.deepEqual(errors,[]);await page.close();
   }}finally{await browser.close();}
-  console.log('PASS: load picture, grouped quantities, both fridge widths, phone overflow, moving items, saved/reloaded choices, returns, gap moves and overflow at 320/390/1280px');
+  console.log('PASS: count-only trailer allocation, leftovers, Other/small totals, no pictures, reload, large chest freezers and no horizontal overflow at 320/390/1280px');
 })().catch(e=>{console.error(e);process.exitCode=1;});
