@@ -69,11 +69,6 @@
   button.stat{background:none;border:0;padding:0;margin:0;min-height:0;font:inherit;color:inherit;cursor:pointer}
   button.stat span::after{content:" ▾"}
   button.stat[aria-expanded="true"] span::after{content:" ▴"}
-  .item-tally{max-width:760px;margin:0 auto;padding:8px 12px 10px}
-  .item-tally[hidden]{display:none}
-  .item-tally ul{list-style:none;margin:6px 0 0;padding:0}
-  .item-tally li{display:flex;justify-content:space-between;gap:10px;padding:7px 2px;border-bottom:1px solid var(--line);font-size:15px}
-  .item-tally li b{color:#ffd36b;min-width:2.5em;text-align:right}
 
   /* Named pickup runs: always visible so switching never depends on the current tab. */
   .run-switcher{background:#08273bf2;border-bottom:1px solid var(--line)}
@@ -508,7 +503,6 @@
     <p class="lp-note">Remaining pickups only · already loaded items aren’t counted.</p>
     <div id="loadPlanSummary"></div>
     <p class="lp-note">Fridges first: up to 12 standard fridge/freezer spaces. Big fridges and chest freezers over 1.5 m use 1½ spaces each.</p>
-    <details><summary>Full item breakdown</summary><section class="item-tally" id="itemTally" aria-label="Items still to pick up"></section></details>
     <p class="lp-note">Space estimate only. Check actual sizes, weight and tie-downs.</p>
   </div>
 </dialog>
@@ -4950,7 +4944,7 @@ function updateStats(km, mins){
   const pending = pickupsOnly(state.stops.filter(s=>s.status!=="DONE"));
   $("#stCount").textContent = pending.length;
   $("#stApp").textContent = NakiLoadPlan.items(pending).filter(i=>!i.unload&&!i.missing).length;
-  renderItemTally(pending);
+  if($('#loadPlanDialog').open)renderLoadSummary();
   if (km==null){ $("#stKm").textContent = "–"; return; }
   $("#stKm").textContent = Math.round(km);
 }
@@ -6365,22 +6359,6 @@ async function loadReceiptLogo(){
 // Logo and PDF library are loaded when a receipt or invoice is requested.
 // "Fridge, Fridge, Washing machine" reads as three different jobs. Roll the
 // repeats up into "Fridge x2" — shorter to read and shorter on the page.
-// Each item and how many of it are still to collect on this run, most first.
-function renderItemTally(pending){
-  const counts=new Map();
-  pending.forEach(s=>(s.appliances||[]).forEach(raw=>{
-    const {name,quantity}=NakiLoadPlan.parse(raw);
-    if (!name) return;
-    const key=name.toLowerCase();
-    if (!counts.has(key)) counts.set(key,{name,count:0});
-    counts.get(key).count+=quantity;
-  }));
-  const rows=[...counts.values()].sort((a,b)=>b.count-a.count||a.name.localeCompare(b.name));
-  $("#itemTally").innerHTML = rows.length
-    ? `<div class="small muted">Still to pick up on ${esc(activeRunName())}</div><ul>${rows.map(r=>`<li><span>${esc(r.name)}</span><b>× ${r.count}</b></li>`).join("")}</ul>`
-    : `<div class="small muted">No items left to pick up on this run.</div>`;
-  if($('#loadPlanDialog').open)renderLoadSummary();
-}
 function toggleItemTally(){
   const panel=$('#loadPlanDialog');
   if(panel.open){panel.close();return;}
