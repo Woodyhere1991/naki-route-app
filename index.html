@@ -18,6 +18,8 @@
 <link rel="stylesheet" href="/assets/vendor/leaflet.css" />
 <script src="/assets/field-tools.js"></script>
 <script src="/assets/route-restrictions.js"></script>
+<script src="/assets/load-plan.js"></script>
+<link rel="stylesheet" href="/assets/load-plan.css" />
 <script src="/assets/booking-messages.js"></script>
 
 <style>
@@ -466,10 +468,9 @@
     <div class="stats">
       <div class="stat"><b id="stCount">0</b><span>Stops</span></div>
       <div class="stat"><b id="stKm">–</b><span>Km</span></div>
-      <button type="button" class="stat" id="stAppBtn" aria-expanded="false" aria-controls="itemTally" title="Show what's being picked up"><b id="stApp">0</b><span>Items</span></button>
+      <button type="button" class="stat" id="stAppBtn" aria-expanded="false" aria-controls="loadPlanDialog" title="Show trailer and ute load picture"><b id="stApp">0</b><span>Items</span></button>
     </div>
   </div>
-  <section class="item-tally" id="itemTally" aria-label="Items still to pick up" hidden></section>
   <section class="run-switcher" aria-label="Pickup run switcher">
     <div class="run-switcher-inner">
       <div class="run-label"><strong>Pickup run</strong><span id="runCountLabel"></span></div>
@@ -495,9 +496,21 @@
       <button class="ghost" data-scheduled-button="weatherPanel" aria-pressed="false" onclick="jumpToScheduled('weatherPanel')">Run info</button>
       <button class="ghost" data-scheduled-button="mapPanel" aria-pressed="false" onclick="jumpToScheduled('mapPanel')">Map</button>
     </nav>
+    <button type="button" class="ghost load-shortcut" onclick="toggleItemTally()">Trailer &amp; ute · load picture</button>
   </section>
 
 </header>
+
+<dialog id="loadPlanDialog" class="load-dialog" aria-labelledby="loadPlanTitle">
+  <div class="load-dialog-head"><h2 id="loadPlanTitle">Trailer &amp; ute</h2><button type="button" class="ghost" onclick="document.getElementById('loadPlanDialog').close()">Close</button></div>
+  <div class="load-dialog-body">
+    <p class="lp-note" id="loadPlanRun"></p>
+    <p class="lp-note" id="loadPlanStatus" role="status"></p>
+    <p class="lp-note">Space preview for remaining pickups. Already loaded items are not included. Check actual sizes, weight, balance and tie-downs.</p>
+    <div id="loadPlanPicture"></div>
+    <details><summary>Full item breakdown</summary><section class="item-tally" id="itemTally" aria-label="Items still to pick up"></section></details>
+  </div>
+</dialog>
 
 <div class="wrap">
 
@@ -4935,7 +4948,7 @@ function fullName(s){ return [s.first_name,s.last_name].filter(Boolean).join(" "
 function updateStats(km, mins){
   const pending = pickupsOnly(state.stops.filter(s=>s.status!=="DONE"));
   $("#stCount").textContent = pending.length;
-  $("#stApp").textContent = pending.reduce((n,s)=>n + (s.appliances?s.appliances.length:0), 0);
+  $("#stApp").textContent = NakiLoadPlan.items(pending).filter(i=>!i.unload&&!i.missing).length;
   renderItemTally(pending);
   if (km==null){ $("#stKm").textContent = "–"; return; }
   $("#stKm").textContent = Math.round(km);
@@ -6355,22 +6368,39 @@ async function loadReceiptLogo(){
 function renderItemTally(pending){
   const counts=new Map();
   pending.forEach(s=>(s.appliances||[]).forEach(raw=>{
-    const name=String(raw==null?"":raw).trim();
+    const {name,quantity}=NakiLoadPlan.parse(raw);
     if (!name) return;
     const key=name.toLowerCase();
     if (!counts.has(key)) counts.set(key,{name,count:0});
-    counts.get(key).count++;
+    counts.get(key).count+=quantity;
   }));
   const rows=[...counts.values()].sort((a,b)=>b.count-a.count||a.name.localeCompare(b.name));
   $("#itemTally").innerHTML = rows.length
     ? `<div class="small muted">Still to pick up on ${esc(activeRunName())}</div><ul>${rows.map(r=>`<li><span>${esc(r.name)}</span><b>× ${r.count}</b></li>`).join("")}</ul>`
     : `<div class="small muted">No items left to pick up on this run.</div>`;
+  if($('#loadPlanDialog').open)renderLoadPicture();
 }
 function toggleItemTally(){
-  const panel=$("#itemTally"), open=panel.hidden;
-  panel.hidden=!open;
-  $("#stAppBtn").setAttribute("aria-expanded",String(open));
+  const panel=$('#loadPlanDialog');
+  if(panel.open){panel.close();return;}
+  renderLoadPicture();panel.showModal();
+  $('#loadPlanStatus').textContent='';
+  $('#stAppBtn').setAttribute('aria-expanded','true');
 }
+function renderLoadPicture(){
+  $('#loadPlanRun').textContent=activeRunName();
+  $('#loadPlanPicture').innerHTML=NakiLoadPlan.render(state.stops,state.loadPlanUte||{});
+}
+$('#loadPlanDialog').addEventListener('close',()=>$('#stAppBtn').setAttribute('aria-expanded','false'));
+$('#loadPlanPicture').addEventListener('click',event=>{
+  const button=event.target.closest('[data-load-key]');if(!button)return;
+  const key=button.dataset.loadKey;
+  state.loadPlanUte={...(state.loadPlanUte||{})};
+  if(button.dataset.loadMove==='ute')state.loadPlanUte[key]=true;else delete state.loadPlanUte[key];
+  save();renderLoadPicture();
+  $('#loadPlanStatus').textContent=fieldLocalSaveFailed?'Change is not saved on this phone. Keep the app open and retry saving.':button.dataset.loadMove==='ute'?'Moved to the ute plan · saved':'Returned to automatic placement · saved';
+  [...$('#loadPlanPicture').querySelectorAll('[data-load-key]')].find(b=>b.dataset.loadKey===key)?.focus();
+});
 
 function groupItems(list){
   const order=[], seen=new Map();
