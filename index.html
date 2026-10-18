@@ -19,6 +19,7 @@
 <script src="/assets/field-tools.js"></script>
 <script src="/assets/route-restrictions.js"></script>
 <script src="/assets/maps-navigation.js"></script>
+<script src="/assets/route-order.js"></script>
 <script src="/assets/load-plan.js"></script>
 <link rel="stylesheet" href="/assets/load-plan.css" />
 <script src="/assets/booking-messages.js"></script>
@@ -492,7 +493,8 @@
       <button class="ghost" data-scheduled-button="weatherPanel" aria-pressed="false" onclick="jumpToScheduled('weatherPanel')">Run info</button>
       <button class="ghost" data-scheduled-button="mapPanel" aria-pressed="false" onclick="jumpToScheduled('mapPanel')">Map</button>
     </nav>
-    <button type="button" class="ghost load-shortcut" onclick="toggleItemTally()">What’s on this run?</button>
+    <div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:6px;margin-top:6px"><button type="button" class="ghost load-shortcut grow" style="margin-top:0" onclick="toggleItemTally()">What’s on this run?</button>
+    <button type="button" class="ghost grow" id="arrangeStops" onclick="openRouteOrder()">Arrange stops</button></div>
   </section>
 
 </header>
@@ -505,6 +507,24 @@
     <div id="loadPlanSummary"></div>
     <p class="lp-note">Fridges first: up to 12 standard fridge/freezer spaces. Big fridges and chest freezers over 1.5 m use 1½ spaces each.</p>
     <p class="lp-note">Space estimate only. Check actual sizes, weight and tie-downs.</p>
+  </div>
+</dialog>
+
+<dialog id="routeOrderDialog" class="load-dialog" aria-labelledby="routeOrderTitle">
+  <div class="load-dialog-head"><h2 id="routeOrderTitle">Arrange stops</h2><button type="button" class="ghost" onclick="document.getElementById('routeOrderDialog').close()">Close</button></div>
+  <div class="load-dialog-body">
+    <p class="lp-note" id="routeOrderRun"></p>
+    <label for="routeOrderInput">Stop numbers in the order you want</label>
+    <textarea id="routeOrderInput" rows="3" placeholder="10, 13, 14, GMS, 16, 15, 18, 17, 11" autocapitalize="characters" spellcheck="false"></textarea>
+    <p class="lp-note">Use the current map numbers. Earlier stops stay put. Numbers update after saving.</p>
+    <div class="row"><button type="button" class="ghost grow" id="routeOrderAddGms">Add GMS</button><button type="button" class="ghost grow" id="routeOrderCurrent">Use current order</button></div>
+    <label id="routeOrderFinishRow" style="display:flex;align-items:center;gap:8px;margin:12px 0"><input type="checkbox" id="routeOrderFinish" style="width:22px;min-height:22px"/><span>Finish at the last stop (remove E)</span></label>
+    <p class="lp-note" id="routeOrderEnd"></p>
+    <details><summary>Check current stop numbers</summary><div id="routeOrderNumbers"></div></details>
+    <button type="button" class="good" id="routeOrderPreview" style="width:100%;margin-top:12px">Preview order</button>
+    <p id="routeOrderError" role="alert" style="color:#ffbc83"></p>
+    <div id="routeOrderPreviewList"></div>
+    <button type="button" class="good" id="routeOrderSave" style="width:100%;margin-top:12px" disabled>Save this order</button>
   </div>
 </dialog>
 
@@ -4445,6 +4465,67 @@ function stopPrice(s){
 }
 
 /* ---------- Unload stops (empty the truck at GMS part-way through a run) ---------- */
+let routeOrderSnapshot=null,routeOrderDraft=null,routeOrderSaveBusy=false;
+function routeOrderSignature(){
+  return JSON.stringify({run:activeRunRecord().id,stops:state.stops.map(s=>[s.id,s.status,s.kind,s.lat,s.lng,s.street,s.town,s.first_name,s.last_name]),start:startPoint(),end:state.end,roundTrip:state.roundTrip});
+}
+function routeOrderRow(stop,number){
+  return `<div style="padding:8px 0;border-bottom:1px solid var(--line)"><b>${number} · ${isUnload(stop)?'GMS unload':esc(fullName(stop)||fullAddr(stop))}</b>${isUnload(stop)?'':`<br><span class="small muted">${esc(fullAddr(stop))}</span>`}</div>`;
+}
+function invalidateRouteOrder(){
+  routeOrderDraft=null;$('#routeOrderSave').disabled=true;$('#routeOrderPreviewList').innerHTML='';$('#routeOrderError').textContent='';
+}
+function openRouteOrder(){
+  if(runChangeBusy||routeOptimiseBusy||importBusy)return alert('Wait for the current route action to finish.');
+  const rows=routeStops();if(!rows.length)return flash('Add pickups before arranging the run.');
+  const end=endPoint();
+  routeOrderSnapshot={rows:[...rows],signature:routeOrderSignature(),endIsGms:!!end&&haversine(end,GMS_YARD)<0.1};
+  invalidateRouteOrder();$('#routeOrderInput').value='';$('#routeOrderRun').textContent=activeRunName();
+  $('#routeOrderNumbers').innerHTML=rows.map((s,i)=>routeOrderRow(s,i+1)).join('');
+  $('#routeOrderFinishRow').hidden=!end;
+  $('#routeOrderFinishRow').style.display=end?'flex':'none';
+  $('#routeOrderFinish').checked=routeOrderSnapshot.endIsGms;
+  $('#routeOrderEnd').textContent=end?`Current E: ${fullAddr(end)||'return to start'}.`:'The run will finish at the last stop.';
+  $('#routeOrderDialog').showModal();
+}
+$('#routeOrderInput').oninput=invalidateRouteOrder;
+$('#routeOrderFinish').onchange=invalidateRouteOrder;
+$('#routeOrderAddGms').onclick=()=>{
+  const input=$('#routeOrderInput');input.value=input.value.trim().replace(/[,\s]+$/,'')+(input.value.trim()?', GMS':'GMS');invalidateRouteOrder();input.focus();
+};
+$('#routeOrderCurrent').onclick=()=>{$('#routeOrderInput').value=routeOrderSnapshot.rows.map((s,i)=>i+1).join(', ');invalidateRouteOrder();};
+$('#routeOrderPreview').onclick=()=>{
+  invalidateRouteOrder();
+  try{
+    if(!routeOrderSnapshot||routeOrderSnapshot.signature!==routeOrderSignature())throw Error('The run changed. Close and reopen Arrange stops to use the latest numbers.');
+    const draft=NakiRouteOrder.plan(routeOrderSnapshot.rows,$('#routeOrderInput').value);
+    const finishLast=$('#routeOrderFinish').checked;
+    if(finishLast&&routeOrderSnapshot.endIsGms&&!draft.order.some(s=>s.newUnload||isUnload(s)))throw Error('Add GMS to your order before moving the final GMS visit.');
+    routeOrderDraft={...draft,finishLast};
+    $('#routeOrderPreviewList').innerHTML=`<h3>Your order · current numbers</h3>${draft.prefixCount?`<p class="lp-note">Stops 1–${draft.prefixCount} stay as they are.</p>`:''}`
+      +draft.changed.map(s=>s.newUnload?routeOrderRow({kind:'unload'},'GMS'):routeOrderRow(s,routeOrderSnapshot.rows.indexOf(s)+1)).join('')
+      +`<p class="lp-note">${finishLast?'Finish at the last stop.':'Keep the current final destination.'} Saves your manual order. Optimise can change it.</p>`;
+    $('#routeOrderSave').disabled=false;
+  }catch(e){$('#routeOrderError').textContent=e.message;}
+};
+$('#routeOrderSave').onclick=()=>{
+  if(routeOrderSaveBusy||!routeOrderDraft)return;
+  routeOrderSaveBusy=true;$('#routeOrderSave').disabled=true;
+  try{
+    if(runChangeBusy||routeOptimiseBusy||importBusy||routeOrderSnapshot.signature!==routeOrderSignature())throw Error('The run changed. Close and reopen Arrange stops before saving.');
+    const run=activeRunRecord(),before={stops:state.stops,end:state.end,roundTrip:state.roundTrip,manual:state.manual,data:run.data,updatedAt:run.updatedAt};
+    const ordered=routeOrderDraft.order.map(s=>s.newUnload?newUnloadStop():s),ids=new Set(routeOrderSnapshot.rows.map(s=>s.id));
+    state.stops=ordered.concat(state.stops.filter(s=>!ids.has(s.id)));state.manual=true;
+    if(routeOrderDraft.finishLast){state.end=null;state.roundTrip=false;}
+    save();
+    if(fieldLocalSaveFailed){
+      state.stops=before.stops;state.end=before.end;state.roundTrip=before.roundTrip;state.manual=before.manual;run.data=before.data;run.updatedAt=before.updatedAt;
+      throw Error('Could not save on this phone. Your previous order is kept. Free some storage and try Save again.');
+    }
+    $('#routeOrderDialog').close();routeOrderDraft=null;render();drawRoute();flash('✓ Stop order saved · manual order');
+  }catch(e){$('#routeOrderError').textContent=e.message;$('#routeOrderSave').disabled=false;}
+  finally{routeOrderSaveBusy=false;}
+};
 // A New Plymouth day is often more than one truckload. Woody collects a portion,
 // tips it at the scrap yard, then carries on for the rest. An unload stop is a
 // real stop on the route but it is not a customer: no price, no phone, no

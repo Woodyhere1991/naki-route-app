@@ -33,7 +33,7 @@ const root=path.resolve(__dirname,'..'),origin=process.env.NAKI_PUBLIC_ORIGIN||'
     assert.equal(await page.locator('#loadPlanDialog img,#loadPlanDialog svg,#loadPlanDialog canvas,.lp-block,#loadPictureDetails').count(),0,'Loading pictures completely removed');
     assert.equal(await page.locator('#loadPlanDialog').evaluate(d=>d.scrollWidth>d.clientWidth+1),false);
     if(width===390&&!process.env.NAKI_PUBLIC_ORIGIN)await page.screenshot({path:path.join(root,'output','load-plan-phone.png')});
-    await page.locator('.load-dialog-head button').click();
+    await page.locator('#loadPlanDialog .load-dialog-head button').click();
     await page.waitForFunction(()=>document.querySelector('#stAppBtn').getAttribute('aria-expanded')==='false');
     await page.reload();await page.waitForFunction(()=>typeof state==='object');await page.locator('#stAppBtn').click();
     assert((await page.locator('.ls-trailer').innerText()).includes('18 appliances'));
