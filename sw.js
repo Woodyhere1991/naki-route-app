@@ -1,4 +1,4 @@
-const CACHE='naki-field-20261018-arrange-stops';
+const CACHE='naki-field-20261018-map-drag-order';
 const EARNINGS_FILES=['/assets/earnings.js','/assets/earnings.css','/assets/earnings-model.js','/assets/business-stats.js','/assets/business-stats-model.js'];
 const FILES=['/','/index.html','/manifest.webmanifest','/assets/api-access.js','/assets/field-tools.js','/assets/vendor/leaflet.js','/assets/vendor/leaflet.css','/assets/vendor/leaflet-rotate-src.js','/assets/vendor/Sortable.min.js','/assets/vendor/jspdf.umd.min.js','/assets/naki-whiteware-logo-tight.png','/assets/icon-192.png','/assets/icon-180.png','/assets/icon-512.png','/assets/icon-maskable-512.png','/assets/vendor/images/layers.png','/assets/vendor/images/layers-2x.png','/assets/vendor/images/marker-icon.png','/assets/vendor/images/marker-icon-2x.png','/assets/vendor/images/marker-shadow.png'];
 FILES.push(...EARNINGS_FILES,'/assets/document-preview.js','/assets/vendor/pdfjs-legacy.mjs','/assets/vendor/pdfjs-legacy-worker.mjs');
@@ -6,6 +6,7 @@ FILES.push('/assets/booking-messages.js');
 FILES.push('/assets/route-restrictions.js');
 FILES.push('/assets/maps-navigation.js');
 FILES.push('/assets/route-order.js');
+FILES.push('/assets/route-order-map.js','/assets/route-order-map.css');
 FILES.push('/assets/load-plan.js','/assets/load-plan.css');
 self.addEventListener('install',event=>event.waitUntil(caches.open(CACHE).then(cache=>cache.addAll(FILES)).then(()=>self.skipWaiting())));
 self.addEventListener('activate',event=>event.waitUntil((async()=>{

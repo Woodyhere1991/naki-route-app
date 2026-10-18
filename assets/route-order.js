@@ -20,6 +20,12 @@
     if(missing.length)throw Error(`Also include ${missing.map(r=>`stop ${rows.indexOf(r)+1}${r.kind==='unload'?' (GMS)':''}`).join(', ')}. No pickups will be left out.`);
     return {order:[...prefix,...chosen],changed:chosen,prefixCount:first,newUnloads:chosen.filter(r=>r.newUnload).length};
   }
-  const api={plan};
+  function validate(original,draft){
+    const ids=draft.filter(s=>!s.newUnload).map(s=>s.id);
+    if(ids.length!==original.length||new Set(ids).size!==ids.length||original.some(s=>!ids.includes(s.id)))throw Error('A pickup is missing or repeated. Reset the draft and try again.');
+    if(draft.some(s=>s.newUnload&&s.kind!=='unload'))throw Error('Only GMS unloads can be added while arranging.');
+    return true;
+  }
+  const api={plan,validate};
   if(typeof module==='object'&&module.exports)module.exports=api;else root.NakiRouteOrder=api;
 })(typeof window==='object'?window:globalThis);

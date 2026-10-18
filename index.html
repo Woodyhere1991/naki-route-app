@@ -20,6 +20,8 @@
 <script src="/assets/route-restrictions.js"></script>
 <script src="/assets/maps-navigation.js"></script>
 <script src="/assets/route-order.js"></script>
+<script src="/assets/route-order-map.js"></script>
+<link rel="stylesheet" href="/assets/route-order-map.css" />
 <script src="/assets/load-plan.js"></script>
 <link rel="stylesheet" href="/assets/load-plan.css" />
 <script src="/assets/booking-messages.js"></script>
@@ -510,21 +512,18 @@
   </div>
 </dialog>
 
-<dialog id="routeOrderDialog" class="load-dialog" aria-labelledby="routeOrderTitle">
+<dialog id="routeOrderDialog" class="load-dialog route-order-dialog" aria-labelledby="routeOrderTitle">
   <div class="load-dialog-head"><h2 id="routeOrderTitle">Arrange stops</h2><button type="button" class="ghost" onclick="document.getElementById('routeOrderDialog').close()">Close</button></div>
-  <div class="load-dialog-body">
-    <p class="lp-note" id="routeOrderRun"></p>
-    <label for="routeOrderInput">Stop numbers in the order you want</label>
-    <textarea id="routeOrderInput" rows="3" placeholder="10, 13, 14, GMS, 16, 15, 18, 17, 11" autocapitalize="characters" spellcheck="false"></textarea>
-    <p class="lp-note">Use the current map numbers. Earlier stops stay put. Numbers update after saving.</p>
-    <div class="row"><button type="button" class="ghost grow" id="routeOrderAddGms">Add GMS</button><button type="button" class="ghost grow" id="routeOrderCurrent">Use current order</button></div>
-    <label id="routeOrderFinishRow" style="display:flex;align-items:center;gap:8px;margin:12px 0"><input type="checkbox" id="routeOrderFinish" style="width:22px;min-height:22px"/><span>Finish at the last stop (remove E)</span></label>
-    <p class="lp-note" id="routeOrderEnd"></p>
-    <details><summary>Check current stop numbers</summary><div id="routeOrderNumbers"></div></details>
-    <button type="button" class="good" id="routeOrderPreview" style="width:100%;margin-top:12px">Preview order</button>
-    <p id="routeOrderError" role="alert" style="color:#ffbc83"></p>
-    <div id="routeOrderPreviewList"></div>
-    <button type="button" class="good" id="routeOrderSave" style="width:100%;margin-top:12px" disabled>Save this order</button>
+  <div class="route-order-map-wrap"><div id="routeOrderMap" class="route-order-map" aria-label="Draft pickup route map"></div><div id="routeOrderMapState" class="route-order-map-state" role="status"></div></div>
+  <div class="route-order-controls">
+    <div class="route-order-tools"><button type="button" class="ghost" id="routeOrderAddGms">Add GMS</button><button type="button" class="ghost" id="routeOrderFit">Fit route</button><button type="button" class="ghost" id="routeOrderReset">Reset</button></div>
+    <p class="lp-note" id="routeOrderHint">Hold ☰ to drag. Tap a pin to find its row. Add GMS after the selected stop.</p>
+    <label id="routeOrderFinishRow" class="route-order-finish"><input type="checkbox" id="routeOrderFinish"/><span>Finish at last stop (remove E)</span></label>
+  </div>
+  <div id="routeOrderList" class="route-order-list" aria-label="Drag to arrange stops"></div>
+  <div class="route-order-footer">
+    <p id="routeOrderError" role="alert"></p>
+    <div><button type="button" class="ghost" onclick="document.getElementById('routeOrderDialog').close()">Cancel</button><button type="button" class="good" id="routeOrderSave">Save order</button></div>
   </div>
 </dialog>
 
@@ -4465,56 +4464,31 @@ function stopPrice(s){
 }
 
 /* ---------- Unload stops (empty the truck at GMS part-way through a run) ---------- */
-let routeOrderSnapshot=null,routeOrderDraft=null,routeOrderSaveBusy=false;
+let routeOrderSnapshot=null,routeOrderDraft=null,routeOrderSaveBusy=false,routeOrderEditor=null;
 function routeOrderSignature(){
   return JSON.stringify({run:activeRunRecord().id,stops:state.stops.map(s=>[s.id,s.status,s.kind,s.lat,s.lng,s.street,s.town,s.first_name,s.last_name]),start:startPoint(),end:state.end,roundTrip:state.roundTrip});
-}
-function routeOrderRow(stop,number){
-  return `<div style="padding:8px 0;border-bottom:1px solid var(--line)"><b>${number} · ${isUnload(stop)?'GMS unload':esc(fullName(stop)||fullAddr(stop))}</b>${isUnload(stop)?'':`<br><span class="small muted">${esc(fullAddr(stop))}</span>`}</div>`;
-}
-function invalidateRouteOrder(){
-  routeOrderDraft=null;$('#routeOrderSave').disabled=true;$('#routeOrderPreviewList').innerHTML='';$('#routeOrderError').textContent='';
 }
 function openRouteOrder(){
   if(runChangeBusy||routeOptimiseBusy||importBusy)return alert('Wait for the current route action to finish.');
   const rows=routeStops();if(!rows.length)return flash('Add pickups before arranging the run.');
   const end=endPoint();
   routeOrderSnapshot={rows:[...rows],signature:routeOrderSignature(),endIsGms:!!end&&haversine(end,GMS_YARD)<0.1};
-  invalidateRouteOrder();$('#routeOrderInput').value='';$('#routeOrderRun').textContent=activeRunName();
-  $('#routeOrderNumbers').innerHTML=rows.map((s,i)=>routeOrderRow(s,i+1)).join('');
-  $('#routeOrderFinishRow').hidden=!end;
-  $('#routeOrderFinishRow').style.display=end?'flex':'none';
-  $('#routeOrderFinish').checked=routeOrderSnapshot.endIsGms;
-  $('#routeOrderEnd').textContent=end?`Current E: ${fullAddr(end)||'return to start'}.`:'The run will finish at the last stop.';
-  $('#routeOrderDialog').showModal();
+  const viewport=map?{center:map.getCenter(),zoom:map.getZoom(),bearing:map.getBearing?.()||0}:null;
+  routeOrderEditor=NakiRouteOrganizer.open({rows,start:{...startPoint()},end:end?{...end}:null,endIsGms:routeOrderSnapshot.endIsGms,
+    yard:{...GMS_YARD},bridge:NakiRouting.bridge,viewport,runName:activeRunName(),name:s=>fullName(s)||fullAddr(s),address:fullAddr,pin:pinIcon,unloadIcon,
+    loadMap:ensureMap,loadSortable:()=>loadFieldScript('/assets/vendor/Sortable.min.js'),route:points=>NakiRouting.safeRoute(points),
+    onChange:draft=>{routeOrderDraft=draft;$('#routeOrderSave').disabled=false;},onClose:()=>{routeOrderDraft=null;}
+  });
 }
-$('#routeOrderInput').oninput=invalidateRouteOrder;
-$('#routeOrderFinish').onchange=invalidateRouteOrder;
-$('#routeOrderAddGms').onclick=()=>{
-  const input=$('#routeOrderInput');input.value=input.value.trim().replace(/[,\s]+$/,'')+(input.value.trim()?', GMS':'GMS');invalidateRouteOrder();input.focus();
-};
-$('#routeOrderCurrent').onclick=()=>{$('#routeOrderInput').value=routeOrderSnapshot.rows.map((s,i)=>i+1).join(', ');invalidateRouteOrder();};
-$('#routeOrderPreview').onclick=()=>{
-  invalidateRouteOrder();
-  try{
-    if(!routeOrderSnapshot||routeOrderSnapshot.signature!==routeOrderSignature())throw Error('The run changed. Close and reopen Arrange stops to use the latest numbers.');
-    const draft=NakiRouteOrder.plan(routeOrderSnapshot.rows,$('#routeOrderInput').value);
-    const finishLast=$('#routeOrderFinish').checked;
-    if(finishLast&&routeOrderSnapshot.endIsGms&&!draft.order.some(s=>s.newUnload||isUnload(s)))throw Error('Add GMS to your order before moving the final GMS visit.');
-    routeOrderDraft={...draft,finishLast};
-    $('#routeOrderPreviewList').innerHTML=`<h3>Your order · current numbers</h3>${draft.prefixCount?`<p class="lp-note">Stops 1–${draft.prefixCount} stay as they are.</p>`:''}`
-      +draft.changed.map(s=>s.newUnload?routeOrderRow({kind:'unload'},'GMS'):routeOrderRow(s,routeOrderSnapshot.rows.indexOf(s)+1)).join('')
-      +`<p class="lp-note">${finishLast?'Finish at the last stop.':'Keep the current final destination.'} Saves your manual order. Optimise can change it.</p>`;
-    $('#routeOrderSave').disabled=false;
-  }catch(e){$('#routeOrderError').textContent=e.message;}
-};
 $('#routeOrderSave').onclick=()=>{
   if(routeOrderSaveBusy||!routeOrderDraft)return;
   routeOrderSaveBusy=true;$('#routeOrderSave').disabled=true;
   try{
     if(runChangeBusy||routeOptimiseBusy||importBusy||routeOrderSnapshot.signature!==routeOrderSignature())throw Error('The run changed. Close and reopen Arrange stops before saving.');
+    NakiRouteOrder.validate(routeOrderSnapshot.rows,routeOrderDraft.order);
+    if(routeOrderDraft.finishLast&&routeOrderSnapshot.endIsGms&&!routeOrderDraft.order.some(s=>s.newUnload||isUnload(s)))throw Error('Add a GMS unload before removing the final GMS destination.');
     const run=activeRunRecord(),before={stops:state.stops,end:state.end,roundTrip:state.roundTrip,manual:state.manual,data:run.data,updatedAt:run.updatedAt};
-    const ordered=routeOrderDraft.order.map(s=>s.newUnload?newUnloadStop():s),ids=new Set(routeOrderSnapshot.rows.map(s=>s.id));
+    const ordered=routeOrderDraft.order.map(s=>s.newUnload?newUnloadStop():state.stops.find(current=>current.id===s.id)),ids=new Set(routeOrderSnapshot.rows.map(s=>s.id));
     state.stops=ordered.concat(state.stops.filter(s=>!ids.has(s.id)));state.manual=true;
     if(routeOrderDraft.finishLast){state.end=null;state.roundTrip=false;}
     save();

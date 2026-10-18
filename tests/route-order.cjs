@@ -19,3 +19,8 @@ const pickup12=rows.map(s=>({...s,kind:'pickup'}));
 assert.throws(()=>plan(pickup12,text),/stop 12/,'An omitted customer is never mistaken for the GMS endpoint');
 const repeated=plan(rows,'10,13,14,GMS,GMS,16,15,18,17,11');assert.equal(repeated.newUnloads,1,'Reuse the existing yard first, then add a second intentional unload');
 console.log('PASS: requested exact order, unchanged prefix, stable IDs, existing/new GMS, omissions, duplicates and alternative separators');
+const validate=require('../assets/route-order.js').validate;
+assert.equal(validate(rows,result.order),true);
+assert.throws(()=>validate(rows,result.order.slice(1)),/missing/);
+assert.throws(()=>validate(rows,[...result.order,result.order[0]]),/repeated/);
+assert.equal(validate(rows,[...result.order,{id:'draft-gms',newUnload:true,kind:'unload'}]),true);
