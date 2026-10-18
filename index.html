@@ -18,6 +18,7 @@
 <link rel="stylesheet" href="/assets/vendor/leaflet.css" />
 <script src="/assets/field-tools.js"></script>
 <script src="/assets/route-restrictions.js"></script>
+<script src="/assets/maps-navigation.js"></script>
 <script src="/assets/load-plan.js"></script>
 <link rel="stylesheet" href="/assets/load-plan.css" />
 <script src="/assets/booking-messages.js"></script>
@@ -1873,7 +1874,7 @@ function renderDirectBookings(){
       // without one it just opens an empty message, which still beats copying the
       // number out by hand.
       b.phone?`<a class="ghost sm" href="sms:${esc(smsPhoneNumber(b.phone))}${pickupDay?`?body=${smsText}`:""}">💬 ${pickupDay?"Text details":"Text"}</a>`:"",
-      navAddress?`<a class="ghost sm" target="_blank" rel="noopener" href="https://www.google.com/maps/search/?api=1&amp;query=${encodeURIComponent(navAddress)}">🧭 Navigate</a>`:""
+      navAddress?`<button class="ghost sm nav-action" data-navigate-booking="${esc(b.id)}">🧭 Navigate</button>`:""
     ].filter(Boolean).join("");
     const moneyActions=[
       unpaidMoneyActions,
@@ -1997,6 +1998,7 @@ function renderDirectBookings(){
   list.querySelectorAll("[data-uncomplete-direct]").forEach(button=>button.onclick=()=>uncompleteDirectBooking(button.dataset.uncompleteDirect));
   list.querySelectorAll("[data-restore-direct]").forEach(button=>button.onclick=()=>restoreDirectBooking(button.dataset.restoreDirect));
   list.querySelectorAll("[data-note-direct]").forEach(button=>button.onclick=()=>editBookingNote(button.dataset.noteDirect));
+  list.querySelectorAll('[data-navigate-booking]').forEach(button=>button.onclick=()=>navBooking(button.dataset.navigateBooking));
   list.querySelectorAll("[data-edit-direct]").forEach(button=>button.onclick=()=>editDirectBooking(button.dataset.editDirect));
   list.querySelectorAll("[data-delete-direct]").forEach(button=>button.onclick=()=>deleteDirectBooking(button.dataset.deleteDirect));
   list.querySelectorAll("[data-photos-direct]").forEach(button=>button.onclick=()=>showBookingPhotos(button.dataset.photosDirect));
@@ -3068,7 +3070,7 @@ function renderCustomers(){
           ${c.phone?`<a class="ghost sm" href="sms:${esc(smsPhoneNumber(c.phone))}">💬 Text</a>`:""}
           ${c.phone?`<a class="ghost sm" href="tel:${esc(String(c.phone).replace(/[^\d+]/g,""))}">📞 Call</a>`:""}
           ${c.email?`<a class="ghost sm" href="mailto:${encodeURIComponent(c.email)}">✉️ Email</a>`:""}
-          ${address?`<a class="ghost sm" target="_blank" rel="noopener" href="https://www.google.com/maps/search/?api=1&amp;query=${encodeURIComponent(safeMapsAddress(c.streetAddress,c.town,c.area))}">🧭 Navigate</a>`:""}
+          ${address?`<button class="ghost sm nav-action" data-navigate-customer="${esc(c.id)}">🧭 Navigate</button>`:""}
           ${c.bookings ? `<button class="ghost sm" data-customer-bookings="${esc(c.email)}">📋 Their bookings</button>` : ""}
           ${seenAction}
           <button class="ghost sm" title="Take a booking for this customer" data-take-booking="${esc(c.id)}">📅 Book</button>
@@ -3109,6 +3111,7 @@ function renderCustomers(){
     id.startsWith("CONTACT-") ? takeBookingForContact(id) : takeBookingForCustomer(id);
   });
   list.querySelectorAll("[data-customer-seen]").forEach(button=>button.onclick=()=>markCustomerSeen(button.dataset.customerSeen));
+  list.querySelectorAll('[data-navigate-customer]').forEach(button=>button.onclick=()=>navCustomer(button.dataset.navigateCustomer));
   rememberOpenCards(list,"details[data-customer-id]",customerCardsOpen,"data-customer-id");
   rememberOpenCards(list,"details[data-customer-docs]",customerDocsOpen,"data-customer-docs");
   list.querySelectorAll("details[data-customer-id]").forEach(card=>card.addEventListener("toggle",()=>{
@@ -7356,9 +7359,9 @@ function mapsDirUrl(s){
   return dest ? `https://www.google.com/maps/dir/?api=1&travelmode=driving&dir_action=navigate&destination=${dest}` : "";
 }
 let navRouteBusy=false;
-window.navStop = async id => {
+async function navigatePickup(s,isCurrent){
   if(navRouteBusy)return false;
-  const s = findStop(id); if(!s) return;
+  if(!s)return false;
   const url = mapsDirUrl(s); if (!url) return;
   navRouteBusy=true;
   const buttons=[...document.querySelectorAll('.nav-action')];
@@ -7375,21 +7378,45 @@ window.navStop = async id => {
     if(!Number.isFinite(to.lat)||!Number.isFinite(to.lng))to=await geocode(navAddress(s));
     if(!to)throw Error('Could not confirm this pickup location. Please check its address.');
     const route=await NakiRouting.safeRoute([from,to]);
-    if(findStop(id)!==s)throw Error('The run changed while checking. Please tap Navigate again.');
+    if(!isCurrent())throw Error('This pickup changed while checking. Please tap Navigate again.');
     const target=new URL(url);
-    target.searchParams.set('origin',`${from.lat},${from.lng}`);
+    // Let Maps start from the phone's live position rather than treating the
+    // checked GPS sample as a fixed route-preview origin.
+    target.searchParams.delete('origin');
     if(route.detours.length){
       target.searchParams.set('waypoints',route.detours[0].via.map(p=>`${p.lat},${p.lng}`).join('|'));
       // Keep the verified destination pin for the bridge-sensitive handoff.
       target.searchParams.set('destination',`${to.lat},${to.lng}`);
     }
-    location.href=target.href;
-    return true;
+    return NakiMaps.open(target.href);
   }catch(e){alert(e.message||NakiRouting.failure);return false;}
   finally{
     navRouteBusy=false;busy('');
     buttons.forEach((b,i)=>{b.disabled=false;b.textContent=labels[i];});
   }
+}
+window.navStop = id => {
+  const stop=findStop(id);
+  return navigatePickup(stop,()=>findStop(id)===stop);
+};
+function contactNavStop(row){
+  return {id:row.id,street:row.streetAddress,town:row.town,area:row.area,geoLabel:bookingNavAddress(row)};
+}
+window.navBooking = id => {
+  const booking=directBookingRows.find(b=>String(b.id)===String(id));if(!booking)return false;
+  const address=bookingNavAddress(booking);
+  return navigatePickup(contactNavStop(booking),()=>{
+    const current=directBookingRows.find(b=>String(b.id)===String(id));
+    return !!current&&bookingNavAddress(current)===address;
+  });
+};
+window.navCustomer = id => {
+  const customer=customerRows.find(c=>String(c.id)===String(id));if(!customer)return false;
+  const address=bookingNavAddress(customer);
+  return navigatePickup(contactNavStop(customer),()=>{
+    const current=customerRows.find(c=>String(c.id)===String(id));
+    return !!current&&bookingNavAddress(current)===address;
+  });
 };
 // Stops saved before this check existed carry no confirmed address, so the card
 // couldn't show where Navigate would really take Woody. Fill them in quietly.

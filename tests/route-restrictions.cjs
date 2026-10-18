@@ -64,6 +64,7 @@ function urlPoints(url){return new URL(url).pathname.split('/').pop().split(';')
     navigator:{geolocation:{getCurrentPosition:ok=>{resolveGps=ok;}}},
     NakiRouting:{failure:'No safe route',safeRoute:async()=>{checks++;return {detours:[{via:r.bypass}]};}},
     location:{href:''},busy(){},alert:message=>alerts.push(message)};
+  context.NakiMaps={open:url=>{context.location.href=url;return true;}};
   vm.createContext(context);vm.runInContext(navSource,context);
   const navigating=context.window.navStop('one');
   assert(button.disabled);assert.equal(await context.window.navStop('one'),false);
@@ -71,6 +72,7 @@ function urlPoints(url){return new URL(url).pathname.split('/').pop().split(';')
   const navUrl=new URL(context.location.href);
   assert.equal(navUrl.searchParams.get('waypoints'),r.bypass.map(p=>`${p.lat},${p.lng}`).join('|'));
   assert.equal(navUrl.searchParams.get('destination'),`${east.lat},${east.lng}`);
+  assert.equal(navUrl.searchParams.has('origin'),false,'Navigation starts from the live phone location');
   assert.equal(checks,1);assert(!button.disabled);assert.equal(button.textContent,'Navigate');
   context.location.href='';context.navigator.geolocation.getCurrentPosition=(ok,fail)=>fail();
   assert.equal(await context.window.navStop('one'),false);assert.equal(context.location.href,'');assert(!button.disabled);
