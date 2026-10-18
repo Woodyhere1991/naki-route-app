@@ -8,6 +8,7 @@ import { handleApiKeys } from "./api-keys.js";
 import { earningsReport } from './earnings.js';
 import {readInvoiceClearance,clearedDocuments} from './invoice-clearance.js';
 import {customerDirectoryDetails} from './customer-details.js';
+import {CUSTOMER_DIRECTORY_QUERY} from './customer-directory-query.js';
 export const OWNER_EMAIL = "nakiwreckremoval@gmail.com";
 // Addresses allowed to sign in as the owner. OWNER_EMAIL stays the one that
 // receives booking alerts; this list is only about who can log in, so Woody can
@@ -3294,16 +3295,7 @@ export async function handlePortalRequest({ request, env, path, json, sendMail, 
     }
 
     if (path === "/owner/customers" && request.method === "GET") {
-      const {rows,documentRows,pagination}=await ownerListPage(request,env,`SELECT c.*,
-           ((SELECT COUNT(*) FROM bookings b WHERE b.customer_id = c.id) +
-            (SELECT COUNT(*) FROM external_bookings e WHERE e.customer_id = c.id OR e.email = c.email COLLATE NOCASE) +
-            (SELECT COUNT(*) FROM jotform_bookings j WHERE j.customer_id = c.id OR j.email = c.email COLLATE NOCASE)) AS booking_count,
-           MAX(
-             COALESCE((SELECT MAX(created_at) FROM bookings b WHERE b.customer_id = c.id), 0),
-             COALESCE((SELECT MAX(created_at) FROM external_bookings e WHERE e.customer_id = c.id OR e.email = c.email COLLATE NOCASE), 0),
-             COALESCE((SELECT MAX(created_at) FROM jotform_bookings j WHERE j.customer_id = c.id OR j.email = c.email COLLATE NOCASE), 0)
-           ) AS last_booking_at
-         FROM customers c WHERE (?1='' OR LOWER(COALESCE(first_name,'')||' '||COALESCE(last_name,'')||' '||COALESCE(street_address,'')||' '||COALESCE(town,'')||' '||COALESCE(email,'')||' '||COALESCE(phone,'')) LIKE ?2) ORDER BY (last_booking_at IS NULL), last_booking_at DESC, c.created_at DESC LIMIT 101 OFFSET ?3`,"customers");
+      const {rows,documentRows,pagination}=await ownerListPage(request,env,CUSTOMER_DIRECTORY_QUERY,"customers");
       const documentsByEmail = new Map();
       for (const documentRow of (documentRows.results || [])) {
         const key = String(documentRow.email || "").trim().toLowerCase();
