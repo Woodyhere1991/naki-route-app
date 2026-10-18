@@ -270,7 +270,7 @@
   body[data-view="add"] .view-add,
   body[data-view="customers"] .view-customers,
   body[data-view="bookings"] .view-bookings{display:block}
-  .today-map{order:40}.today-actions{order:35}.today-list{order:20}.today-bad{order:40}.today-unpaid{order:50}
+  .today-map{order:19}.today-actions{order:35}.today-list{order:20}.today-bad{order:40}.today-unpaid{order:50}
   /* Stop count, km and the run picker only describe the run you're driving, so
      they'd just be noise sitting above the Bookings, Customers and Messages
      lists. They stay on Scheduled and on Add & setup, where you build that run. */
@@ -449,7 +449,8 @@
   body[data-view="today"] .gms-panel{order:25}
   .scheduled-shortcuts button[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);color:#fff}
   body[data-view="today"]:not([data-scheduled-section="listWrap"]) :is(.today-list,.today-bad,.today-unpaid),
-  body[data-view="today"]:not([data-scheduled-section="weatherPanel"]) :is(.today-weather,.gms-panel,.today-startend,.today-map){display:none}
+  body[data-view="today"]:not([data-scheduled-section="weatherPanel"]) :is(.today-weather,.gms-panel,.today-startend){display:none}
+  body[data-view="today"]:not([data-scheduled-section="listWrap"]) .today-map{display:none}
   .weather-town{border-top:1px solid var(--line);padding:8px 0}
   .weather-town>summary{display:flex;gap:10px;align-items:center;cursor:pointer;list-style:none}
   .weather-town>summary::after{content:'＋';margin-left:auto;color:var(--muted)}
