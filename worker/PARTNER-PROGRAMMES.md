@@ -1,6 +1,6 @@
 # Spring clean group bookings
 
-The owner's 19 October 2026 request authorises a working share link now. Street, date, household threshold and final payer details remain pending. The link accepts requests at the locked NZD $10 item rate, with no individual payment requested. No event date is promised.
+The owner's 19 October 2026 request authorises a working share link now. Street, date, household threshold and final payer details remain pending. The link accepts requests at the locked NZD $10 discounted item rate, described to households as a discounted price for this spring clean, with no individual payment requested. No event date is promised.
 
 ## Source and scope
 
@@ -11,7 +11,7 @@ The form currently offers the types named in that conversation: fridges/freezers
 ## Using it
 
 - Bookings has a dedicated Kāinga Ora spring clean group panel. Open it to copy the full share URL or review the complete participant list.
-- The public form requires name, phone, street number/address, town and item quantities. Email and access notes are optional. It does not require an account.
+- The public form requires name, phone, a matching confirmation phone number, an email address confirmed with a matching second entry, street number/address, town and item quantities. The worker refuses requests with a missing or malformed email so the server rule matches the form. Access notes are optional. It does not require an account.
 - Every booking and run stop carries the group badge. Group price snapshots remain server-side. The source booking ID is preserved in the Sheet backup, so imported copies retain the badge.
 - To change priced items or the pickup address, cancel and replace the request before invoicing. Contact details and notes can still be corrected through Bookings. Deleting a group source record is refused to retain invoice traceability.
 - Select completed pickups, preview, and save one invoice draft. Each person has item quantities, unit prices and a subtotal; the invoice has one grand total. Saved drafts reserve their pickups. Void an unsent draft to correct its selection.

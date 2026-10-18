@@ -81,7 +81,7 @@ export async function publicProgrammeRequest({request,env,path,json,sendMail,syn
       const name=text(body.name,120),phone=text(body.phone,30),email=text(body.email,160).toLowerCase();
       const street=text(body.streetAddress,180),town=text(body.town,100),notes=text(body.notes,1500);
       if(!name||!/[0-9]/.test(street)||!town||phone.replace(/\D/g,'').length<8)fail('Enter your name, phone number, street number and address, and town.');
-      if(email&&!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email))fail('Check your email address, or leave it blank.');
+      if(!email||!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email))fail('Please enter your email address so we can confirm the request for you.');
       const items=body.items;
       const requestJson=JSON.stringify({token,name,phone,email,street,town,notes,items});
       const db=env.CUSTOMER_DB;
