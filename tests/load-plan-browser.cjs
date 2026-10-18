@@ -34,8 +34,8 @@ const root=path.resolve(__dirname,'..'),origin=process.env.NAKI_PUBLIC_ORIGIN||'
     assert.equal(await page.locator('#loadPlanDialog').evaluate(d=>d.scrollWidth>d.clientWidth+1),false);
     if(width===390&&!process.env.NAKI_PUBLIC_ORIGIN)await page.screenshot({path:path.join(root,'output','load-plan-phone.png')});
     await page.locator('#loadPlanDialog .load-dialog-head button').click();
-    await page.waitForFunction(()=>document.querySelector('#stAppBtn').getAttribute('aria-expanded')==='false');
-    await page.reload();await page.waitForFunction(()=>typeof state==='object');await page.locator('#stAppBtn').click();
+    await page.waitForFunction(()=>!document.querySelector('#loadPlanDialog').open);
+    await page.reload();await page.waitForFunction(()=>typeof state==='object');await page.locator('.load-shortcut').click();
     assert((await page.locator('.ls-trailer').innerText()).includes('18 appliances'));
     await page.evaluate(()=>{state.stops=[{id:'cold',status:'NEW',appliances:['Fridge x9','Large chest freezer (over 1.5 m) x2','Dryer x6','Other']}];render();});
     assert((await page.locator('.ls-capacity').innerText()).includes('18 / 18'));

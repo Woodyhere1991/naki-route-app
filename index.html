@@ -486,7 +486,7 @@
     <div class="stats">
       <div class="stat"><b id="stCount">0</b><span>Stops</span></div>
       <div class="stat"><b id="stKm">–</b><span>Km</span></div>
-      <button type="button" class="stat" id="stAppBtn" aria-expanded="false" aria-controls="loadPlanDialog" title="Show trailer list and leftover items"><b id="stApp">0</b><span>Items</span></button>
+      <button type="button" class="stat" id="stAppBtn" hidden aria-expanded="false" aria-controls="loadPlanDialog" title="Show trailer list and leftover items"><b id="stApp">0</b><span>Items</span></button>
     </div>
   </div>
   <section class="run-switcher" aria-label="Pickup run switcher">
@@ -635,6 +635,7 @@
       <span>Direct bookings</span>
       <span>
         <button class="ghost sm" id="ownerLogout" style="display:none">Sign out</button>
+        <button class="good sm" id="addBookingForBtn">＋ Take a booking</button>
         <button class="ghost sm" id="directRefresh">Refresh</button>
       </span>
     </div>
@@ -670,7 +671,7 @@
   <section class="view-panel view-customers" id="customerProfiles">
     <div class="view-title direct-head">
       <span>Customers</span>
-      <span class="customer-page-actions"><button class="ghost sm" id="addContactBtn">＋ Add contact</button> <button class="ghost sm" id="addBookingForBtn">＋ Take a booking</button> <button class="ghost sm" id="customersRefresh">Refresh</button></span>
+      <span class="customer-page-actions"><button class="ghost sm" id="addContactBtn">＋ Add customer</button> <button class="ghost sm" id="customersRefresh">Refresh</button></span>
     </div>
     <div class="list-toolbar" id="customerToolbar" style="display:none">
       <input id="customerSearch" class="grow" placeholder="Search name, town, address, email or phone" />
@@ -3042,7 +3043,7 @@ function renderCustomers(){
     // button instead. Sign-in lives on Bookings because that's where the card is.
     customerStatus("");
     list.innerHTML=`<div class="card"><b>Sign in to see your customers.</b>
-      <p class="small muted">The same owner sign-in covers bookings and customers. Or tap ＋ Add contact to save someone by hand.</p>
+      <p class="small muted">The same owner sign-in covers bookings and customers. Or tap ＋ Add customer to save someone by hand.</p>
       <button id="customerSignInJump" style="width:100%;margin-top:10px">Go to sign-in</button></div>`;
     $("#customerSignInJump").onclick=()=>setAppView("bookings");
     return;
@@ -3297,7 +3298,7 @@ function customContactRows(){
 }
 async function addCustomContact(){
   const result = await openEditForm({
-    title:"➕ Add contact",
+    title:"➕ Add customer",
     note:"Saved on this phone for quick call / text / navigate. Handy for regular pickups that never came through a booking.",
     saveLabel:"Save contact",
     fields:[
