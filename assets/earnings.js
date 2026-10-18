@@ -4,7 +4,7 @@
   const ready=Promise.all([import('./earnings-model.js'),import('./business-stats.js')]).then(([value,stats])=>{model=value;statsUI=stats;});
   const money=cents=>new Intl.NumberFormat('en-NZ',{style:'currency',currency:'NZD',maximumFractionDigits:2}).format(cents/100);
   const section=document.createElement('section');section.id='earningsPage';section.className='view-panel view-earnings';
-  section.innerHTML=`<div class="earnings-head"><div><h1>Earnings</h1><p>Your completed work, at a glance.</p></div><div class="earnings-head-actions"><button class="ghost" onclick="setAppView('customers')">Customers</button><button id="earningsRefresh" class="ghost">Refresh</button></div></div>
+  section.innerHTML=`<div class="earnings-head"><div><h1>Earnings</h1><p>Your completed work, at a glance.</p></div><div class="earnings-head-actions"><button class="ghost" onclick="setAppView('today');document.getElementById('runActions').hidden=false;document.getElementById('manageRuns').setAttribute('aria-expanded','true')">← Back</button><button id="earningsRefresh" class="ghost">Refresh</button></div></div>
     <p class="earnings-note">Owner only · New Zealand dollars · Before expenses</p>
     <div id="earningsStatus" role="status" class="earnings-note"></div>
     <div id="earningsContent" hidden></div>`;
