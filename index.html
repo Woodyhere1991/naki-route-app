@@ -474,6 +474,7 @@
   select:not([multiple]){-webkit-appearance:none;appearance:none;color-scheme:dark;padding-right:36px;
     background-image:linear-gradient(45deg,transparent 50%,#bed2dd 50%),linear-gradient(135deg,#bed2dd 50%,transparent 50%);
     background-position:calc(100% - 19px) center,calc(100% - 14px) center;background-size:5px 5px;background-repeat:no-repeat}
+.programme-badge{display:block;width:fit-content;max-width:100%;margin:5px 0;padding:5px 9px;border-radius:8px;background:#f9b84b;color:#183c34;font-size:11px;font-weight:850;white-space:normal;line-height:1.35}.programme-summary{font-weight:800;cursor:pointer;color:#ffd178}.programme-count{font-weight:800;color:#ffd178}.programme-person{border-top:1px solid var(--line);padding:12px 0;overflow-wrap:anywhere}.programme-person label{margin:0}.programme-person input[type=checkbox]{min-height:22px}.programme-status{color:#ffd178!important}#programmeGroups{margin:14px 0;border:1px solid #c89235}#programmeGroups button{margin:4px 4px 4px 0}#programmeGroups input[readonly]{font-size:12px;width:100%}
 </style>
 <link rel="stylesheet" href="/assets/earnings.css" />
 </head>
@@ -663,6 +664,7 @@
     <div class="filter-chip" id="bookingFilterChip" style="display:none"></div>
     <div id="directBookingStatus" class="small muted"></div>
     <p id="bookingPageHint" class="small muted" hidden>Counts cover loaded bookings. Search all records above, or load more below.</p>
+    <div id="programmeGroups" class="card" hidden></div>
     <div id="directBookingList"></div>
     <button class="ghost" id="bookingLoadMore" hidden>Load more bookings</button>
   </section>
@@ -1741,6 +1743,7 @@ function rememberOpenCards(root, selector, openSet, attribute){
   });
 }
 function renderDirectBookings(){
+  window.nakiProgrammeGroups?.mount();
   const login=$("#ownerLoginCard"), list=$("#directBookingList"), logout=$("#ownerLogout");
   if (!login || !list) return;
   const bookingRows=bookingsWithInvoiceState(directBookingRows);
@@ -1956,7 +1959,7 @@ function renderDirectBookings(){
       : "";
     if (!bookingCompact){
       return `<article class="card ${classes}" data-booking-id="${esc(b.id)}">
-      <div class="direct-head"><h3>${name}</h3>${photoChip}<b>${esc(price)}</b></div>
+      ${programmeBadge(b)}<div class="direct-head"><h3>${name}</h3>${photoChip}<b>${esc(price)}</b></div>
       ${body}
     </article>`;
     }
@@ -1971,7 +1974,7 @@ function renderDirectBookings(){
       <summary>
         <span class="mini-dot ${dot}"></span>
         <span class="mini-main">
-          <span class="mini-name">${name||"(No name)"}</span>
+          <span class="mini-name">${name||"(No name)"}</span>${programmeBadge(b)}
           <span class="mini-sub">${esc(sub)}</span>
         </span>
         ${photoChip}
@@ -2063,6 +2066,7 @@ function renderDirectBookings(){
 // invoice is never emailed without being looked at first. Passing the booking's
 // own id is what files it against this booking instead of leaving it floating.
 async function receiptDirectBooking(id, askAmount=false){
+  if(programmePickup(directBookingRows.find(row=>row.id===id)))return directStatus("This is a spring clean group pickup. Use the organiser invoice; no individual receipt or payment.",true);
   const b=directBookingRows.find(row=>row.id===id);
   if(!b || bookingReceiptBuildBusy.has(id) || receiptSendBusy.has(id))return;
   if(pendingBookingReceipts[id]&&!askAmount)return openReceiptPreview(id);
@@ -2096,6 +2100,7 @@ async function receiptDirectBooking(id, askAmount=false){
 }
 async function invoiceDirectBooking(id, askAmount){
   const b=directBookingRows.find(row=>row.id===id); if(!b) return;
+  if(programmePickup(b))return directStatus('This pickup belongs to the spring clean group. Use its combined invoice.',true);
   const who=[b.firstName,b.lastName].filter(Boolean).join(" ")||"this customer";
   if (!goodEmail(b.email)) return directStatus("That booking has no valid email to send an invoice to.",true);
   try { await ensurePdf(); } catch(e) {}
@@ -2479,6 +2484,7 @@ async function addDirectBooking(id,options={}){
     town:b.town,
     area:b.area,
     appliances:b.items,
+    programme:b.programme||null,
     additional_info:b.additionalInfo,
     note:b.ownerNote||"", ownerNoteSynced:b.ownerNote||"",
     referral_source:b.referralSource,
@@ -4109,6 +4115,7 @@ function addFileStops(rows, srcName, setStatus, extraNote){
     const s = {
       id: uid(),
       submission_id: r.submission_id || uid(),
+      programme:r.programme||null,
       first_name: r.first_name||"", last_name: r.last_name||"",
       phone: r.phone||"", email: r.email||"", street: r.street||"", town: r.town||"",
       area: r.area||"", appliances: Array.isArray(r.appliances) ? r.appliances
@@ -4470,6 +4477,7 @@ function estimateStopPrice(s){
 // The price to show and to load into a receipt: what Woody set, else the estimate.
 function stopPrice(s){
   if (!s) return null;
+  if(programmePickup(s))return (s.appliances||[]).length*10;
   if (s.amount!=null) return Number(s.amount);
   if (s.invoiceAmount!=null) return Number(s.invoiceAmount);
   if (s.receiptAmount!=null) return Number(s.receiptAmount);
@@ -5009,6 +5017,8 @@ function reminderBulkMessage(){
 }
 
 /* ---------- Rendering the stop list ---------- */
+function programmePickup(s){return Boolean(s?.programme||String(s?.id||'').startsWith('WEB-GROUP-')||String(s?.submission_id||'').startsWith('WEB-GROUP-'));}
+function programmeBadge(s){return programmePickup(s)?'<span class="programme-badge">Kāinga Ora spring clean · organiser invoice</span>':'';}
 function fullName(s){ return [s.first_name,s.last_name].filter(Boolean).join(" ").trim(); }
 
 function updateStats(km, mins){
@@ -5175,10 +5185,10 @@ function renderList(){
     const phone    = s.phone ? `<button class="ghost sm" onclick="callStop('${s.id}')">📞 Call</button>` : "";
     const textBtn  = s.phone ? `<button class="ghost sm" onclick="textStop('${s.id}')">💬 Text</button>` : "";
     const emailBtn = goodEmail(s.email) ? `<button class="ghost sm" onclick="gmailStop('${s.id}')">Email</button>` : "";
-    const receiptBtn = pendingReceipts[s.id]
+    const receiptBtn = programmePickup(s) ? "" : pendingReceipts[s.id]
       ? `<button class="good sm" onclick="openReceiptPreview('${s.id}')">👁 Preview &amp; send</button><button class="ghost sm" title="Cancel this receipt and start again" onclick="cancelReceipt('${s.id}')">↺ Redo</button>`
       : `<button class="ghost sm" onclick="receiptStop('${s.id}')">🧾 ${s.receiptSent?'Receipt ✓':'Receipt'}</button>`;
-    const invoiceBtn = s.unpaidSourceId
+    const invoiceBtn = programmePickup(s) ? "" : s.unpaidSourceId
       ? `<button class="ghost sm" disabled>📄 Invoice sent</button>`
       : pendingInvoices[s.id]
       ? `<button class="good sm" onclick="openInvoicePreview('${s.id}')">👁 Invoice preview</button><button class="ghost sm" title="Cancel this invoice and start again" onclick="cancelInvoice('${s.id}')">↺ Redo</button>`
@@ -5200,7 +5210,7 @@ function renderList(){
       <div class="num">${num}</div>
       <div class="stopbody">
         ${s.id===nextId&&!isDone?'<div class="next-label">NEXT PICKUP</div>':""}
-        <div class="name">${esc(fullName(s)) || esc(fullAddr(s))} ${asapTag}${noNumTag}${invoicedTag}</div>
+        ${programmeBadge(s)}<div class="name">${esc(fullName(s)) || esc(fullAddr(s))} ${asapTag}${noNumTag}${invoicedTag}</div>
         ${phoneLine}
         <div class="addr">${esc(fullAddr(s))} ${tag} ${priceTag}</div>
         ${navDiffers(s)?`<div class="addr" style="color:#ffd08a">🧭 Navigates to ${esc(s.geoLabel)}</div>`:""}
@@ -5693,8 +5703,14 @@ function reminderMessageBatches(recipients, groupId){
   return [{ id:"everyone", label:"Everyone", recipients, message:bulkMessage() }];
 }
 function messageBatches(recipients, groupId){
-  return messageMode()==="reminder" ? reminderMessageBatches(recipients, groupId)
+  const batches=messageMode()==="reminder" ? reminderMessageBatches(recipients, groupId)
     : [{ id:"confirmation", label:"All selected customers", recipients, message:bulkMessage() }];
+  return batches.flatMap(batch=>{
+    const group=batch.recipients.filter(programmePickup),regular=batch.recipients.filter(s=>!programmePickup(s));
+    if(!group.length)return [batch];
+    const message=batch.message.replace(/with \$ inside(?: if easier)?\.?/gi,'for collection.').replace(/with the payment inside/gi,'ready for collection').replace(/items and \$ safely/gi,'items safely')+' No individual payment is needed; this pickup is included in the spring clean organiser invoice.';
+    return [...(regular.length?[{...batch,recipients:regular}]:[]),{...batch,id:batch.id+'-spring-clean',label:'Spring clean group',recipients:group,message}];
+  });
 }
 function batchPhoneNumbers(batch){
   return dedupeBy(batch.recipients.map(s=>(s.phone||"").trim()).filter(goodPhone).map(smsPhoneNumber), v=>v.replace(/\D/g,""));
@@ -5974,7 +5990,7 @@ window.toggleDone = id => {
   s.completionChangedAt=Date.now();
   save(); render(); drawRoute();
   syncExternalBooking(s);
-  if(!isUnload(s)&&s.src==='direct'&&s.submission_id){queueDirectCompletion(s.submission_id,completed?'COMPLETED':'ADDED_TO_RUN');void flushDirectCompletions();}
+  if(!isUnload(s)&&(s.src==='direct'||programmePickup(s))&&s.submission_id){queueDirectCompletion(s.submission_id,completed?'COMPLETED':'ADDED_TO_RUN');void flushDirectCompletions();}
   if(completed)void window.nakiEarnings?.completed(earningsBefore);
 };
 // One tidy popup for editing details, instead of a chain of one-line prompts.
@@ -6182,6 +6198,7 @@ async function editBookingNote(id){
 
 window.editStop = async id => {
   const s = findStop(id); if(!s) return;
+  if(programmePickup(s))return alert('This spring clean request has a locked item price. Edit its contact details in Bookings. To add items or change its address, cancel and replace the request before invoicing.');
   const previousAddress=fullAddr(s);
   const result = await openEditForm({
     title:"✎ Edit pickup",
@@ -6670,6 +6687,7 @@ async function buildInvoicePdf(s, amt){
 // and show a preview. Tap 2 (Send, on the preview): straight into the share sheet.
 window.receiptStop = async (id, askAmount) => {
   const s = findStop(id); if(!s) return;
+  if(programmePickup(s))return alert("Spring clean group pickup — no individual payment or receipt. Use the combined invoice in Bookings.");
   if (pendingReceipts[id]) return openReceiptPreview(id);   // already built — just preview
   try { await ensurePdf(); } catch(e) {}
   if (!window.jspdf){ alert("The PDF maker didn't load — check your connection and try again."); return; }
@@ -6864,6 +6882,7 @@ window.sendReceipt = async id => {
 // then Send emails it (server) with an optional auto-reminder day.
 window.invoiceStop = async (id, askAmount) => {
   const s = findStop(id); if(!s) return;
+  if(programmePickup(s))return alert('Spring clean group pickup — do not collect cash or bill individually. Use the combined invoice in Bookings.');
   if (pendingInvoices[id]) return openInvoicePreview(id);
   try { await ensurePdf(); } catch(e) {}
   if (!window.jspdf){ alert("The PDF maker didn't load — check your connection and try again."); return; }
@@ -7195,6 +7214,7 @@ async function settleInvoiceTwins(s){
 // to Completed. Sending a receipt already does this on its own.
 window.markPaid = async id => {
   const s = findStop(id); if(!s) return;
+  if(programmePickup(s))return alert('This is billed through the spring clean organiser. Do not mark an individual household as paid.');
   if (!confirm(`Mark ${fullName(s)||"this pickup"} as paid?`)) return;
   await cancelReminderFor(s);
   await settleAsPaid(s);
@@ -8480,6 +8500,7 @@ fieldBoot();
 </script>
 <script src="assets/document-preview.js"></script>
 <script src="assets/api-access.js"></script>
+<script src="assets/programme-groups.js"></script>
 <script src="assets/earnings.js"></script>
 </body>
 </html>

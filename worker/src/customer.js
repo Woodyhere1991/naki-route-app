@@ -9,6 +9,7 @@ import { earningsReport } from './earnings.js';
 import {readInvoiceClearance,clearedDocuments} from './invoice-clearance.js';
 import {customerDirectoryDetails} from './customer-details.js';
 import {CUSTOMER_DIRECTORY_QUERY} from './customer-directory-query.js';
+import {publicProgrammeRequest,ownerProgrammeRequest,programmeForBooking,programmeTags} from './partner-programmes.js';
 export const OWNER_EMAIL = "nakiwreckremoval@gmail.com";
 // Addresses allowed to sign in as the owner. OWNER_EMAIL stays the one that
 // receives booking alerts; this list is only about who can log in, so Woody can
@@ -605,9 +606,10 @@ function bookingFrom(row) {
     cancelledAt: row.cancelled_at ? new Date(row.cancelled_at).toISOString() : "",
     canCancel: (source === "WEBSITE" || source === "JOTFORM" || source === "PICKUP_RUN") &&
       !["COMPLETED", "DECLINED", "CANCELLED"].includes(status),
+    programme: row.id?.startsWith('WEB-GROUP-') ? {id:'spring-clean-lauren-202610',label:'Kāinga Ora spring clean',billing:'ORGANISER'} : null,
     // Only website bookings can be re-priced safely - their items come from our
     // own list, so the total can be recalculated without guessing.
-    canEdit: source === "WEBSITE" && !["COMPLETED", "DECLINED", "CANCELLED"].includes(status),
+    canEdit: !row.id?.startsWith("WEB-GROUP-") && source === "WEBSITE" && !["COMPLETED", "DECLINED", "CANCELLED"].includes(status),
     createdAt: new Date(row.created_at).toISOString()
   };
 }
@@ -899,6 +901,10 @@ function pickupDateText(value) {
    be), the account link, and how to keep it on their phone. */
 function pickupConfirmationText(booking, pickupDate, pickupWindow, customerNote, customText) {
   const day = pickupDateText(pickupDate);
+  if(booking.id?.startsWith('WEB-GROUP-')){
+    const groupText=String(customText||'Your Kāinga Ora spring clean pickup is confirmed.').replace(/with \$ inside(?: if easier)?\.?/gi,'for collection.').replace(/with the payment inside/gi,'ready for collection').replace(/items and \$ safely/gi,'items safely');
+    return groupText+'\n\nPickup day: '+day+(pickupWindow?'\nTime: '+pickupWindow:'')+(customerNote?'\nNote: '+customerNote:'')+'\n\nPlease leave the booked appliances accessible inside your property boundary. No individual payment is needed; this pickup is included in the spring clean organiser invoice.\n\nBooking ID: '+booking.id+'\nNaki Whiteware Removal';
+  }
   const opening = customText
     ? `${customText}
 
@@ -1556,6 +1562,11 @@ async function bulkBookingTarget(env, recipient) {
 
 async function upsertExternalBooking(env, fields, syncToken) {
   if (!fields.externalKey || !EMAIL_RE.test(fields.address)) return false;
+  // A Sheet/run import carrying the canonical group id must not create a twin.
+  if(fields.externalKey.startsWith('WEB-GROUP-')){
+    const canonical=await env.CUSTOMER_DB.prepare('SELECT id FROM bookings WHERE id=?1 AND email=?2 COLLATE NOCASE').bind(fields.externalKey,fields.address).first();
+    if(canonical)return true;
+  }
   const updatedAt = now();
   const customerId = await customerIdForEmail(env, fields.address);
   const completedAt = fields.status === "COMPLETED" ? updatedAt : null;
@@ -1777,6 +1788,11 @@ async function customerDocuments(env, address) {
 export async function handlePortalRequest({ request, env, path, json, sendMail, integrationSession = null }) {
   if (!path.startsWith("/customer/") && !path.startsWith("/owner/") && path !== "/jotform/submission") return null;
   if (!env.CUSTOMER_DB) return json(request, { error: "Customer accounts are not ready yet" }, 503);
+
+  if(path.startsWith('/customer/programme')){
+    const result=await publicProgrammeRequest({request,env,path,json,sendMail,syncBookingToSheet,ownerEmail:OWNER_EMAIL});
+    if(result)return result;
+  }
 
   if (path === "/jotform/submission" && request.method === "POST") {
     return handleJotformSubmission(request, env, json, sendMail);
@@ -2884,6 +2900,7 @@ export async function handlePortalRequest({ request, env, path, json, sendMail, 
     const editMatch = path.match(/^\/customer\/bookings\/([^/]+)$/);
     if (editMatch && request.method === "PUT") {
       const bookingId = decodeURIComponent(editMatch[1]);
+      if(bookingId.startsWith('WEB-GROUP-'))return json(request,{error:'This group booking has a locked $10 item price. Please message Woody to add items or cancel and replace it.'},409);
       if (!bookingId.startsWith("WEB-")) {
         return json(request, { error: "This booking cannot be changed online. Please message us instead." }, 400);
       }
@@ -3202,6 +3219,10 @@ export async function handlePortalRequest({ request, env, path, json, sendMail, 
   if (path.startsWith("/owner/")) {
     const session = integrationSession || await sessionFor(request, env, "owner");
     if (!session) return json(request, { error: "Owner login required" }, 401);
+    if(path.startsWith('/owner/programmes')){
+      if(integrationSession)return json(request,{error:'Owner sign-in required'},403);
+      return ownerProgrammeRequest({request,env,path,json,sendMail});
+    }
     if(path.startsWith('/owner/run-suggestions/')){
       if(integrationSession)return json(request,{error:'Owner sign-in required'},403);
       return await handleRunSuggestions(request,env,`backup:${OWNER_EMAIL}`,path,json)||json(request,{error:'Not found'},404);
@@ -3657,6 +3678,7 @@ export async function handlePortalRequest({ request, env, path, json, sendMail, 
         list.push(document);
         documentsByBooking.set(document.bookingId, list);
       }
+      const programmeInfo=await programmeTags(env.CUSTOMER_DB,(rows.results||[]).map(row=>row.id));
       const ownerNotes=await ownerNotesFor(env.CUSTOMER_DB,(rows.results||[]).map(row=>row.id));
       const bookings = (rows.results || []).map(row => {
         const externalKey = row.external_key || "";
@@ -3668,6 +3690,7 @@ export async function handlePortalRequest({ request, env, path, json, sendMail, 
         const invoiceOwing = Boolean(latestInvoice)&&!latestInvoice.cleared && (!latestReceipt || latestInvoice.createdAt > latestReceipt.createdAt);
         return {
           ...bookingFrom(row),
+          programme:programmeInfo.get(row.id)||null,
           ownerNote:ownerNotes.get(row.id)||"",
           emailFailed: Number(row.email_failed || 0) > 0,
           documents,
@@ -3813,6 +3836,7 @@ export async function handlePortalRequest({ request, env, path, json, sendMail, 
     const match = path.match(/^\/owner\/bookings\/([^/]+)$/);
     if (match && request.method === "DELETE") {
       const bookingId = decodeURIComponent(match[1]);
+      if(bookingId.startsWith('WEB-GROUP-'))return json(request,{error:'Cancel this group pickup instead of deleting it, so its price and invoice history remain traceable.'},409);
       const jotform = bookingId.startsWith("JOTFORM-");
       const pickupRun = bookingId.startsWith("PICKUP-");
       const table = jotform ? "jotform_bookings" : pickupRun ? "external_bookings" : "bookings";
@@ -3855,6 +3879,13 @@ export async function handlePortalRequest({ request, env, path, json, sendMail, 
       const table = jotform ? "jotform_bookings" : pickupRun ? "external_bookings" : "bookings";
       const existing = await env.CUSTOMER_DB.prepare(`SELECT * FROM ${table} WHERE id=?1`).bind(bookingId).first();
       if (!existing) return json(request, { error: "Booking not found" }, 404);
+      const groupMember=bookingId.startsWith('WEB-GROUP-')?await programmeForBooking(env.CUSTOMER_DB,bookingId):null;
+      if(groupMember){
+        const changedItems=Array.isArray(body.items)&&JSON.stringify(body.items)!==existing.items_json;
+        if(changedItems||body.quoteAmount!=null&&String(body.quoteAmount).trim()!==''&&Math.round(Number(body.quoteAmount)*100)!==existing.total_cents||body.streetAddress!=null&&body.streetAddress!==existing.street_address||body.town!=null&&body.town!==existing.town||body.ruralOption!=null&&body.ruralOption!==existing.rural_option)
+          return json(request,{error:'Group prices and addresses are locked. Cancel and replace this request to change items or address.'},409);
+        if(groupMember.invoice_id&&status!==existing.status)return json(request,{error:'Void the group invoice draft before changing this pickup status.'},409);
+      }
       const pickupDate = body.pickupDate == null ? existing.pickup_date || "" : clean(body.pickupDate, 10);
       const pickupWindow = body.pickupWindow == null ? existing.pickup_window || "" : clean(body.pickupWindow, 80);
       const customerNote = body.customerNote == null ? existing.customer_note || "" : clean(body.customerNote, 500);
@@ -3862,7 +3893,7 @@ export async function handlePortalRequest({ request, env, path, json, sendMail, 
         return json(request, { error: "Choose the confirmed pickup day" }, 400);
       }
       // Optional: put a real price on a "quote to be confirmed" job.
-      const hasQuote = body.quoteAmount != null && String(body.quoteAmount).trim() !== "";
+      const hasQuote = !groupMember && body.quoteAmount != null && String(body.quoteAmount).trim() !== "";
       const rawQuote = Number(body.quoteAmount);
       if (hasQuote && !(Number.isFinite(rawQuote) && rawQuote >= 0 && rawQuote <= 100000)) {
         return json(request, { error: "Enter the quoted price as a number" }, 400);
@@ -3879,7 +3910,7 @@ export async function handlePortalRequest({ request, env, path, json, sendMail, 
       const lastName = keep(body.lastName, "last_name", 60);
       const phone = keep(body.phone, "phone", 30);
       const address = body.email == null ? existing.email : email(body.email);
-      if (!EMAIL_RE.test(address)) return json(request, { error: "Enter a valid email address" }, 400);
+      if (!EMAIL_RE.test(address) && !(groupMember && !address)) return json(request, { error: "Enter a valid email address" }, 400);
       const streetAddress = keep(body.streetAddress, "street_address", 180);
       const town = keep(body.town, "town", 100);
       const area = keep(body.area, "area", 100);
@@ -3892,7 +3923,7 @@ export async function handlePortalRequest({ request, env, path, json, sendMail, 
       let itemsJson = existing.items_json || "[]";
       let totalCents = Number(existing.total_cents || 0);
       let quoteRequired = Number(existing.quote_required || 0);
-      if (Array.isArray(body.items)) {
+      if (Array.isArray(body.items) && !groupMember) {
         const items = body.items.map(item => clean(item, 100)).filter(Boolean).slice(0, 10);
         itemsJson = JSON.stringify(items);
         // Only re-price when every item is one of ours - a hand-typed item has no

@@ -1,3 +1,4 @@
+import {individualBillingBlocked} from './partner-programmes.js';
 import { OWNER_ACTIONS, ownerAction } from "./owner-actions.js";
 import { handleIntegrationApi, purgeApiRequests } from "./integration-api.js";
 import { recordKidsActivity, purgeKidsActivity } from "./kids-activity.js";
@@ -922,6 +923,7 @@ async function handleSendReceipt(request, env) {
   if (!mailConfigured(env)) return json(request, { error: "Email sending is not configured" }, 503);
   let body;
   try { body = await request.json(); } catch { return json(request, { error: "Bad request" }, 400); }
+  if(await individualBillingBlocked(env,body))return json(request,{error:'This pickup belongs to the spring clean group. Use the combined group invoice; do not bill the household individually.'},409);
   const to = String(body.to || "").trim();
   const name = String(body.name || "").trim().slice(0, 80);
   const pdf = String(body.pdfBase64 || "");
@@ -1070,6 +1072,9 @@ async function sendGmail(env, msg) {
 
 // One front door: Gmail first, Brevo fallback so a Google hiccup never loses a send.
 export async function sendMail(env, msg) {
+  // A group invoice has one atomic send claim. Never fall back to another
+  // provider after an uncertain first send, which could duplicate the invoice.
+  if(msg.kind==='group-invoice')return env.GMAIL_REFRESH_TOKEN?sendGmail(env,msg):sendBrevo(env,msg);
   if (msg.kind === "customer-login" && env.AUTH_EMAIL_FROM) {
     // Authentication mail must never fall back to the personal Gmail sender.
     const sender = loginSender(env.AUTH_EMAIL_FROM);
@@ -1171,6 +1176,7 @@ async function handleSendInvoice(request, env) {
   if (!mailConfigured(env)) return json(request, { error: "Email sending is not configured" }, 503);
   let body;
   try { body = await request.json(); } catch { return json(request, { error: "Bad request" }, 400); }
+  if(await individualBillingBlocked(env,body))return json(request,{error:'This pickup belongs to the spring clean group. Use the combined group invoice; do not bill the household individually.'},409);
   const to = String(body.to || "").trim();
   const name = String(body.name || "").trim().slice(0, 80);
   const pdf = String(body.pdfBase64 || "");
@@ -1207,6 +1213,7 @@ async function handleSetReminder(request, env) {
   if (!env.REMINDERS) return json(request, { error: "Reminders are not set up on this account" }, 503);
   let body;
   try { body = await request.json(); } catch { return json(request, { error: "Bad request" }, 400); }
+  if(await individualBillingBlocked(env,body))return json(request,{error:'This pickup belongs to the spring clean group. Use the combined group invoice; do not bill the household individually.'},409);
   const to = String(body.to || "").trim();
   const name = String(body.name || "").trim().slice(0, 80);
   const date = String(body.date || "").trim();
