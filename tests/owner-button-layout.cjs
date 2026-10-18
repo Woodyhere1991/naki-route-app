@@ -12,4 +12,4 @@ const bookings=[{id:'WEB-example',firstName:'Example',lastName:'Customer',email:
  assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth+1),false,width+'px '+view+' page overflow');
  }
  assert.equal(await page.locator('#customerFillBlanks').count(),0);assert.equal(await page.locator('#receptionBox').count(),0);assert.equal(await page.locator('#voiceFab').count(),0);assert.equal(await page.locator('.bottom-nav button').count(),5);assert.equal(await page.locator('#runActions [data-view-button=earnings]').count(),1);assert.deepEqual(errors,[]);await context.close();
- }console.log('PASS: all 5 app pages, every visible button label inside frame at 320/375/390/1280px; no overflow, retired assistant removed and Earnings inside Customers.');}finally{await browser.close();}})().catch(e=>{console.error(e);process.exitCode=1;});
+ }console.log('PASS: all 5 app pages, every visible button label inside frame at 320/375/390/1280px; no overflow, retired assistant removed and Earnings inside Manage.');}finally{await browser.close();}})().catch(e=>{console.error(e);process.exitCode=1;});
