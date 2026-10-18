@@ -137,14 +137,33 @@ function renderRunWeather() {
   updated.textContent=`${sources} · forecast updated ${time}${weatherState.loading?' · checking…':''}`;
   const stale=weatherState.error||navigator.onLine===false||Date.now()-Date.parse(weatherState.updatedAt||0)>12*3600000;
   const opened=new Set([...content.querySelectorAll('details[data-weather-key][open]')].map(d=>d.dataset.weatherKey));
-  content.innerHTML=(stale?`<p class="weather-alert">${esc(weatherState.error||'Saved forecast — reconnect or refresh before relying on it.')}</p>`:'')+weatherState.towns.map(t=>{
+  content.innerHTML=(stale?`<p class="weather-alert">${esc(weatherState.error||'Saved forecast — reconnect or refresh before relying on it.')}</p>`:'')+weatherState.towns.map((t,i)=>{
     const d=t.days?.find(x=>x.date===date);
     const stop=state.stops.find(s=>s.status!=='DONE'&&s.town===t.name&&routeTiming[s.id]);
     const arrive=stop?stopArriveMin(routeTiming[stop.id]):null;
-    const hours=(t.hours||[]).filter(h=>h.time.slice(0,10)===date&&+h.time.slice(11,13)>=6&&+h.time.slice(11,13)<=19);
-    return `<details class="weather-town" data-weather-key="${esc(t.name)}"><summary>${d?weatherIcon(d,32):''}<span class="weather-town-label"><strong>${esc(t.name)}${d?` · ${wxValue(d.high)}°`:''}</strong><small>${d?`${esc(d.condition||'Forecast')} · Rain ${wxValue(d.rain_mm)} mm · Wind ${wxValue(d.wind)} km/h`:'Forecast unavailable'}${arrive!=null?` · arrival ${esc(fmtClockShort(arrive))}`:''}</small>${d?.alerts?.length?`<small class="weather-alert">${esc(d.alerts.join(' · '))}</small>`:''}</span></summary>${d?weatherDayHtml(d):'<p class="small muted">Forecast not available for the selected date.</p>'}${hours.length?`<details data-weather-key="${esc(t.name)}-hours"><summary>Forecast through the day</summary><div class="weather-hours">${hours.map(h=>`<div class="weather-day"><b>${esc(h.time.slice(11))}${h.interval_hours>1?' · '+h.interval_hours+'h':''}</b><span>${esc(h.condition)}</span><span>${wxValue(h.temperature)}°</span><span>${wxValue(h.rain_mm)} mm</span><span>Wind ${wxValue(h.wind)} km/h</span><span>Gust ${wxValue(h.gust)} km/h</span></div>`).join('')}</div></details>`:''}<details data-weather-key="${esc(t.name)}-days"><summary>Other days</summary><div class="weather-days">${(t.days||[]).map(weatherDayHtml).join('')}</div></details></details>`;
-  }).join('')+'<p class="small muted">App notices are forecast estimates. “—” means the provider has no value. Rain amounts cover the labelled forecast period.</p><p class="small"><a href="https://www.metservice.com/warnings/home" target="_blank" rel="noopener">Check official MetService warnings</a></p><p class="small muted">Weather: <a href="https://www.met.no/en" target="_blank" rel="noopener">MET Norway</a> · <a href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noopener">CC BY 4.0</a>. Daily summaries calculated by this app.</p>';
+    const card=googleWeatherCard(t,d,date,arrive);
+    // First town open like a Google result; the rest one tap away.
+    return i===0?card:`<details class="weather-town" data-weather-key="${esc(t.name)}"><summary>${d?weatherIcon(d,32):''}<span class="weather-town-label"><strong>${esc(t.name)}${d?` · ${wxValue(d.high)}°`:''}</strong><small>${d?esc(d.condition||'Forecast'):'Forecast unavailable'}${arrive!=null?` · arrival ${esc(fmtClockShort(arrive))}`:''}</small></span></summary>${card}</details>`;
+  }).join('')+'<p class="small"><a href="https://www.metservice.com/warnings/home" target="_blank" rel="noopener">MetService warnings</a></p><p class="small muted">Weather: <a href="https://www.met.no/en" target="_blank" rel="noopener">MET Norway</a> · <a href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noopener">CC BY 4.0</a></p>';
   content.querySelectorAll('details[data-weather-key]').forEach(d=>{d.open=opened.has(d.dataset.weatherKey);});
+}
+// Laid out like Google's weather box: big temperature, details beside it,
+// the day's hours underneath, then the week.
+function googleWeatherCard(t,d,date,arrive) {
+  if(!d) return `<div class="gw"><p class="small muted">${esc(t.name)} · forecast not available for this date.</p></div>`;
+  const hours=(t.hours||[]).filter(h=>h.time.slice(0,10)===date&&+h.time.slice(11,13)>=6&&+h.time.slice(11,13)<=19);
+  const hourIcon=h=>weatherIcon({condition:h.condition,condition_type:h.condition_type},28);
+  const longDay=new Date(date+'T12:00:00').toLocaleDateString('en-NZ',{weekday:'long'});
+  return `<div class="gw">
+    <div class="gw-top">
+      <div class="gw-now">${weatherIcon(d,64)}<span class="gw-temp">${wxValue(d.high)}</span><span class="gw-unit">°C</span>
+        <div class="gw-meta">Rain chance: ${wxValue(d.rain_chance)}${d.rain_chance==null?'':'%'}<br>Rain: ${wxValue(d.rain_mm)} mm<br>Wind: ${wxValue(d.wind)} km/h${d.gust?`<br>Gusts: ${wxValue(d.gust)} km/h`:''}</div></div>
+      <div class="gw-where"><b>${esc(t.name)}</b><span>${esc(longDay)}${arrive!=null?` · arrive ${esc(fmtClockShort(arrive))}`:''}</span><span>${esc(d.condition||'Forecast')}</span></div>
+    </div>
+    ${d.alerts?.length?`<p class="weather-alert gw-alert">${esc(d.alerts.join(' · '))}</p>`:''}
+    ${hours.length?`<div class="gw-hours">${hours.map(h=>`<div><span>${esc(h.time.slice(11,16))}</span>${hourIcon(h)}<b>${wxValue(h.temperature)}°</b></div>`).join('')}</div>`:''}
+    <div class="gw-week">${(t.days||[]).map(x=>`<div class="${x.date===date?'on':''}"><span>${esc(new Date(x.date+'T12:00:00').toLocaleDateString('en-NZ',{weekday:'short'}))}</span>${weatherIcon(x,34)}<b>${wxValue(x.high)}°</b><small>${wxValue(x.low)}°</small></div>`).join('')}</div>
+  </div>`;
 }
 async function loadRunWeather(force=false) {
   const locations=weatherLocations(),key=weatherKey(locations);

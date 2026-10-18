@@ -93,7 +93,7 @@ const root=path.resolve(__dirname,'..'),origin=process.env.NAKI_PUBLIC_ORIGIN||'
   await page.waitForFunction(()=>returnBookingsBusy);await new Promise(r=>setTimeout(r,200));assert.equal(moves.length,1,'Repeat move taps do not duplicate requests');
   failMove=true;release();await page.waitForFunction(()=>!returnBookingsBusy);assert.equal(await page.evaluate(()=>state.stops.length),1,'Failure keeps pickup for retry');
   assert.equal(await page.locator('#sendBackBookings').isDisabled(),false);
-  failMove=false;holdMove=null;await page.locator('#sendBackBookings').click();await page.waitForFunction(()=>!returnBookingsBusy);assert.equal(await page.evaluate(()=>state.stops.length),0,'Retry moves pickup');
+  failMove=false;holdMove=null;await page.evaluate(()=>{document.getElementById('runActions').hidden=false});await page.locator('#sendBackBookings').click();await page.waitForFunction(()=>!returnBookingsBusy);assert.equal(await page.evaluate(()=>state.stops.length),0,'Retry moves pickup');
   assert.deepEqual(errors,[]);await page.close();
  }
  console.log('PASS: complete unfiltered paging, failed-page recovery, all-run Sheet coverage, include past, selection/edit persistence, channel dedupe, full review, rapid-tap guard, email retry, date isolation, existing confirmation, immediate move progress and failure/retry at 320/390/1280px.');

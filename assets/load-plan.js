@@ -1,6 +1,6 @@
 /* Count-only estimate: 18 total standard spaces, up to 12 fridge/freezer
- * spaces. Maximise fridge count first, then fill the trailer as fully as
- * possible. No vehicle dimensions, weight or live contents are measured. */
+ * spaces. Big fridges and large chest freezers always go on first, then
+ * maximise fridge count, then fill the trailer as fully as possible. No vehicle dimensions, weight or live contents are measured. */
 (function(root){
   'use strict';
   const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -11,7 +11,7 @@
     return {name,quantity};
   }
   function largeChest(s){
-    if(/\blarge\b|over\s*1[.,]5\s*m|(?:bigger|longer|more) than\s*1[.,]5\s*m|>\s*1[.,]5\s*m/.test(s))return true;
+    if(/\b(?:large|big)\b|over\s*1[.,]5\s*m|(?:bigger|longer|more) than\s*1[.,]5\s*m|>\s*1[.,]5\s*m/.test(s))return true;
     const length=s.match(/(\d+(?:[.,]\d+)?)\s*(mm|cm|metres?|meters?|m)\b/);
     if(!length)return false;
     const metres=Number(length[1].replace(',','.'))/({mm:1000,cm:100}[length[2]]||1);
@@ -19,9 +19,9 @@
   }
   function classify(name){
     const s=name.toLowerCase();
-    if(/chest freezer/.test(s))return {group:'cold',label:largeChest(s)?'Large chest freezers (>1.5 m)':'Chest freezers',half:largeChest(s)?3:2};
+    if(/chest freezer/.test(s))return {group:'cold',label:largeChest(s)?'Large chest freezers (>1.5 m)':'Chest freezers',half:largeChest(s)?3:2,large:largeChest(s)};
     if(/bar fridge|mini fridge|microwave|\btvs?\b|television|bicycl|\bbikes?\b|exercise|elliptical|cross[ -]?trainer|lawn[ -]?mower|treadmill/.test(s))return {group:'small',label:name,half:0};
-    if(/fridge|refrigerator/.test(s)&&/large|french|double[ -]?door|side[ -]by[ -]side|american/.test(s))return {group:'cold',label:'Big fridges',half:3,fridge:true};
+    if(/fridge|refrigerator/.test(s)&&/large|big|french|double[ -]?door|side[ -]by[ -]side|american/.test(s))return {group:'cold',label:'Big fridges',half:3,fridge:true,large:true};
     if(/fridge|refrigerator|freezer/.test(s))return {group:'cold',label:'Fridges / upright freezers',half:2,fridge:true};
     if(/washing machine|\bwasher\b/.test(s))return {group:'standard',label:'Washing machines',half:2};
     if(/dishwasher/.test(s))return {group:'standard',label:'Dishwashers',half:2};
@@ -51,13 +51,15 @@
   }
   // Exact subset choices. Half-units express 1.5-space appliances only;
   // no half-space filler is invented to make the total reach 18.
+  // Large items outrank any number of ordinary fridges.
+  const rank=list=>list.filter(i=>i.large).length*1000+list.filter(i=>i.fridge).length;
   function options(list,capacity,preferFridges=false){
     const choices=Array(capacity+1).fill(null);choices[0]=[];
     for(const item of list)for(let space=capacity;space>=item.half;space--){
       const previous=choices[space-item.half];
       if(!previous)continue;
       const candidate=[...previous,item],old=choices[space];
-      const priority=preferFridges?candidate.filter(i=>i.fridge).length:0,oldPriority=preferFridges&&old?old.filter(i=>i.fridge).length:0;
+      const priority=preferFridges?rank(candidate):0,oldPriority=preferFridges&&old?rank(old):0;
       if(!old||priority>oldPriority||priority===oldPriority&&candidate.length>old.length)choices[space]=candidate;
     }
     return choices;
@@ -65,10 +67,10 @@
   function allocate(list){
     const cold=options(list.filter(i=>i.group==='cold'),24,true);
     const standard=options(list.filter(i=>i.group==='standard'),36);
-    let best={fridges:-1,used:0,count:0,trailer:[]};
+    let best={large:-1,fridges:-1,used:0,count:0,trailer:[]};
     for(let f=0;f<cold.length;f++)if(cold[f])for(let s=0;s+f<=36;s++)if(standard[s]){
-      const score={fridges:cold[f].filter(i=>i.fridge).length,used:f+s,count:cold[f].length+standard[s].length};
-      if(score.fridges>best.fridges||score.fridges===best.fridges&&(score.used>best.used||score.used===best.used&&score.count>best.count))
+      const score={large:cold[f].filter(i=>i.large).length,fridges:cold[f].filter(i=>i.fridge).length,used:f+s,count:cold[f].length+standard[s].length};
+      if(score.large>best.large||score.large===best.large&&(score.fridges>best.fridges||score.fridges===best.fridges&&(score.used>best.used||score.used===best.used&&score.count>best.count)))
         best={...score,trailer:[...cold[f],...standard[s]]};
     }
     const selected=new Set(best.trailer.map(i=>i.key));

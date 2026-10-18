@@ -26,7 +26,7 @@ const root=path.resolve(__dirname,'..'),origin=process.env.NAKI_PUBLIC_ORIGIN||'
       NakiRouting.safeRoute=async points=>{draftRouteCalls.push(points.map(p=>[p.lat,p.lng]));if(failDraftRoute)throw Error('offline');return {geometry:{type:'LineString',coordinates:points.map(p=>[p.lng,p.lat])},legs:points.slice(1).map(()=>({duration:60})),distance:18000,duration:1000,detours:[]};};
       drawRoute=()=>{};save();render();applyAppView('today');
     });
-    await page.locator('#arrangeStops').click();
+    await page.evaluate(()=>{document.getElementById('runActions').hidden=false});await page.locator('#arrangeStops').click();
     await page.waitForFunction(()=>routeOrderEditor.getMap()&&document.querySelector('#routeOrderList')._sortable!==null);
     await page.waitForFunction(()=>document.querySelector('#routeOrderMapState').textContent.includes('matches'));
     assert.equal(await page.locator('#routeOrderList > .route-order-row').count(),18);
@@ -77,7 +77,7 @@ const root=path.resolve(__dirname,'..'),origin=process.env.NAKI_PUBLIC_ORIGIN||'
     const original=await page.evaluate(()=>state.stops.map(s=>s.id));
     await page.getByRole('button',{name:'Cancel',exact:true}).click();
     assert.deepEqual(await page.evaluate(()=>state.stops.map(s=>s.id)),original,'Cancel discards all edits');
-    await page.locator('#arrangeStops').click();await page.waitForFunction(()=>routeOrderEditor.getMap());
+    await page.evaluate(()=>{document.getElementById('runActions').hidden=false});await page.locator('#arrangeStops').click();await page.waitForFunction(()=>routeOrderEditor.getMap());
     await page.locator('[data-order-key="s1"] [data-order-step="1"]').click();await page.locator('#routeOrderAddGms').click();
     const draftIds=await page.evaluate(()=>routeOrderDraft.order.filter(s=>!s.newUnload).map(s=>s.id));
     await page.evaluate(()=>{window.storageSet=Storage.prototype.setItem;Storage.prototype.setItem=function(key,value){if(key===RUNS_LS)throw Error('Synthetic storage full');return storageSet.call(this,key,value);};});
@@ -89,7 +89,7 @@ const root=path.resolve(__dirname,'..'),origin=process.env.NAKI_PUBLIC_ORIGIN||'
     assert.equal(await page.evaluate(()=>state.manual),true);assert.equal(await page.evaluate(()=>state.end),null);
     await page.reload();await page.waitForFunction(()=>typeof state==='object');assert.equal(await page.evaluate(()=>state.stops.filter(isUnload).length),1);
     await page.evaluate(()=>{NakiRouting.safeRoute=async()=>{throw Error('offline');};});
-    await page.locator('#arrangeStops').click();await page.waitForFunction(()=>document.querySelector('#routeOrderMapState').textContent.includes('unavailable'));
+    await page.evaluate(()=>{document.getElementById('runActions').hidden=false});await page.locator('#arrangeStops').click();await page.waitForFunction(()=>document.querySelector('#routeOrderMapState').textContent.includes('unavailable'));
     assert.equal(await page.locator('#routeOrderMap .leaflet-overlay-pane path').count(),1,'Offline map contains only the blocked-bridge circle, no unverified road line');
     await page.evaluate(()=>{state.stops[0].street='Changed address';});await page.locator('#routeOrderSave').click();assert((await page.locator('#routeOrderError').innerText()).includes('run changed'));
     assert.deepEqual(errors,[]);await page.close();

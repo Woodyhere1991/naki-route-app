@@ -30,13 +30,16 @@ assert.equal(plan.render,undefined,'No picture renderer remains');
 let cases=0;
 for(let regular=0;regular<=14;regular++)for(let big=0;big<=6;big++)for(let standard=0;standard<=20;standard++){
   const p=load([...Array(regular).fill('Fridge'),...Array(big).fill('Large fridge'),...Array(standard).fill('Dryer')]);
-  let best=[-1,0,0];
+  let best=[-1,-1,0,0];
   for(let a=0;a<=regular;a++)for(let b=0;b<=big;b++)if(a*2+b*3<=24)for(let c=0;c<=standard;c++)if(a*2+b*3+c*2<=36){
-    const score=[a+b,a*2+b*3+c*2,a+b+c];
-    if(score[0]>best[0]||score[0]===best[0]&&(score[1]>best[1]||score[1]===best[1]&&score[2]>best[2]))best=score;
+    // Big fridges first, then fridge count, then space used, then item count.
+    const score=[b,a+b,a*2+b*3+c*2,a+b+c];
+    if(String(score.map(n=>String(n).padStart(3,'0')))>String(best.map(n=>String(Math.max(n,0)).padStart(3,'0')))||best[0]<0)best=score;
   }
-  assert.deepEqual([p.trailer.filter(i=>i.fridge).length,p.units*2,p.trailer.length],best);
+  assert.deepEqual([p.trailer.filter(i=>i.large).length,p.trailer.filter(i=>i.fridge).length,p.units*2,p.trailer.length],best);
   assert.equal(p.trailer.length+p.leftover.length,regular+big+standard);assert(p.units<=18&&p.coldUnits<=12);
   assert.equal(new Set(p.trailer.map(i=>i.key)).size,p.trailer.length);cases++;
 }
-console.log(`PASS: no pictures, fridge priority, 18-space fill, 12-fridge space limit, 1.5m chest boundary, leftovers, small Other, unloads and ${cases} exhaustive packing cases`);
+{const p=load(['Fridge x12','Large or French-door fridge x2','Large chest freezer (over 1.5 m) x2','big chest freezer']);
+  assert.equal(p.leftover.filter(i=>i.large).length,0,'Big fridges and large chest freezers load first');assert.equal(p.trailer.filter(i=>i.large).length,5);}
+console.log(`PASS: no pictures, big items first, fridge priority, 18-space fill, 12-fridge space limit, 1.5m chest boundary, leftovers, small Other, unloads and ${cases} exhaustive packing cases`);

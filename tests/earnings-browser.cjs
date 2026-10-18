@@ -26,7 +26,7 @@ let expectedJobs,expectedFridges;
    await page.goto('https://pickup.test/',{waitUntil:'domcontentloaded'});
    await page.waitForFunction(()=>!!window.nakiEarnings);
    await page.evaluate(()=>{ownerToken='synthetic-owner';state.stops=[];state.bad=[];state.unpaid=[];runStore.runs=[{id:'test-run',name:'Test run',data:state}];runStore.activeRunId='test-run';});
-   await page.locator('.bottom-nav [data-view-button=customers]').click();await page.locator('[data-view-button=earnings]').click();
+   await page.locator('.bottom-nav [data-view-button=today]').click();await page.evaluate(()=>{document.getElementById('runActions').hidden=false});await page.locator('#runActions [data-view-button=earnings]').click();
    await page.waitForFunction(()=>!document.getElementById('earningsContent').hidden);
    assert.ok((await page.locator('#earningsContent').innerText()).includes(new Intl.NumberFormat('en-NZ',{style:'currency',currency:'NZD'}).format(baseline.summary.allTimeCents/100)));
    await page.getByRole('button',{name:'12 months',exact:true}).click();
@@ -105,7 +105,7 @@ let expectedJobs,expectedFridges;
     assert.match(await page.locator('#dayEarningsBody').innerText(),/1 job today/);await page.locator('#dayEarningsClose').click();
    }
    await page.evaluate(()=>{state.stops=[];});
-   await page.locator('.bottom-nav [data-view-button=customers]').click();await page.locator('[data-view-button=earnings]').click();await page.waitForFunction(()=>!document.getElementById('earningsContent').hidden);
+   await page.locator('.bottom-nav [data-view-button=today]').click();await page.evaluate(()=>{document.getElementById('runActions').hidden=false});await page.locator('#runActions [data-view-button=earnings]').click();await page.waitForFunction(()=>!document.getElementById('earningsContent').hidden);
    fail=true;await page.locator('#earningsRefresh').click();
    await page.waitForFunction(()=>document.getElementById('earningsStatus').innerText.includes('Reconnect'));
    assert.equal(await page.locator('#earningsContent').innerText(),'','Failure does not show stale money');

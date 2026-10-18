@@ -37,7 +37,7 @@ const root=path.resolve(__dirname,'..'),origin=process.env.NAKI_PUBLIC_ORIGIN||'
         failedBanner:document.querySelector('#bannerOsrm').textContent,
         busy:document.querySelector('#optimise').disabled};
     });
-    assert(result.roadLayers>0);assert.equal(result.km,'17');assert(result.banner.includes('SH3'));assert.equal(result.arrival,1400);
+    assert(result.roadLayers>0);assert.equal(result.km,'17');assert.equal(result.banner,'','Bridge is avoided quietly');assert.equal(result.arrival,1400);
     assert.equal(result.optimised,false);assert(result.kept);assert.equal(result.afterFailure,0);assert(result.timingCleared);
     assert(result.failedBanner.includes('Could not verify'));assert.equal(result.busy,false);assert.deepEqual(errors,[]);
     await page.close();

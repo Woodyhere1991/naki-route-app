@@ -86,6 +86,8 @@
   .run-actions{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-top:7px}
   .run-actions[hidden]{display:none}
   .run-actions button{min-height:42px;font-size:14px}
+  .run-actions-label{grid-column:1/-1;margin:6px 0 0;font-size:12px;font-weight:800;letter-spacing:.04em;text-transform:uppercase;color:var(--muted)}
+  #returnBookingsStatus{grid-column:1/-1}#returnBookingsStatus:empty{display:none}
   @media(max-width:430px){
     .topbar{gap:6px;padding-left:6px;padding-right:6px}
     .brand-logo{flex-basis:44px;width:44px;height:44px}
@@ -197,6 +199,24 @@
   #weatherSummary{display:inline-flex;align-items:center;gap:7px}
   #weatherSummary .wx-icon{margin:0;flex:0 0 auto}
   .weather-alert{color:var(--warn)!important;font-weight:700}
+  .gw{padding:6px 0 4px}
+  .gw-top{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap}
+  .gw-now{display:flex;align-items:flex-start;gap:6px}
+  .gw-now .wx-icon{margin:2px 4px 0 0}
+  .gw-temp{font-size:46px;line-height:1;font-weight:400;color:var(--txt)}
+  .gw-unit{font-size:16px;margin-top:4px;color:var(--txt)}
+  .gw-meta{font-size:12px;line-height:1.55;color:var(--muted);margin-left:10px}
+  .gw-where{text-align:right;display:flex;flex-direction:column;gap:2px;font-size:13px;color:var(--muted);margin-left:auto}
+  .gw-where b{font-size:17px;color:var(--txt);font-weight:500}
+  .gw-alert{margin:8px 0 0}
+  .gw-hours{display:flex;gap:4px;overflow-x:auto;margin-top:12px;padding:8px 0;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
+  .gw-hours>div{flex:0 0 52px;display:flex;flex-direction:column;align-items:center;font-size:12px;color:var(--muted)}
+  .gw-hours .wx-icon{margin:3px auto}.gw-hours b{color:var(--txt);font-weight:500}
+  .gw-week{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:2px;margin-top:10px}
+  .gw-week>div{display:flex;flex-direction:column;align-items:center;padding:6px 0;border-radius:10px;font-size:12px;color:var(--muted)}
+  .gw-week>div.on{background:var(--panel2);outline:1px solid var(--line)}
+  .gw-week .wx-icon{margin:4px auto;width:30px;height:30px}
+  .gw-week b{color:var(--txt);font-weight:500;font-size:13px}.gw-week small{font-size:12px}
   @media(prefers-reduced-motion:no-preference){.wx-icon circle[fill="#ffc447"]{animation:wxglow 3s ease-in-out infinite}}
   @keyframes wxglow{0%,100%{opacity:1}50%{opacity:.82}}
   .pin.unload{background:#4a5568 !important;border-color:#cbd5e0}
@@ -256,7 +276,7 @@
      lists. They stay on Scheduled and on Add & setup, where you build that run. */
   body[data-view="bookings"] .stats, body[data-view="customers"] .stats, body[data-view="messages"] .stats,
   body[data-view="bookings"] .run-switcher, body[data-view="customers"] .run-switcher,
-  body[data-view="messages"] .run-switcher{display:none}
+  body[data-view="messages"] .run-switcher, body[data-view="earnings"] .run-switcher{display:none}
   #bannerSave,#bannerOsrm{order:5} footer{order:100}
   .bottom-nav{position:fixed;left:0;right:0;bottom:0;width:100%;box-sizing:border-box;z-index:2000;background:rgba(7,29,46,.98);
     border-top:1px solid var(--line);padding:8px max(6px,env(safe-area-inset-right)) calc(8px + env(safe-area-inset-bottom)) max(6px,env(safe-area-inset-left));
@@ -429,9 +449,7 @@
   body[data-view="today"] .gms-panel{order:25}
   .scheduled-shortcuts button[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);color:#fff}
   body[data-view="today"]:not([data-scheduled-section="listWrap"]) :is(.today-list,.today-bad,.today-unpaid),
-  body[data-view="today"]:not([data-scheduled-section="weatherPanel"]) :is(.today-weather,.gms-panel,.today-startend),
-  body[data-view="today"]:not([data-scheduled-section="mapPanel"]) .today-map,
-  body[data-view="today"]:not([data-scheduled-section="mapPanel"]) .today-actions{display:none}
+  body[data-view="today"]:not([data-scheduled-section="weatherPanel"]) :is(.today-weather,.gms-panel,.today-startend,.today-map){display:none}
   .weather-town{border-top:1px solid var(--line);padding:8px 0}
   .weather-town>summary{display:flex;gap:10px;align-items:center;cursor:pointer;list-style:none}
   .weather-town>summary::after{content:'＋';margin-left:auto;color:var(--muted)}
@@ -479,11 +497,19 @@
         <button id="manageRuns" class="ghost" aria-expanded="false">Manage</button>
       </div>
       <div id="runActions" class="run-actions" hidden>
+        <p class="run-actions-label">Route</p>
+        <button type="button" class="good" id="arrangeStops" onclick="openRouteOrder()">Arrange stops</button>
+        <button id="optimise">Optimise route</button>
+        <button id="optimiseHere" class="ghost">Optimise from where I am</button>
+        <button id="addUnload" class="ghost">♻️ Add unload at GMS</button>
+        <p class="run-actions-label">Run</p>
         <button id="addTownRun" class="good">+ Add town / run</button>
         <button id="renameRun" class="ghost">Rename this run</button>
         <button id="mergeRun" class="ghost">Merge another run into this one</button>
-        <button id="clearAll" class="ghost">Clear stops from this run</button>
+        <button id="sendBackBookings" class="ghost" onclick="sendAllBackToBookings()">↩ Send all back to Bookings</button>
+        <button class="ghost" data-view-button="earnings">📊 Earnings</button>
         <button id="deleteRun" class="bad">Delete this run</button>
+        <div id="returnBookingsStatus" class="small" role="status"></div>
       </div>
     </div>
   </section>
@@ -493,10 +519,8 @@
     <nav aria-label="Run sections">
       <button class="ghost" data-scheduled-button="listWrap" aria-pressed="true" onclick="jumpToScheduled('listWrap')">Pickups</button>
       <button class="ghost" data-scheduled-button="weatherPanel" aria-pressed="false" onclick="jumpToScheduled('weatherPanel')">Run info</button>
-      <button class="ghost" data-scheduled-button="mapPanel" aria-pressed="false" onclick="jumpToScheduled('mapPanel')">Map</button>
+      <button type="button" class="ghost load-shortcut" onclick="toggleItemTally()">What’s on this run?</button>
     </nav>
-    <div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:6px;margin-top:6px"><button type="button" class="ghost load-shortcut grow" style="margin-top:0" onclick="toggleItemTally()">What’s on this run?</button>
-    <button type="button" class="ghost grow" id="arrangeStops" onclick="openRouteOrder()">Arrange stops</button></div>
   </section>
 
 </header>
@@ -530,7 +554,7 @@
 <div class="wrap">
 
   <!-- ADD PICKUPS -->
-  <div class="card view-panel view-add">
+  <div class="card view-panel view-add" hidden>
     <details id="addBox" open>
       <summary>Add pickups <span class="chev">›</span></summary>
 
@@ -600,18 +624,6 @@
     </details>
   </div>
 
-  <!-- ACTIONS -->
-  <section id="routeOptions" aria-label="Route options" class="card view-panel view-today today-actions"><h2 style="font-size:16px;margin:0 0 10px">Route options</h2><div>
-    <button id="optimise" style="width:100%">Optimise route</button>
-    <div class="row" style="margin-top:10px">
-      <button id="optimiseHere" class="ghost grow">Optimise from where I am</button>
-
-    </div>
-    <div class="row" style="margin-top:10px">
-      <button id="addUnload" class="ghost grow">♻️ Add unload at GMS</button>
-    </div>
-    <p class="small muted" style="margin:8px 0 0">Too much for one load? Drop a GMS trip in between two pickups. Optimise keeps the pickups either side of it where they are.</p>
-  </div></section>
 
   <!-- BULK MESSAGE CONTACTS -->
   <div id="contactsWrap" class="view-panel view-messages"></div>
@@ -657,7 +669,7 @@
   <section class="view-panel view-customers" id="customerProfiles">
     <div class="view-title direct-head">
       <span>Customers</span>
-      <span class="customer-page-actions"><button class="good sm" data-view-button="earnings">📊 Earnings</button><button class="ghost sm" id="addContactBtn">＋ Add contact</button> <button class="ghost sm" id="addBookingForBtn">＋ Take a booking</button> <button class="ghost sm" id="customersRefresh">Refresh</button></span>
+      <span class="customer-page-actions"><button class="ghost sm" id="addContactBtn">＋ Add contact</button> <button class="ghost sm" id="addBookingForBtn">＋ Take a booking</button> <button class="ghost sm" id="customersRefresh">Refresh</button></span>
     </div>
     <div class="list-toolbar" id="customerToolbar" style="display:none">
       <input id="customerSearch" class="grow" placeholder="Search name, town, address, email or phone" />
@@ -817,7 +829,6 @@
   <!-- NEEDS ADDRESS -->
   <div id="badWrap" class="view-panel view-today today-bad"></div>
 
-  <footer>Saved on this phone · Check account backup status above</footer>
 </div>
 
 <nav class="bottom-nav" aria-label="Main sections">
@@ -825,7 +836,7 @@
   <button data-view-button="bookings">Bookings <span id="bookingCount" class="booking-count" style="display:none">0</span></button>
   <button data-view-button="customers">Customers</button>
   <button data-view-button="messages">Messages</button>
-  <button data-view-button="add">Add &amp; setup</button>
+  <button data-view-button="add">Setup</button>
 </nav>
 
 <!-- Receipt PDF preview: look it over, then Send (share sheet) or Close -->
@@ -1299,7 +1310,8 @@ async function deleteActiveRun(){
 function applyAppView(view){
   if (!["today","bookings","customers","messages","earnings","add"].includes(view)) view = state.stops.length ? "today" : "add";
   document.body.dataset.view = view;
-  document.querySelectorAll("[data-view-button]").forEach(btn=>btn.classList.toggle("on", btn.dataset.viewButton===view||view==="earnings"&&btn.dataset.viewButton==="customers"));
+  $("#runActions").hidden=true;$("#manageRuns").setAttribute("aria-expanded","false");
+  document.querySelectorAll("[data-view-button]").forEach(btn=>btn.classList.toggle("on", btn.dataset.viewButton===view||view==="earnings"&&btn.dataset.viewButton==="today"));
   if (view==="today" && map) setTimeout(()=>map.invalidateSize(), 80);
   if (view==="messages") {setTimeout(fitMessagePreview, 0);if(messageScope()==="bookings")void loadBookingMessageRecipients();}
   if (view==="today" || view==="add") refreshWeather(false);   // panel just became visible
@@ -4706,7 +4718,7 @@ async function optimise(){
     alert(NakiRouting.failure+' Your pickup order has been kept.');
   }finally{
     setRouteOptimiseBusy(false);
-    if(optimised) flash("✓ Route optimised · Bertrand Road Bridge avoided");
+    if(optimised) flash("✓ Route optimised");
     else busy("");
   }
   // Do not wait for the map line. That request can take several seconds, and
@@ -4796,7 +4808,6 @@ async function drawRoute(){
         { style:{ color:"#2f80ff", weight:5, opacity:.85 } }).addTo(routeLayer);
       updateStats(r.distance/1000, r.duration/60);
       setRouteTiming(pts, r.legs);
-      setBanner('#bannerOsrm','Bertrand Road Bridge blocked for this vehicle'+(r.detours.length?' · route goes via SH3.':'.'));
       drewRoad = true;
     }
   }catch(e){ /* OSRM down or rate-limited — fall through */ }
@@ -5078,7 +5089,16 @@ function jumpToScheduled(id){
   window.scrollTo({top:0,behavior:'instant'});
   if(id==='mapPanel')ensureMap().then(ok=>{if(ok){map.invalidateSize();drawRoute();}});
 }
+function paintSendBack(){
+  const button=$("#sendBackBookings"),status=$("#returnBookingsStatus");if(!button)return;
+  const waiting=pickupsOnly(state.stops.filter(s=>s.status!=="DONE")).length+(state.bad||[]).length;
+  button.hidden=!waiting&&!returnBookingsBusy;button.disabled=returnBookingsBusy;
+  if(returnBookingsBusy)button.setAttribute("aria-busy","true");else button.removeAttribute("aria-busy");
+  button.textContent=returnBookingsBusy?"Moving pickups… please wait":"↩ Send all back to Bookings";
+  status.innerHTML=returnBookingsBusy?'<span class="spinner"></span> '+esc(returnBookingsProgress):"";
+}
 function renderList(){
+  paintSendBack();
   const wrap = $("#listWrap");
   const completedOpen=Boolean(wrap.querySelector(".completed-pickups")?.open);
 
@@ -5197,7 +5217,6 @@ function renderList(){
 
   wrap.innerHTML =
     `<div class="sectitle">${pickupsOnly(pending).length} pickups left${pending.length-pickupsOnly(pending).length ? ` · ${pending.length-pickupsOnly(pending).length} GMS drop-off${pending.length-pickupsOnly(pending).length===1?"":"s"}` : ""} · ${esc(activeRunName())} ${state.manual?'· manual order':''} · hold &amp; drag to reorder</div>
-     ${pickupsOnly(pending).length+(state.bad||[]).length ? `<div style="margin:0 0 10px"><button id="sendBackBookings" class="ghost" style="width:100%" onclick="sendAllBackToBookings()" ${returnBookingsBusy?'disabled aria-busy="true"':''}>${returnBookingsBusy?'Moving pickups… please wait':'↩ Send all back to Bookings'}</button><div id="returnBookingsStatus" class="small" role="status" style="margin-top:6px">${returnBookingsBusy?'<span class="spinner"></span> '+esc(returnBookingsProgress):''}</div></div>` : ""}
      <div id="pendingList">${pendRows || `<div class="empty" style="padding:16px 8px">Nothing pending — all picked up 🎉</div>`}</div>` +
     (done.length ? `<details class="card completed-pickups"${completedOpen?" open":""}><summary>Completed (${done.length})</summary>
       <div class="row" style="margin:10px 0 12px"><button class="ghost grow" onclick="clearCompletedStops()">🧹 Clear completed off this run</button></div>
@@ -6426,6 +6445,9 @@ function toggleItemTally(){
 function renderLoadSummary(){
   $('#loadPlanRun').textContent=activeRunName();
   $('#loadPlanSummary').innerHTML=NakiLoadPlan.summary(state.stops);
+  // Items left over means a second load: offer the GMS trip right here.
+  if(NakiLoadPlan.build(state.stops).some(p=>p.leftover.length))
+    $('#loadPlanSummary').insertAdjacentHTML('beforeend','<button type="button" class="good" style="width:100%;margin-top:10px" onclick="loadPlanDialog.close();addUnloadStop()">♻️ Add unload at GMS</button>');
 }
 $('#loadPlanDialog').addEventListener('close',()=>$('#stAppBtn').setAttribute('aria-expanded','false'));
 
@@ -8173,22 +8195,6 @@ $("#optimiseHere").onclick = () => {
     { enableHighAccuracy:true, timeout:10000 }
   );
 };
-$("#clearAll").onclick = async () => {
-  const done = state.stops.filter(s=>s.status==="DONE");
-  const items = done.reduce((n,s)=>n+(s.appliances?s.appliances.length:0),0);
-  const tally = done.length
-    ? `Collected ${done.length} of ${state.stops.length} stops${items?` (${items} items)`:""} today.\n\n`
-    : "";
-  if (confirm(`${tally}Clear “${activeRunName()}”? This removes only this run's stops and progress.`)){
-    const clearingState=state;
-    if(!await unschedulePickups([...(state.stops||[]),...(state.bad||[])]))return;
-    if(state!==clearingState)return;
-    state = { stops:[], bad:[], start:state.start, end:state.end, roundTrip:state.roundTrip, manual:false, sheetUrl: state.sheetUrl, unpaid: state.unpaid||[] };
-    routeStartOverride = null;
-    save(); render(); drawRoute();
-  }
-};
-
 /* ---------- Banner helper ---------- */
 function setBanner(sel, msg){
   const el = $(sel); if(!el) return;
