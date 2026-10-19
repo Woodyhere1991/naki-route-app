@@ -11,6 +11,7 @@ import {
   preferLocalAddressResults,
   sideWordLast,
   tidyStreetLine,
+  pinFromNeighbours,
   suburbUnexpected
 } from "../src/index.js";
 
@@ -244,4 +245,16 @@ test("compass words are found in either order too", () => {
 test("a compass word in the middle of a name is still asked as typed", () => {
   assert.match(linzCqlFor("1378 Main North Road, Urenui", false, false), /full_road_name_ascii ILIKE 'Main North%' OR/);
   assert.doesNotMatch(linzCqlFor("4 Lower Timaru Road, Okato", false, false), /'Timaru Road%'/);
+});
+
+test("an unregistered number is pinned from its neighbours on the same side", () => {
+  const row = (number, lat, lng, extra = {}) => ({ number, lat, lng, suffix: "", unit: "", ...extra });
+  const rows = [row(1, -39.0, 174.0), row(4, -39.001, 174.0), row(8, -39.003, 174.0), row(12, -39.01, 174.0),
+    row(12, -39.0101, 174.0, { suffix: "b" }), row(5, -39.5, 174.5, { unit: "2" })];
+  assert.deepEqual(pinFromNeighbours(rows, "12"), { lat: -39.01, lng: 174.0 }, "12A uses 12's letterbox");
+  const six = pinFromNeighbours(rows, "6");
+  assert.ok(Math.abs(six.lat - -39.002) < 1e-9, "6 sits halfway between 4 and 8");
+  assert.deepEqual(pinFromNeighbours(rows, "2"), { lat: -39.001, lng: 174.0 }, "2 uses 4, the nearest even");
+  assert.equal(pinFromNeighbours(rows, "40"), null, "too far from any neighbour");
+  assert.deepEqual(pinFromNeighbours([row(3, -39, 174), row(9, -39.2, 174)], "5"), { lat: -39, lng: 174 }, "neighbours far apart: the nearer one, not a point between");
 });

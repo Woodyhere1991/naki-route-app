@@ -700,7 +700,7 @@ function tidyStreetLine(text) {
   return street + rest;
 }
 
-function linzCqlFor(q, includeTown, dropSuffix, dropUnit = false) {
+function linzCqlFor(q, includeTown, dropSuffix, dropUnit = false, numberWindow = 0) {
   const cleaned = String(q || "").replace(/\b(?:rd|rural delivery)\s*\d+\b/gi, " ")
     .replace(/\s+/g, " ").trim();
   const parts = cleaned.split(",").map(part => part.trim());
@@ -709,7 +709,8 @@ function linzCqlFor(q, includeTown, dropSuffix, dropUnit = false) {
   const conds = ["address_lifecycle='Current'"];
   const numberParts = addressNumberParts(streetPart);
   if (numberParts) {
-    conds.push(`address_number=${numberParts.number}`);
+    const n = Number(numberParts.number);
+    conds.push(numberWindow ? `address_number BETWEEN ${Math.max(0, n - numberWindow)} AND ${n + numberWindow}` : `address_number=${n}`);
     const roadWords = streetPart.slice(numberParts.consumed).trim().replace(/['"]/g, "");
     const words = roadWords.split(/\s+/).filter(Boolean);
     const typed = `full_road_name_ascii ILIKE '${esc(words.slice(0, 2).join(" "))}%'`;
@@ -738,6 +739,75 @@ function linzCqlFor(q, includeTown, dropSuffix, dropUnit = false) {
   // fill with other regions' same-number roads.
   conds.push("(territorial_authority_ascii ILIKE '%New Plymouth%' OR territorial_authority_ascii ILIKE '%Stratford%' OR territorial_authority_ascii ILIKE '%South Taranaki%')");
   return conds.join(" AND ");
+}
+
+/* ---------- A pin from the neighbours when the exact number isn't registered ----------
+   About one past address in twelve is a number the official list doesn't have:
+   back sections ("12A Newton Street" when only 12 is listed) and new or
+   unlisted houses ("2 Silby Street" between 1 and 4). The map used to drop
+   those in the middle of the street. The letterboxes either side are on the
+   same road and the same side, so the pin goes between them instead. Rural
+   RAPID numbers are distance along the road, so this is just as good out of
+   town. The answer is labelled with the road only, so the app treats it as a
+   close pin, not a confirmed address, and Navigate still uses what was typed. */
+function pinFromNeighbours(rows, wanted) {
+  const n = Number(wanted);
+  if (!Number.isFinite(n)) return null;
+  const plain = rows.filter(row => !row.unit && Number.isFinite(row.number));
+  // 12A with 12 registered: 12's letterbox is the same driveway.
+  const same = plain.find(row => row.number === n && !row.suffix) || plain.find(row => row.number === n);
+  if (same) return { lat: same.lat, lng: same.lng };
+  const side = plain.filter(row => row.number % 2 === n % 2);
+  const below = side.filter(row => row.number < n).sort((a, b) => b.number - a.number)[0];
+  const above = side.filter(row => row.number > n).sort((a, b) => a.number - b.number)[0];
+  if (below && above && kmBetween(below, above) <= 3) {
+    const t = (n - below.number) / (above.number - below.number);
+    return { lat: below.lat + (above.lat - below.lat) * t, lng: below.lng + (above.lng - below.lng) * t };
+  }
+  const near = [below, above].filter(Boolean).sort((a, b) => Math.abs(a.number - n) - Math.abs(b.number - n))[0];
+  return near && Math.abs(near.number - n) <= 10 ? { lat: near.lat, lng: near.lng } : null;
+}
+
+async function linzNeighbourPin(env, q, signal) {
+  q = collapseExtraRepeats(expandStreetAbbreviations(tidyStreetLine(String(q || ""))));
+  const wanted = addressNumberParts(q);
+  if (!wanted) return null;
+  for (const includeTown of [true, false]) {
+    const cql = linzCqlFor(q, includeTown, true, true, 60);
+    if (!cql) continue;
+    const params = new URLSearchParams({
+      service: "WFS", version: "2.0.0", request: "GetFeature",
+      typeNames: LINZ_ADDRESSES_LAYER, outputFormat: "application/json", count: "200", CQL_FILTER: cql
+    });
+    const response = await fetch(`https://data.linz.govt.nz/services;key=${env.LINZ_API_KEY}/wfs?${params}`, {signal});
+    if (!response.ok) continue;
+    const rows = (((await response.json()) || {}).features || []).map(feature => {
+      const props = feature.properties || {}, coords = (feature.geometry || {}).coordinates || [];
+      return {
+        road: String(props.full_road_name || ""),
+        place: String(props.full_address || "").split(",").slice(1).join(",").trim(),
+        number: Number(props.address_number), suffix: String(props.address_number_suffix || ""),
+        unit: String(props.unit_value || ""), lat: number(coords[1], NaN), lng: number(coords[0], NaN)
+      };
+    }).filter(row => row.road && Number.isFinite(row.lat) && Number.isFinite(row.lng) && inTaranakiPoint(row));
+    if (!rows.length) continue;
+    // Work out a pin per road + locality, so houses from two different roads of
+    // the same name (Inglewood has two Lincoln Roads) are never mixed. When the
+    // answers disagree it's two roads, not one long one - don't guess.
+    const groups = new Map();
+    for (const row of rows) {
+      const key = `${row.road}|${row.place}`;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(row);
+    }
+    const pins = [...groups.values()].map(group => ({ group, pin: pinFromNeighbours(group, wanted.number) }))
+      .filter(found => found.pin);
+    if (!pins.length) return null;
+    if (pins.some(found => kmBetween(found.pin, pins[0].pin) > 1.5)) return null;
+    const { group, pin } = pins[0];
+    return { label: [group[0].road, group[0].place].filter(Boolean).join(", "), lat: pin.lat, lng: pin.lng };
+  }
+  return null;
 }
 
 async function linzAddressResults(env, q, limit, signal) {
@@ -867,7 +937,7 @@ async function handleAddress(request, env) {
   const q = (url.searchParams.get("q") || "").trim().slice(0, 180);
   const limit = Math.max(1, Math.min(6, number(url.searchParams.get("limit"), 6)));
   if (q.length < 3) return json(request, { results: [] });
-  const key = cacheRequest(request, "address-v22", [q.toLowerCase(), String(limit)]);
+  const key = cacheRequest(request, "address-v24", [q.toLowerCase(), String(limit)]);
   return cached(request, key, 2592000, async () => {
     /* Expand a trailing street abbreviation ("Rd" -> "Road") BEFORE any lookup. Without
      this an abbreviated address misses the authoritative register and falls through to the
@@ -889,6 +959,12 @@ async function handleAddress(request, env) {
           return json(request, { results, source: "LINZ", town }, 200, "public, max-age=2592000");
         }
       } catch { /* keep falling through */ }
+      if (houseNumberOf(physicalQuery)) {
+        try {
+          const pin = await linzNeighbourPin(env, lookupQuery);
+          if (pin) return json(request, { results: [pin], source: "LINZ neighbours", town }, 200, "public, max-age=2592000");
+        } catch { /* keep falling through */ }
+      }
     }
     if (env.GOOGLE_API_KEY) {
       try {
@@ -1419,5 +1495,5 @@ export {
   pickupAddressLookup,
   addressMatchScore, houseNumberOf, linzAddressResults, linzCqlFor, physicalAddressQuery,
   expandStreetAbbreviations, suburbUnexpected, preferLocalAddressResults, addressResultUsable,
-  collapseExtraRepeats, sideWordLast, linzSidedRoad, tidyStreetLine
+  collapseExtraRepeats, sideWordLast, linzSidedRoad, tidyStreetLine, pinFromNeighbours
 };
