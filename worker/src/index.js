@@ -641,23 +641,63 @@ function expandStreetAbbreviations(text) {
   return expandStreetToken(value.slice(0, comma)) + value.slice(comma);
 }
 
-/* Some rural roads are registered back to front: LINZ has "Timaru Road Lower"
-   and "Dudley Road Lower", while customers write "4 Lower Timaru Road". Asking
-   only for the typed order missed the letterbox and the map had nothing either,
-   so a road with Lower/Upper in its name asks for both orders. */
-const ROAD_SIDE_WORD = /^(lower|upper)$/i;
-function linzSidedRoad(words, column, coreWords, lead, esc) {
-  const side = words.find(word => ROAD_SIDE_WORD.test(word));
-  if (!side) return "";
-  const core = words.filter(word => word !== side).slice(0, coreWords).join(" ");
+/* Some roads are registered back to front: LINZ has "Timaru Road Lower",
+   "Dudley Road Lower" and "Pembroke Road East", while customers write
+   "4 Lower Timaru Road" or "60 Pembroke east road". Asking only for the typed
+   order missed the letterbox and the map had nothing either, so a road with
+   Lower/Upper or a compass word in its name asks for both orders. */
+const ROAD_SIDE_WORD = /^(lower|upper|north|south|east|west)$/i;
+function linzSidedRoad(words, column, coreWords, lead, esc, typed) {
+  const at = words.findIndex(word => ROAD_SIDE_WORD.test(word));
+  if (at < 0) return "";
+  const side = words[at];
+  const core = words.filter((_, i) => i !== at).slice(0, coreWords).join(" ");
   if (!core) return "";
   const s = side[0].toUpperCase() + side.slice(1).toLowerCase();
-  return `(${column} ILIKE '${lead}${esc(`${s} ${core}`)}%' OR ${column} ILIKE '${lead}${esc(core)}% ${s}${lead}')`;
+  const either = [`${column} ILIKE '${lead}${esc(`${s} ${core}`)}%'`, `${column} ILIKE '${lead}${esc(core)}% ${s}${lead}'`];
+  // In the middle ("Main North Road") it is part of the name: ask as typed too.
+  if (at > 0 && at < words.length - 1) either.unshift(typed);
+  return `(${either.join(" OR ")})`;
 }
 // The same road in either order compares equal: "Lower Timaru Road" -> "Timaru Road Lower".
 function sideWordLast(road) {
-  const words = String(road || "").trim().split(/\s+/);
-  return words.length > 1 && ROAD_SIDE_WORD.test(words[0]) ? [...words.slice(1), words[0]].join(" ") : String(road || "");
+  const words = String(road || "").trim().split(/\s+/).filter(Boolean);
+  if (words.length < 2) return String(road || "");
+  return [...words.filter(word => !ROAD_SIDE_WORD.test(word)), ...words.filter(word => ROAD_SIDE_WORD.test(word))].join(" ");
+}
+
+/* Tidy the street line the way the register writes it, for the lookup only -
+   what the customer typed stays on the booking. Each one is a real booking that
+   found nothing (checked against every past address, 20 Oct 2026):
+     "1892 Eltham rd., Riverlea"        stray full stops
+     "34 Plympton St.    Brooklands"    suburb on the street line, no comma
+     "410 Saint Aubyn Street"           register says "St Aubyn"
+     "12 a standish  st, Inglewood"     letter split off the number
+     "30 Standish Street Flat 3"        flat written after the street */
+const STREET_TYPE_WORD = /^(?:road|rd|street|st|avenue|ave|av|drive|dr|place|pl|crescent|cres|terrace|tce|lane|ln|close|cl|grove|gr|way|parade|pde|court|ct|highway|hwy|heights|hts|esplanade|esp|quay|track|line|mews|rise|view|glade)$/i;
+function tidyStreetLine(text) {
+  const value = String(text == null ? "" : text);
+  const comma = value.indexOf(",");
+  let street = comma < 0 ? value : value.slice(0, comma);
+  const rest = comma < 0 ? "" : value.slice(comma);
+  street = street.replace(/\.(?=\s|$)/g, " ")
+    .replace(/^(\s*\d+)\s+([a-h])\s+(?=[a-z]{2})/i, "$1$2 ")
+    .replace(/\s+(?:flat|unit|apt|apartment)\s*\d+[a-z]?\s*$/i, "")
+    .replace(/\bsaint\b/gi, "St")
+    .replace(/\s+/g, " ").trim();
+  // "34 Plympton St Brooklands": the words after the street type are a suburb.
+  // "Devon Street West", "Timaru Road Lower" and "Sea View Road" stay whole.
+  const words = street.split(" ");
+  const number = addressNumberParts(street);
+  const start = number ? street.slice(0, number.consumed).trim().split(" ").length : 0;
+  for (let i = start + 1; i < words.length - 1; i++) {
+    const next = words[i + 1];
+    if (STREET_TYPE_WORD.test(words[i]) && !STREET_TYPE_WORD.test(next) && !ROAD_SIDE_WORD.test(next) && !/^extension$/i.test(next)) {
+      street = `${words.slice(0, i + 1).join(" ")}, ${words.slice(i + 1).join(" ")}`;
+      break;
+    }
+  }
+  return street + rest;
 }
 
 function linzCqlFor(q, includeTown, dropSuffix, dropUnit = false) {
@@ -672,9 +712,8 @@ function linzCqlFor(q, includeTown, dropSuffix, dropUnit = false) {
     conds.push(`address_number=${numberParts.number}`);
     const roadWords = streetPart.slice(numberParts.consumed).trim().replace(/['"]/g, "");
     const words = roadWords.split(/\s+/).filter(Boolean);
-    const sided = linzSidedRoad(words, "full_road_name_ascii", 1, "", esc);
-    if (sided) conds.push(sided);
-    else if (words.length) conds.push(`full_road_name_ascii ILIKE '${esc(words.slice(0, 2).join(" "))}%'`);
+    const typed = `full_road_name_ascii ILIKE '${esc(words.slice(0, 2).join(" "))}%'`;
+    if (words.length) conds.push(linzSidedRoad(words, "full_road_name_ascii", 1, "", esc, typed) || typed);
     if (numberParts.suffix && !dropSuffix) conds.push(`lower(address_number_suffix)='${esc(numberParts.suffix)}'`);
     if (numberParts.highNumber) {
       conds.push(`address_number_high=${numberParts.highNumber}`);
@@ -687,8 +726,8 @@ function linzCqlFor(q, includeTown, dropSuffix, dropUnit = false) {
   } else {
     const words = streetPart.replace(/['"]/g, "").split(/\s+/).filter(Boolean);
     if (!words.length) return "";
-    conds.push(linzSidedRoad(words, "full_address_ascii", 2, "%", esc)
-      || `full_address_ascii ILIKE '%${esc(words.slice(0, 3).join(" "))}%'`);
+    const typed = `full_address_ascii ILIKE '%${esc(words.slice(0, 3).join(" "))}%'`;
+    conds.push(linzSidedRoad(words, "full_address_ascii", 2, "%", esc, typed) || typed);
   }
   if (includeTown) {
     const town = townFromQuery(q);
@@ -704,7 +743,7 @@ function linzCqlFor(q, includeTown, dropSuffix, dropUnit = false) {
 async function linzAddressResults(env, q, limit, signal) {
   // Expand "Rd" before asking the register — otherwise an abbreviated street
   // misses the letterbox and the map pins the other road of the same name.
-  q = collapseExtraRepeats(expandStreetAbbreviations(String(q || "")));
+  q = collapseExtraRepeats(expandStreetAbbreviations(tidyStreetLine(String(q || ""))));
   // Most precise first; each step relaxes one guess. A hit at any step wins.
   // Town relaxes AFTER the unit letter: a written "2A" that's really "2" on the
   // right road beats an actual 2A on the other side of the country.
@@ -784,7 +823,7 @@ async function googleGeocode(env, address, components, limit, signal) {
 }
 
 async function pickupAddressLookup(env, {street,town,area}, signal) {
-  const query=collapseExtraRepeats(expandStreetAbbreviations([street,town,area].filter(Boolean).join(', ')));
+  const query=collapseExtraRepeats(expandStreetAbbreviations(tidyStreetLine([street,town,area].filter(Boolean).join(', '))));
   const physical=physicalAddressQuery(query);
   const roadKey=value=>looseKey(sideWordLast(String(value).normalize('NFD').replace(/[\u0300-\u036f]/g,'').split(',')[0].slice(addressNumberParts(value)?.consumed||0)));
   const requestedRoad=roadKey(physical);
@@ -828,13 +867,13 @@ async function handleAddress(request, env) {
   const q = (url.searchParams.get("q") || "").trim().slice(0, 180);
   const limit = Math.max(1, Math.min(6, number(url.searchParams.get("limit"), 6)));
   if (q.length < 3) return json(request, { results: [] });
-  const key = cacheRequest(request, "address-v20", [q.toLowerCase(), String(limit)]);
+  const key = cacheRequest(request, "address-v22", [q.toLowerCase(), String(limit)]);
   return cached(request, key, 2592000, async () => {
     /* Expand a trailing street abbreviation ("Rd" -> "Road") BEFORE any lookup. Without
      this an abbreviated address misses the authoritative register and falls through to the
      map, which is how a pickup was sent to the wrong road of the same name. */
     // Known local spelling correction; retain the customer's original address.
-    const lookupQuery = collapseExtraRepeats(expandStreetAbbreviations(q)).replace(/\bBarret Road\b/gi, "Barrett Road");
+    const lookupQuery = collapseExtraRepeats(expandStreetAbbreviations(tidyStreetLine(q))).replace(/\bBarret Road\b/gi, "Barrett Road");
     const physicalQuery = physicalAddressQuery(lookupQuery);
     const address = /new zealand|\bnz\b/i.test(physicalQuery) ? physicalQuery : `${physicalQuery}, Taranaki, New Zealand`;
     const town = townFromQuery(q);
@@ -1380,5 +1419,5 @@ export {
   pickupAddressLookup,
   addressMatchScore, houseNumberOf, linzAddressResults, linzCqlFor, physicalAddressQuery,
   expandStreetAbbreviations, suburbUnexpected, preferLocalAddressResults, addressResultUsable,
-  collapseExtraRepeats, sideWordLast, linzSidedRoad
+  collapseExtraRepeats, sideWordLast, linzSidedRoad, tidyStreetLine
 };

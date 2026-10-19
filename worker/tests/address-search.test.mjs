@@ -10,6 +10,7 @@ import {
   physicalAddressQuery,
   preferLocalAddressResults,
   sideWordLast,
+  tidyStreetLine,
   suburbUnexpected
 } from "../src/index.js";
 
@@ -210,4 +211,37 @@ test("a Lower/Upper road is found whichever order it is written in", () => {
   assert.equal(sideWordLast("Lower Timaru Road"), "Timaru Road Lower");
   assert.equal(sideWordLast("Timaru Road Lower"), "Timaru Road Lower");
   assert.equal(sideWordLast("Lower"), "Lower");
+});
+
+/* Every past booking address was run through the finder on 20 Oct 2026. These
+   ones found nothing only because of how they were typed. */
+test("street lines are tidied to the register's spelling before the lookup", () => {
+  const cases = [
+    ["1892 Eltham rd., Riverlea", "1892 Eltham rd, Riverlea"],
+    ["12 Aotea Street., New Plymouth", "12 Aotea Street, New Plymouth"],
+    ["34 Plympton  St.    Brooklands, New Plymouth", "34 Plympton St, Brooklands, New Plymouth"],
+    ["410 Saint Aubyn Street, New Plymouth", "410 St Aubyn Street, New Plymouth"],
+    ["12 a standish  st, Inglewood", "12a standish st, Inglewood"],
+    ["30 Standish Street Flat 3, Inglewood", "30 Standish Street, Inglewood"],
+    ["192a Pendarves St Lynmouth", "192a Pendarves St, Lynmouth"]
+  ];
+  for (const [typed, tidied] of cases) assert.equal(tidyStreetLine(typed), tidied, typed);
+  for (const same of ["100 Devon Street West, New Plymouth", "4 Timaru Road Lower, Okato",
+    "12 Sea View Road, Oakura", "St Marys Road, New Plymouth", "1/34 Waimea Street, Westown",
+    "Flat 1, 18 Dixon Ave, New Plymouth", "45 South Road, Manaia", "2 Mill Road Extension, Stratford"]) {
+    assert.equal(tidyStreetLine(same), same, same);
+  }
+});
+
+test("compass words are found in either order too", () => {
+  assert.match(linzCqlFor("60 Pembroke east road, Stratford", false, false),
+    /ILIKE 'East Pembroke%' OR full_road_name_ascii ILIKE 'Pembroke% East'/);
+  assert.match(linzCqlFor("45 South Road, Manaia", false, false), /'South Road%'/);
+  assert.equal(sideWordLast("Pembroke east road"), "Pembroke road east");
+  assert.equal(sideWordLast("Pembroke Road East"), "Pembroke Road East");
+});
+
+test("a compass word in the middle of a name is still asked as typed", () => {
+  assert.match(linzCqlFor("1378 Main North Road, Urenui", false, false), /full_road_name_ascii ILIKE 'Main North%' OR/);
+  assert.doesNotMatch(linzCqlFor("4 Lower Timaru Road, Okato", false, false), /'Timaru Road%'/);
 });

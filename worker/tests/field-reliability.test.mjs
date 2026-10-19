@@ -99,7 +99,7 @@ test('a prepared text counts as sent and JS strings cannot escape their argument
   vm.runInNewContext(`accept('${context.jsString(input)}')`,context);assert.equal(context.hacked,false);assert.equal(context.accepted,input);
 });
 test('pickup route timing still works with the map library absent',async()=>{
-  const context={map:null,markerLayer:null,routeLayer:null,routeDrawVersion:0,routeStops:()=>[{id:'test',lat:-39,lng:174}],startPoint:()=>({lat:-39,lng:174}),endPoint:()=>null,state:{},setBanner(){},updateStats(){},fetchRouteData:async()=>({routes:[{distance:1000,duration:60,legs:[{duration:60}]}]}),setRouteTiming:(pts,legs)=>context.timing=legs,onTimingChanged(){}};
+  const context={map:null,markerLayer:null,routeLayer:null,routeDrawVersion:0,routeStops:()=>[{id:'test',lat:-39,lng:174}],startPoint:()=>({lat:-39,lng:174}),endPoint:()=>null,state:{},setBanner(){},updateStats(){},NakiRouting:{failure:'No safe route',safeRoute:async()=>({geometry:{type:'LineString',coordinates:[]},distance:1000,duration:60,legs:[{duration:60}]})},setRouteTiming:(pts,legs)=>context.timing=legs,onTimingChanged(){}};
   vm.runInNewContext(section(html,'async function drawRoute(){','/* ---------- Rough time schedule'),context);await context.drawRoute();assert.equal(context.timing[0].duration,60);
 });
 

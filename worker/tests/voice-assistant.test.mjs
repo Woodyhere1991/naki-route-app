@@ -236,7 +236,7 @@ function app({ bookings = [], stops = [], insights = {}, onCall = () => {} } = {
     toggleDone(id) { const stop = stops.find(row => row.id === id); stop.status = 'DONE'; effects.push('done:' + id); },
     toggleCollected(id) { const stop = stops.find(row => row.id === id); stop.collectedAt = 1; effects.push('collected:' + id); },
     togglePriority(id) { const stop = stops.find(row => row.id === id); stop.priority = !stop.priority; effects.push('priority:' + id); },
-    navStop(id) { effects.push('navigate:' + id); },
+    navStop(id) { effects.push('navigate:' + id); return true; },
     async cancelReminderFor(stop) { stop.reminderId = ''; effects.push('reminder-off'); },
     async settleAsPaid(stop) { stop.paid = true; stop.status = 'DONE'; effects.push('paid:' + stop.id); },
     async ensurePdf() {},

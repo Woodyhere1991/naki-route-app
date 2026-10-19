@@ -132,6 +132,8 @@ function optimiseHarness({ slowMap = true, stopsChangeMidway = false, roadTimesF
     document: { getElementById: () => ({ disabled: false, setAttribute() {} }) },
     busy(msg) { status.text = msg ? "spinner " + msg : ""; status.color = ""; },
     flash(msg) { status.text = msg; status.color = "good"; },
+    alert(msg) { status.alert = msg; },
+    NakiRouting: { failure: "Could not verify a route avoiding Bertrand Road Bridge.", async safeRoute() { return {}; } },
     stops: [{ id: "a" }, { id: "b" }],
     routeStops() { return env.stops; },
     startPoint: () => ({ lat: 0, lng: 0 }), endPoint: () => null,
@@ -157,20 +159,24 @@ test("Optimise shows its green confirmation straight away, even while the map li
   const run = optimiseHarness();
   const result = await run.optimise();
   assert.equal(result, true);
-  assert.equal(run.status.text, "✓ Route optimised using real driving times");
+  assert.equal(run.status.text, "✓ Route optimised");
   assert.equal(run.status.color, "good");
   assert.equal(run.busyNow(), false, "the buttons are usable again");
   assert.deepEqual(run.state.stops.map(s => s.id), ["b", "a", "done"]);
   assert.equal(run.state.manual, false);
   assert.deepEqual(run.calls, ["save", "render", "drawRoute"]);
   run.finishMap();
-  assert.equal(run.status.text, "✓ Route optimised using real driving times", "the map finishing does not wipe it");
+  assert.equal(run.status.text, "✓ Route optimised", "the map finishing does not wipe it");
 });
 
-test("Optimise says when it had to use distance estimates", async () => {
+// Since the Bertrand Road Bridge rule, a failed road-time lookup never falls back
+// to straight-line guesses: it says so and keeps the order Woody already had.
+test("Optimise keeps the pickup order and says so when road times are unavailable", async () => {
   const run = optimiseHarness({ roadTimesFail: true, slowMap: false });
   assert.equal(await run.optimise(), false);
-  assert.match(run.status.text, /Road timings were unavailable/);
+  assert.match(run.status.alert, /Your pickup order has been kept/);
+  assert.deepEqual(run.state.stops.map(s => s.id), ["a", "b", "done"]);
+  assert.equal(run.busyNow(), false);
 });
 
 test("Optimise clears its spinner and changes nothing if the stops change while it works", async () => {
