@@ -9,6 +9,7 @@ import {
   linzCqlFor,
   physicalAddressQuery,
   preferLocalAddressResults,
+  sideWordLast,
   suburbUnexpected
 } from "../src/index.js";
 
@@ -191,4 +192,22 @@ test("townhouses search their exact unit and never accept neighbouring units", (
   const wrong = {label:"79/71 Barrett Road, New Plymouth", lat:-39.0845, lng:174.037};
   assert.deepEqual(preferLocalAddressResults([wrong], "TH78/71 Barrett Road, New Plymouth"), []);
   assert.deepEqual(preferLocalAddressResults([wrong], "71 Barrett Road, New Plymouth"), []);
+});
+
+/* Woody, 20 Oct: "4 lower TIMARU ROAD, Okato" would not find. LINZ registers the
+   road as "Timaru Road Lower", so the typed order matched nothing. */
+test("a Lower/Upper road is found whichever order it is written in", () => {
+  const typed = linzCqlFor("4 lower TIMARU ROAD, Okato, Tataraimaka", false, false);
+  assert.match(typed, /address_number=4/);
+  assert.match(typed, /full_road_name_ascii ILIKE 'Lower TIMARU%' OR full_road_name_ascii ILIKE 'TIMARU% Lower'/);
+  const flipped = linzCqlFor("71 Dudley Road Lower, Inglewood", false, false);
+  assert.match(flipped, /ILIKE 'Lower Dudley%' OR full_road_name_ascii ILIKE 'Dudley% Lower'/);
+  const roadOnly = linzCqlFor("Upper Timaru Road, Okato", false, false);
+  assert.match(roadOnly, /full_address_ascii ILIKE '%Upper Timaru Road%' OR full_address_ascii ILIKE '%Timaru Road% Upper%'/);
+  // Ordinary roads are asked exactly as before.
+  assert.match(linzCqlFor("380 Lower Pitone Road, Oakura", false, false), /'Lower Pitone%'/);
+  assert.match(linzCqlFor("201 Lincoln Road, Inglewood", false, false), /full_road_name_ascii ILIKE 'Lincoln Road%'/);
+  assert.equal(sideWordLast("Lower Timaru Road"), "Timaru Road Lower");
+  assert.equal(sideWordLast("Timaru Road Lower"), "Timaru Road Lower");
+  assert.equal(sideWordLast("Lower"), "Lower");
 });

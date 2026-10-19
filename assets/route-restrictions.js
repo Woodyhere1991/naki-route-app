@@ -95,7 +95,22 @@
     if(!result.every(row=>row.every(Number.isFinite)))throw Error(failure);
     return result;
   }
-  const api={bridge,bypass,blocked,safeRoute,matrix,failure};
+  // Most trips can't come anywhere near the bridge. A road route through it is
+  // at least as long as the straight lines start->bridge->end, so when that
+  // already beats any real road trip between the two points (1.8x the straight
+  // distance plus 5 km - generous for Taranaki roads) the bridge can never be on
+  // the way and there is nothing to check. Trips near the river, or across it,
+  // still get the full route check.
+  function km(a,b){
+    const r=Math.PI/180,dLat=(b.lat-a.lat)*r,dLng=(b.lng-a.lng)*r;
+    const x=Math.sin(dLat/2)**2+Math.cos(a.lat*r)*Math.cos(b.lat*r)*Math.sin(dLng/2)**2;
+    return 12742*Math.atan2(Math.sqrt(x),Math.sqrt(1-x));
+  }
+  function mightCross(from,to){
+    if(![from?.lat,from?.lng,to?.lat,to?.lng].every(Number.isFinite))return true;
+    return km(from,bridge)+km(bridge,to)<=1.8*km(from,to)+5;
+  }
+  const api={bridge,bypass,blocked,safeRoute,matrix,mightCross,failure};
   if(typeof module==='object'&&module.exports)module.exports=api;
   else root.NakiRouting=api;
 })(typeof window==='object'?window:globalThis);

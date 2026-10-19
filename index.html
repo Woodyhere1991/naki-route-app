@@ -7466,17 +7466,20 @@ async function navigatePickup(s,isCurrent){
   const buttons=[...document.querySelectorAll('.nav-action')];
   const labels=buttons.map(b=>b.textContent);
   buttons.forEach(b=>{b.disabled=true;b.textContent='Checking safe route…';});
-  busy('Checking route · avoiding Bertrand Road Bridge…');
+  busy('Opening directions…');
   try{
     if(!navigator.geolocation)throw Error('Enable location to check a route avoiding Bertrand Road Bridge.');
+    // A fix from the last two minutes is plenty to tell whether the bridge is
+    // anywhere near this trip, and comes back instantly instead of waiting on GPS.
     const position=await new Promise((resolve,reject)=>navigator.geolocation.getCurrentPosition(resolve,
       ()=>reject(Error('Location is needed to check the bridge detour. Enable location and retry.')),
-      {enableHighAccuracy:true,timeout:10000,maximumAge:30000}));
+      {enableHighAccuracy:true,timeout:10000,maximumAge:120000}));
     const from={lat:position.coords.latitude,lng:position.coords.longitude};
     let to=s;
     if(!Number.isFinite(to.lat)||!Number.isFinite(to.lng))to=await geocode(navAddress(s));
     if(!to)throw Error('Could not confirm this pickup location. Please check its address.');
-    const route=await NakiRouting.safeRoute([from,to]);
+    // Nowhere near Bertrand Road Bridge: go straight to Maps, no route server wait.
+    const route=NakiRouting.mightCross(from,to)?await NakiRouting.safeRoute([from,to]):{detours:[]};
     if(!isCurrent())throw Error('This pickup changed while checking. Please tap Navigate again.');
     const target=new URL(url);
     // Let Maps start from the phone's live position rather than treating the

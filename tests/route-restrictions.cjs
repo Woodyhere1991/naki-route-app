@@ -47,6 +47,16 @@ function urlPoints(url){return new URL(url).pathname.split('/').pop().split(';')
   r=environment(async()=>({ok:true,json:async()=>({code:'Ok',durations:d})}));
   const matrix=await r.matrix([west,east]);
   assert.equal(matrix[0][1],1600);assert.equal(matrix[1][0],1600,'Optimiser costs include the detour in both directions');
+  // Trips nowhere near the bridge skip the route server; trips that could use it don't.
+  const P={westown:{lat:-39.07,lng:174.06},bellBlock:{lat:-39.032,lng:174.148},oakura:{lat:-39.117,lng:173.953},
+    np:{lat:-39.056,lng:174.075},hawera:{lat:-39.591,lng:174.284},normanby:{lat:-39.541,lng:174.287},
+    tataraimaka:{lat:-39.1563,lng:173.9156},inglewood:{lat:-39.161,lng:174.207},urenui:{lat:-38.998,lng:174.39},
+    tikorangi:{lat:-39.03,lng:174.29},lepperton:{lat:-39.08,lng:174.2},stratford:{lat:-39.337,lng:174.284},mokau:{lat:-38.70,lng:174.62}};
+  for(const [a,b] of [['westown','bellBlock'],['oakura','np'],['hawera','normanby'],['tataraimaka','np']])
+    assert(!r.mightCross(P[a],P[b]),`${a} to ${b} needs no bridge check`);
+  for(const [a,b] of [['np','tikorangi'],['inglewood','urenui'],['lepperton','tikorangi'],['stratford','mokau'],['np','urenui'],['tikorangi','westown']])
+    assert(r.mightCross(P[a],P[b]),`${a} to ${b} is still checked`);
+  assert(r.mightCross({lat:NaN,lng:1},P.np),'Unknown points are always checked');
   const html=fs.readFileSync('index.html','utf8');
   assert(html.indexOf('await NakiRouting.safeRoute([start,...best')<html.indexOf('state.stops = best.concat(rest)'),'Verify geometry before saving the new order');
   assert(!html.includes('matrix=routeMatrixFallback(points)'),'No unrestricted optimisation fallback');
@@ -62,7 +72,7 @@ function urlPoints(url){return new URL(url).pathname.split('/').pop().split(';')
   const context={URL,window:{},document:{querySelectorAll:()=>[button]},findStop:()=>stop,
     mapsDirUrl:()=> 'https://www.google.com/maps/dir/?api=1&destination=Exact%20Address',
     navigator:{geolocation:{getCurrentPosition:ok=>{resolveGps=ok;}}},
-    NakiRouting:{failure:'No safe route',safeRoute:async()=>{checks++;return {detours:[{via:r.bypass}]};}},
+    NakiRouting:{failure:'No safe route',mightCross:r.mightCross,safeRoute:async()=>{checks++;return {detours:[{via:r.bypass}]};}},
     location:{href:''},busy(){},alert:message=>alerts.push(message)};
   context.NakiMaps={open:url=>{context.location.href=url;return true;}};
   vm.createContext(context);vm.runInContext(navSource,context);
