@@ -77,7 +77,8 @@ test('an empty address id also falls back to the saved address', async () => {
   const { db, book } = await setup();
   try {
     assert.equal((await book({ items: ITEMS, addressId: "" })).status, 201);
-    assert.equal((await book({ items: ITEMS })).status, 201);
+    // A different item, so it is a real second booking rather than a repeat send.
+    assert.equal((await book({ items: ['Dishwasher'] })).status, 201);
   } finally { db.close(); }
 });
 
@@ -127,5 +128,45 @@ test('a booking with neither name is still blocked and never saved', async () =>
     db.prepare("UPDATE customers SET first_name='',last_name='' WHERE id='cust-phone'").run();
     assert.equal((await book({ items: ITEMS })).status, 400);
     assert.equal(db.prepare('SELECT COUNT(*) AS n FROM bookings').get().n, 0);
+  } finally { db.close(); }
+});
+
+/* Wendy, 20 Oct 2026: the same booking arrived twice. On weak signal the
+   website can save a booking while the reply is lost, and "try again" used to
+   save a second copy. Woody also has customers who really do book twice under
+   one name - a second address or different items - so only an exact repeat
+   inside half an hour is caught. */
+test('the same booking sent again from the website is not saved twice', async () => {
+  const { db, book } = await setup();
+  try {
+    const first = await book({ items: ITEMS, additionalInfo: '' });
+    assert.equal(first.status, 201);
+    const again = await book({ items: ITEMS, additionalInfo: 'Round the back' });
+    assert.equal(again.status, 200);
+    const body = await again.json();
+    assert.equal(body.duplicate, true);
+    assert.equal(body.booking.id, (await first.json()).booking.id, 'the page gets the booking already saved');
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM bookings').get().n, 1);
+    assert.equal(db.prepare('SELECT additional_info AS a FROM bookings').get().a, 'Round the back', 'the new note is kept');
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM booking_events WHERE event_type='REPEAT_IGNORED'").get().n, 1);
+  } finally { db.close(); }
+});
+
+test('different items from the same customer are a real second booking', async () => {
+  const { db, book } = await setup();
+  try {
+    assert.equal((await book({ items: ITEMS })).status, 201);
+    assert.equal((await book({ items: ['Dishwasher'] })).status, 201);
+    assert.equal((await book({ items: [...ITEMS, 'Dishwasher'] })).status, 201);
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM bookings').get().n, 3);
+  } finally { db.close(); }
+});
+
+test('a cancelled booking can be booked again straight away', async () => {
+  const { db, book } = await setup();
+  try {
+    assert.equal((await book({ items: ITEMS })).status, 201);
+    db.prepare("UPDATE bookings SET status='CANCELLED'").run();
+    assert.equal((await book({ items: ITEMS })).status, 201);
   } finally { db.close(); }
 });

@@ -698,6 +698,35 @@ function jotformMoney(value) {
   return Number.isFinite(amount) && amount >= 0 && amount <= 10000 ? Math.round(amount * 100) : 0;
 }
 
+/* ---------- The same booking sent twice ----------
+   Customers sometimes press Send twice: Wendy, 20 Oct 2026, two identical
+   Jotform sends 19 seconds apart; and on weak rural signal the website can save
+   a booking while the reply never reaches the phone, so "try again" saves a
+   second one. Woody also has real customers who book twice on purpose - a
+   second address, or different things to collect - under the same name, email
+   and phone. So a repeat is only caught when the address AND the items match,
+   within half an hour, and the first booking hasn't been cancelled. Anything
+   else is a real booking and is saved as normal. */
+export const REPEAT_WINDOW_MS = 30 * 60 * 1000;
+export function sameBookingKey(street, town, itemsJson) {
+  let items = [];
+  try { items = typeof itemsJson === "string" ? JSON.parse(itemsJson || "[]") : (itemsJson || []); } catch { items = []; }
+  const loose = value => String(value == null ? "" : value).toLowerCase().replace(/[^a-z0-9]/g, "");
+  return `${loose(street)}|${loose(town)}|${(Array.isArray(items) ? items : []).map(loose).sort().join(",")}`;
+}
+async function findRepeatBooking(env, sql, binds, key) {
+  const result = await env.CUSTOMER_DB.prepare(sql).bind(...binds).all();
+  return (result?.results || []).find(row =>
+    String(row.status || "").toUpperCase() !== "CANCELLED" &&
+    sameBookingKey(row.street_address, row.town, row.items_json) === key) || null;
+}
+// A note added on the second send ("gate code is 1234") must not be lost.
+function mergedNote(existingNote, newNote) {
+  const before = String(existingNote || "").trim(), extra = String(newNote || "").trim();
+  if (!extra || before.toLowerCase().includes(extra.toLowerCase())) return null;
+  return before ? `${before}\n${extra}` : extra;
+}
+
 async function parseJotformRequest(request) {
   const contentType = request.headers.get("Content-Type") || "";
   let body = {};
@@ -752,8 +781,22 @@ async function handleJotformSubmission(request, env, json, sendMail) {
   const totalCents = jotformMoney(jotformValue(raw, 31, "total"));
   const quoteRequired = items.includes("Other") ? 1 : 0;
   // Jotform's submission ID is the idempotency key. A webhook retry keeps the
-  // same ID and is updated below; a different ID is a real booking and must not
-  // be silently merged just because the email and item list happen to match.
+  // same ID and is updated below. A different ID is a real booking - unless it
+  // is the same person, address and items sent again within half an hour.
+  if (!existing) {
+    const repeat = await findRepeatBooking(env,
+      "SELECT id, status, street_address, town, items_json, additional_info FROM jotform_bookings WHERE lower(email) = ?1 AND created_at >= ?2 AND submission_id != ?3",
+      [address, createdAt - REPEAT_WINDOW_MS, submissionId],
+      sameBookingKey(location.streetAddress, location.town, itemsJson));
+    if (repeat) {
+      const note = mergedNote(repeat.additional_info, additionalInfo);
+      if (note !== null) {
+        await env.CUSTOMER_DB.prepare("UPDATE jotform_bookings SET additional_info = ?1, updated_at = ?2 WHERE id = ?3")
+          .bind(note, createdAt, repeat.id).run();
+      }
+      return json(request, { ok: true, duplicate: true, repeatOf: repeat.id }, 200);
+    }
+  }
   await env.CUSTOMER_DB.prepare(
     `INSERT INTO jotform_bookings (
       id, submission_id, form_id, customer_id, status, first_name, last_name, phone, email,
@@ -3115,6 +3158,25 @@ export async function handlePortalRequest({ request, env, path, json, sendMail, 
       }
       const price = calculate(items, selectedAddress.ruralOption);
       const createdAt = now();
+      // Sent twice (a double tap, or "try again" after the reply was lost on weak
+      // signal): hand back the booking already saved instead of making another.
+      const repeat = await findRepeatBooking(env,
+        "SELECT id, status, street_address, town, items_json, additional_info FROM bookings WHERE customer_id = ?1 AND created_at >= ?2",
+        [session.customer_id, createdAt - REPEAT_WINDOW_MS],
+        sameBookingKey(selectedAddress.streetAddress, selectedAddress.town, JSON.stringify(items)));
+      if (repeat) {
+        const note = body.additionalInfo != null ? mergedNote(repeat.additional_info, clean(body.additionalInfo, 1500)) : null;
+        await env.CUSTOMER_DB.batch([
+          ...(note !== null ? [env.CUSTOMER_DB.prepare("UPDATE bookings SET additional_info = ?1, updated_at = ?2 WHERE id = ?3").bind(note, createdAt, repeat.id)] : []),
+          env.CUSTOMER_DB.prepare(
+            "INSERT INTO booking_events (id, booking_id, event_type, detail, created_at) VALUES (?1, ?2, 'REPEAT_IGNORED', 'Same booking sent again from the website', ?3)"
+          ).bind(crypto.randomUUID(), repeat.id, createdAt)
+        ]);
+        return json(request, {
+          ok: true, duplicate: true,
+          booking: bookingFrom(await env.CUSTOMER_DB.prepare("SELECT * FROM bookings WHERE id = ?1").bind(repeat.id).first())
+        }, 200);
+      }
       const bookingId = `WEB-${createdAt}-${randomToken(6)}`;
       // Only fall back to the saved access notes when the customer did not send
       // the field at all. `"" || saved` treated a deliberately cleared box as
