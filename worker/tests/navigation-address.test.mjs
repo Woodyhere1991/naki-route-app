@@ -20,7 +20,7 @@ function functionSource(name) {
 const names = [
   "addressUnitOf", "normKey", "addressWithoutUnit", "houseNumberOf", "labelDroppedNumber",
   "looksLikeStreetAddress", "uniqueAddressParts", "safeMapsAddress",
-  "bookingNavAddress", "navAddress", "mapsDirUrl"
+  "bookingNavAddress", "navLabel", "navAddress", "mapsDirUrl"
 ];
 const context = {};
 vm.runInNewContext(names.map(functionSource).join("\n"), context);
@@ -55,6 +55,27 @@ test("a confirmed physical 34 result is safe for the unit pickup", () => {
   assert.equal(
     context.mapsDirUrl({ ...correctedStop, lat: -39.0800806167, lng: 174.0572009167 }),
     "https://www.google.com/maps/dir/?api=1&travelmode=driving&dir_action=navigate&destination=-39.0800806167,174.0572009167"
+  );
+});
+
+test("a small town Google files under its district still navigates to that town", () => {
+  const normanby = {
+    street: "19 Hunter street Normanby",
+    town: "Normanby",
+    geoLabel: "19 Hunter Street, Normanby, Hāwera",
+    lat: -39.54022555,
+    lng: 174.2712702333
+  };
+  assert.equal(context.navAddress(normanby), "19 Hunter Street, Normanby, Taranaki, New Zealand");
+  assert.doesNotMatch(decodeURIComponent(context.mapsDirUrl(normanby)), /H[aā]wera/i);
+  assert.equal(
+    context.navAddress({ street: "11 Dolphin Parade", town: "Bell Block", geoLabel: "11 Dolphin Parade, Bell Block, New Plymouth 4312" }),
+    "11 Dolphin Parade, Bell Block, Taranaki, New Zealand"
+  );
+  // No town on the booking: the label is left alone.
+  assert.equal(
+    context.navAddress({ street: "19 Hunter Street", town: "", geoLabel: "19 Hunter Street, Normanby, Hāwera" }),
+    "19 Hunter Street, Normanby, Hāwera, New Zealand"
   );
 });
 
