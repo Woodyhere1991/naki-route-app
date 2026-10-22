@@ -1,3 +1,6 @@
+import {tableFor,sourceFor,reopenBooking,hiddenBookingIds,hideBookingForCustomer,binBooking,listBin,restoreFromBin,BIN_DAYS} from './booking-recovery.js';
+import {handleEmailLog} from './email-log.js';
+import {deliveredKey} from './mail-delivered.js';
 import {ownerBookingNote,ownerNotesFor} from './owner-booking-notes.js';
 import { readRunBackup, writeRunBackup } from "./run-backup.js";
 import {handleRunSuggestions} from './run-suggestions.js';
@@ -6,6 +9,9 @@ import { kidsActivityReport } from "./kids-activity.js";
 import { scoreReviewReason } from "./score-validation.js";
 import { handleApiKeys } from "./api-keys.js";
 import { earningsReport } from './earnings.js';
+import {handleScrap} from './scrap-payments.js';
+import {handlePaymentCheck} from './bank-payments.js';
+import {readInvoicePayments,paidDocuments,handleInvoicePayment} from './invoice-payments.js';
 import {readInvoiceClearance,clearedDocuments} from './invoice-clearance.js';
 import {customerDirectoryDetails} from './customer-details.js';
 import {CUSTOMER_DIRECTORY_QUERY} from './customer-directory-query.js';
@@ -25,7 +31,11 @@ function ownerLoginAddress(value){
   if (!address) return OWNER_EMAIL;                 // older app builds send no address
   return OWNER_LOGIN_EMAILS.has(address) ? address : "";
 }
-const CODE_TTL_MS = 10 * 60 * 1000;
+// An hour, because Apple (iCloud) mail can hold a code email back for half an
+// hour or more: on 21 Oct 2026 one customer's codes arrived 31 minutes late, all dead.
+const CODE_TTL_MS = 60 * 60 * 1000;
+// The "3 codes per 10 minutes" request limit stays at 10 minutes.
+const CODE_LIMIT_WINDOW_MS = 10 * 60 * 1000;
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const PROFILE_INVITE_TTL_MS = 90 * 24 * 60 * 60 * 1000;
 const CUSTOMER_ACCOUNT_URL = "https://nakiwhitewareremoval.vip/account.html";
@@ -606,6 +616,8 @@ function bookingFrom(row) {
     cancelledAt: row.cancelled_at ? new Date(row.cancelled_at).toISOString() : "",
     canCancel: (source === "WEBSITE" || source === "JOTFORM" || source === "PICKUP_RUN") &&
       !["COMPLETED", "DECLINED", "CANCELLED"].includes(status),
+    canRebook: (source === "WEBSITE" || source === "JOTFORM" || source === "PICKUP_RUN") &&
+      status === "CANCELLED" && !row.id?.startsWith('WEB-GROUP-'),
     programme: row.id?.startsWith('WEB-GROUP-') ? {id:'spring-clean-lauren-202610',label:'Kāinga Ora spring clean',billing:'ORGANISER'} : null,
     // Only website bookings can be re-priced safely - their items come from our
     // own list, so the total can be recalculated without guessing.
@@ -1096,12 +1108,12 @@ export async function sendCode(env, sendMail, address, role, ip) {
     SELECT ?1,?2,?3,?4,?5,?6,'pending'
     WHERE (SELECT COUNT(*) FROM login_codes WHERE email=?2 AND role=?3 AND created_at>?7 AND delivery_status!='failed') < 3
       AND NOT EXISTS (SELECT 1 FROM login_codes WHERE email=?2 AND role=?3 AND created_at>?8 AND delivery_status!='failed')
-    RETURNING id`).bind(id,address,role,await hashCode(env,role,address,code),createdAt+CODE_TTL_MS,createdAt,createdAt-CODE_TTL_MS,createdAt-60000).first();
+    RETURNING id`).bind(id,address,role,await hashCode(env,role,address,code),createdAt+CODE_TTL_MS,createdAt,createdAt-CODE_LIMIT_WINDOW_MS,createdAt-60000).first();
   if (!reserved) {
     const recent = await env.CUSTOMER_DB.prepare(`SELECT COUNT(*) AS count, MIN(created_at) AS oldest, MAX(created_at) AS newest
       FROM login_codes WHERE email=?1 AND role=?2 AND created_at>?3 AND delivery_status!='failed'`)
-      .bind(address,role,createdAt-CODE_TTL_MS).first();
-    const retryAt = Number(recent?.count)>=3 ? Number(recent.oldest)+CODE_TTL_MS : Number(recent?.newest || createdAt)+60000;
+      .bind(address,role,createdAt-CODE_LIMIT_WINDOW_MS).first();
+    const retryAt = Number(recent?.count)>=3 ? Number(recent.oldest)+CODE_LIMIT_WINDOW_MS : Number(recent?.newest || createdAt)+60000;
     throw new AuthMailError('Please wait before requesting another code. Check your inbox and spam folder for the latest email.',429,Math.max(1,Math.ceil((retryAt-createdAt)/1000)));
   }
 
@@ -1112,7 +1124,7 @@ export async function sendCode(env, sendMail, address, role, ip) {
     to: address,
     name: owner ? "Woody" : "",
     subject: owner ? "Your Naki Pickup Run login code" : "Your Naki Whiteware login code",
-    text: `${owner ? "Your owner" : "Your"} login code is ${code}\n\nIt expires in 10 minutes. If you did not request it, you can ignore this email.\n\nNaki Whiteware Removal`
+    text: `${owner ? "Your owner" : "Your"} login code is ${code}\n\nIt works for 1 hour. If you did not request it, you can ignore this email.\n\nNaki Whiteware Removal`
   }); } catch { /* handled below without exposing provider details */ }
   if (!sent) {
     await env.CUSTOMER_DB.prepare("UPDATE login_codes SET delivery_status='failed', expires_at=0 WHERE id=?1").bind(id).run();
@@ -1481,10 +1493,11 @@ async function customerBookings(env, customerId) {
     ).bind(customerId, profile?.email || "").all()
   ]);
   const seen = new Set();
+  const hidden = await hiddenBookingIds(env, customerId);
   return [...(direct.results || []), ...(pickupRun.results || []), ...(jotform.results || [])]
     .sort((a, b) => Number(b.created_at || 0) - Number(a.created_at || 0))
     .filter(row => {
-      if (seen.has(row.id)) return false;
+      if (seen.has(row.id) || hidden.has(row.id)) return false;
       seen.add(row.id);
       return true;
     })
@@ -1816,6 +1829,8 @@ function bookingDocumentFrom(row) {
     filename: row.filename || "",
     hasPdf: Boolean(row.r2_key),
     cleared:row.cleared===true,
+    paidAt:Number(row.paid_at)||0,
+    paidAmount:row.paid_cents==null?null:Number(row.paid_cents)/100,
     createdAt: new Date(row.created_at).toISOString()
   };
 }
@@ -1825,7 +1840,7 @@ async function customerDocuments(env, address) {
   const rows = await env.CUSTOMER_DB.prepare(
     "SELECT * FROM booking_documents WHERE email = ?1 COLLATE NOCASE ORDER BY created_at DESC LIMIT 50"
   ).bind(address).all();
-  return clearedDocuments(rows.results||[],await readInvoiceClearance(env)).map(bookingDocumentFrom);
+  return paidDocuments(clearedDocuments(rows.results||[],await readInvoiceClearance(env)),(await readInvoicePayments(env)).payments).map(bookingDocumentFrom);
 }
 
 export async function handlePortalRequest({ request, env, path, json, sendMail, integrationSession = null }) {
@@ -3060,6 +3075,39 @@ export async function handlePortalRequest({ request, env, path, json, sendMail, 
       return json(request, { ok: true });
     }
 
+    const rebookMatch = path.match(/^\/customer\/bookings\/([^/]+)\/(rebook|remove)$/);
+    if (rebookMatch && request.method === "POST") {
+      const bookingId = decodeURIComponent(rebookMatch[1]);
+      if (!/^(WEB|JOTFORM|PICKUP)-/.test(bookingId) || bookingId.startsWith("WEB-GROUP-")) {
+        return json(request, { error: "Please contact Woody to rebook this pickup." }, 400);
+      }
+      const table = tableFor(bookingId);
+      const booking = await env.CUSTOMER_DB.prepare(
+        `SELECT * FROM ${table} WHERE id = ?1 AND (customer_id = ?2 OR email = ?3 COLLATE NOCASE)`
+      ).bind(bookingId, session.customer_id, session.email).first();
+      if (!booking) return json(request, { error: "Booking not found" }, 404);
+      if (booking.status !== "CANCELLED") return json(request, { error: "Only a cancelled pickup can be rebooked or removed here." }, 409);
+      if (rebookMatch[2] === "remove") {
+        try { await hideBookingForCustomer(env, session.customer_id, bookingId); }
+        catch (error) { return json(request, { error: error.message }, error.status || 500); }
+        return json(request, { ok: true, bookings: await customerBookings(env, session.customer_id) });
+      }
+      const reopened = await reopenBooking(env, { id: bookingId, allowed: ["CANCELLED"], detail: "rebooked by the customer" });
+      if (reopened.error) return json(request, { error: reopened.error }, reopened.status);
+      if (table !== "external_bookings") {
+        try { await updateSheetBookingStatus(env, bookingId, "NEW"); } catch { /* app remains authoritative */ }
+      }
+      try {
+        const name = `${booking.first_name || ""} ${booking.last_name || ""}`.trim() || "(Name not saved)";
+        await sendMail(env, {
+          to: OWNER_EMAIL, name: "Woody",
+          subject: `Pickup rebooked - ${booking.first_name || booking.town || booking.id}`,
+          text: `A customer has rebooked a pickup they had cancelled.\n\nName: ${name}\nEmail: ${booking.email}\nPhone: ${booking.phone || "(Not saved)"}\nAddress: ${[booking.street_address, booking.town, booking.area].filter(Boolean).join(", ") || "(Not saved)"}\nBooking ID: ${booking.id}\n\nIt is back in Bookings as New, ready for a pickup day.`
+        });
+      } catch { /* the rebook is saved either way */ }
+      return json(request, { ok: true, bookings: await customerBookings(env, session.customer_id) });
+    }
+
     const cancelMatch = path.match(/^\/customer\/bookings\/([^/]+)\/cancel$/);
     if (cancelMatch && request.method === "POST") {
       const bookingId = decodeURIComponent(cancelMatch[1]);
@@ -3297,6 +3345,24 @@ export async function handlePortalRequest({ request, env, path, json, sendMail, 
       response.headers.set('Pragma','no-cache');
       response.headers.set('X-Content-Type-Options','nosniff');
       return response;
+    }
+    if (path === '/owner/email-log' && request.method === 'GET') {
+      if (integrationSession) return json(request, {error:'Owner sign-in required'}, 403);
+      return await handleEmailLog({request, env, json});
+    }
+    if (path.startsWith('/owner/scrap')) {
+      if (integrationSession) return json(request, {error:'Owner sign-in required'}, 403);
+      return await handleScrap({request, env, path, json});
+    }
+    // Bank lookup for one owing invoice. Owner sign-in only - a bot key never sees bank data.
+    if (path === '/owner/payment-check' && request.method === 'POST') {
+      if (integrationSession) return json(request, {error:'Owner sign-in required'}, 403);
+      return await handlePaymentCheck({request, env, json});
+    }
+    // Paid is money only: the booking keeps its status until the receipt is sent.
+    if (path === '/owner/payments' && request.method === 'POST') {
+      if (integrationSession) return json(request, {error:'Owner sign-in required'}, 403);
+      return await handleInvoicePayment({request, env, json});
     }
     if (path === '/owner/logout' && request.method === 'POST') {
       if (integrationSession) return json(request, {error:'Owner sign-in required'}, 403);
@@ -3707,7 +3773,7 @@ export async function handlePortalRequest({ request, env, path, json, sendMail, 
             sheet_sync_status, 'WEBSITE' AS booking_source, '' AS external_key,
             pickup_date, pickup_window, requested_date, requested_window,
             customer_note, cancellation_reason, cancelled_at, created_at,
-            (SELECT COUNT(*) FROM booking_events e
+            (SELECT COALESCE(MAX(e.created_at),0) FROM booking_events e
               WHERE e.booking_id = bookings.id AND e.event_type = 'EMAIL_FAILED') AS email_failed
           FROM bookings
           UNION ALL
@@ -3742,6 +3808,14 @@ export async function handlePortalRequest({ request, env, path, json, sendMail, 
       }
       const programmeInfo=await programmeTags(env.CUSTOMER_DB,(rows.results||[]).map(row=>row.id));
       const ownerNotes=await ownerNotesFor(env.CUSTOMER_DB,(rows.results||[]).map(row=>row.id));
+      // email_failed is the time of the latest failure; a later successful send
+      // to the same address means the customer has been reached since.
+      const stillFailed=new Set();
+      await Promise.all((rows.results||[]).filter(row=>Number(row.email_failed||0)>0).map(async row=>{
+        let deliveredAt=0;
+        try{deliveredAt=Number(await env.REMINDERS?.get(deliveredKey(row.email)))||0;}catch{}
+        if(deliveredAt<=Number(row.email_failed))stillFailed.add(row.id);
+      }));
       const bookings = (rows.results || []).map(row => {
         const externalKey = row.external_key || "";
         const documents = documentsByBooking.get(row.id)
@@ -3750,13 +3824,17 @@ export async function handlePortalRequest({ request, env, path, json, sendMail, 
         const latestInvoice = documents.find(document => document.kind === "INVOICE");
         const latestReceipt = documents.find(document => document.kind === "RECEIPT");
         const invoiceOwing = Boolean(latestInvoice)&&!latestInvoice.cleared && (!latestReceipt || latestInvoice.createdAt > latestReceipt.createdAt);
+        // Paid but no receipt yet: still a job to pick up, but nothing owing.
+        const invoicePaid = latestInvoice?.paidAt && (!latestReceipt || latestInvoice.createdAt > latestReceipt.createdAt)
+          ? {at: latestInvoice.paidAt, amount: latestInvoice.paidAmount} : null;
         return {
           ...bookingFrom(row),
           programme:programmeInfo.get(row.id)||null,
           ownerNote:ownerNotes.get(row.id)||"",
-          emailFailed: Number(row.email_failed || 0) > 0,
+          emailFailed: stillFailed.has(row.id),
           documents,
-          invoiceOwing
+          invoiceOwing,
+          invoicePaid
         };
       });
       return json(request, {bookings, ...pagination,invoiceClearance:await readInvoiceClearance(env)});
@@ -3864,6 +3942,31 @@ export async function handlePortalRequest({ request, env, path, json, sendMail, 
       });
     }
 
+    const restoreMatch=path.match(/^\/owner\/bookings\/([^/]+)\/restore$/);
+    if(restoreMatch && request.method==='POST'){
+      if(integrationSession)return json(request,{error:'Owner sign-in required'},403);
+      const id=decodeURIComponent(restoreMatch[1]);
+      if(id.startsWith('WEB-GROUP-'))return json(request,{error:'Group pickups are put back through the organiser request.'},409);
+      const reopened=await reopenBooking(env,{id,allowed:['CANCELLED','DECLINED'],detail:'restored by Woody'});
+      if(reopened.error)return json(request,{error:reopened.error},reopened.status);
+      if(reopened.table!=='external_bookings')try{await updateSheetBookingStatus(env,id,'NEW');}catch{/* Account is authoritative. */}
+      const notes=await ownerNotesFor(env.CUSTOMER_DB,[id]);
+      return json(request,{ok:true,booking:{...bookingFrom({...reopened.row,booking_source:sourceFor(reopened.table)}),ownerNote:notes.get(id)||''}});
+    }
+    if(path==='/owner/deleted-bookings' && request.method==='GET'){
+      if(integrationSession)return json(request,{error:'Owner sign-in required'},403);
+      return json(request,{bookings:await listBin(env),days:BIN_DAYS});
+    }
+    const binRestoreMatch=path.match(/^\/owner\/deleted-bookings\/([^/]+)\/restore$/);
+    if(binRestoreMatch && request.method==='POST'){
+      if(integrationSession)return json(request,{error:'Owner sign-in required'},403);
+      const id=decodeURIComponent(binRestoreMatch[1]);
+      const restored=await restoreFromBin(env,id);
+      if(restored.error)return json(request,{error:restored.error},restored.status);
+      const notes=await ownerNotesFor(env.CUSTOMER_DB,[id]);
+      return json(request,{ok:true,booking:{...bookingFrom({...restored.row,booking_source:sourceFor(restored.table)}),ownerNote:notes.get(id)||''}});
+    }
+
     const unscheduleMatch=path.match(/^\/owner\/bookings\/([^/]+)\/unschedule$/);
     if(unscheduleMatch && request.method==='POST'){
       const id=decodeURIComponent(unscheduleMatch[1]);
@@ -3902,15 +4005,14 @@ export async function handlePortalRequest({ request, env, path, json, sendMail, 
       const jotform = bookingId.startsWith("JOTFORM-");
       const pickupRun = bookingId.startsWith("PICKUP-");
       const table = jotform ? "jotform_bookings" : pickupRun ? "external_bookings" : "bookings";
-      // Imported sources do not have photo_count in their schema.
-      const columns = table === "bookings" ? "id, photo_count" : "id";
-      const existing = await env.CUSTOMER_DB.prepare(`SELECT ${columns} FROM ${table} WHERE id = ?1`).bind(bookingId).first();
-      // A permanent delete must not leave its invoice behind to make the same job
-      // reappear as owing after a refresh. Remove the stored PDF too when there is
-      // one; an R2 hiccup should not stop the database deletion succeeding.
-      const documents = await env.CUSTOMER_DB.prepare(
-        "SELECT r2_key FROM booking_documents WHERE booking_id = ?1"
-      ).bind(bookingId).all();
+      const existing = await env.CUSTOMER_DB.prepare(`SELECT id FROM ${table} WHERE id = ?1`).bind(bookingId).first();
+      // The invoice rows go with the booking, so the same job cannot reappear as
+      // owing after a refresh. Into the 30-day Deleted bin first. If the copy cannot be saved, nothing
+      // is deleted. Photos and PDFs stay until the bin empties (emptyBin).
+      if (existing) {
+        try { await binBooking(env, bookingId); }
+        catch (error) { return json(request, { error: error.status ? error.message : "The booking could not be moved to Deleted. Nothing was deleted." }, error.status || 503); }
+      }
       // One transaction: never leave a partially deleted booking. An already
       // deleted ID is a successful retry (for example after a lost response).
       await env.CUSTOMER_DB.batch([
@@ -3919,15 +4021,7 @@ export async function handlePortalRequest({ request, env, path, json, sendMail, 
         env.CUSTOMER_DB.prepare("DELETE FROM booking_events WHERE booking_id = ?1").bind(bookingId),
         env.CUSTOMER_DB.prepare(`DELETE FROM ${table} WHERE id = ?1`).bind(bookingId)
       ]);
-      if (table === "bookings" && Number(existing?.photo_count || 0) > 0) {
-        await clearPhotos(env, bookingId, existing.photo_count).catch(() => {});
-      }
-      if (env.DOCUMENTS) {
-        await Promise.all((documents.results || []).map(document =>
-          document.r2_key ? env.DOCUMENTS.delete(document.r2_key).catch(() => {}) : Promise.resolve()
-        ));
-      }
-      return json(request, { ok: true });
+      return json(request, { ok: true, binDays: BIN_DAYS });
     }
 
     if (match && request.method === "PATCH") {
@@ -4106,6 +4200,6 @@ async function ownerListPage(request, env, query, kind) {
     }
     documentRows.results.sort((a,b)=>Number(b.created_at)-Number(a.created_at));
   }
-  documentRows.results=clearedDocuments(documentRows.results,await readInvoiceClearance(env));
+  documentRows.results=paidDocuments(clearedDocuments(documentRows.results,await readInvoiceClearance(env)),(await readInvoicePayments(env)).payments);
   return {rows,documentRows,pagination:{hasMore,pageSize,nextOffset:offset+rows.results.length}};
 }

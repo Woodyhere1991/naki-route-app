@@ -1,3 +1,4 @@
+import {fakeR2} from './fake-r2.mjs';
 /* Fixes from the owner-app audit. Each one is a case where the app told Woody
    something had happened when it had not, or destroyed something he had set. */
 import test from 'node:test';
@@ -50,7 +51,7 @@ async function setup() {
     state.mails.push(message);
     return true;
   };
-  const env = { CUSTOMER_DB: wrap };
+  const env = { CUSTOMER_DB: wrap, DOCUMENTS: fakeR2() };
   const call = (path, { method = 'POST', token = ownerToken, body } = {}) => handlePortalRequest({
     request: new Request('https://test.invalid' + path, {
       method, headers: { Authorization: `Bearer ${token}` }, body: body === undefined ? undefined : JSON.stringify(body)

@@ -25,3 +25,11 @@ body[data-view="earnings"] .view-earnings{display:block}
 @media(max-width:640px){.stats-two{grid-template-columns:1fr;gap:0}.stats-highlights{grid-template-columns:1fr}.stats-highlights article{display:grid;grid-template-columns:1fr auto;align-items:center;gap:5px 14px}.stats-highlights strong{font-size:24px;margin:0}.stats-highlights p{grid-column:1/-1}.stats-controls{align-items:stretch}.stats-controls .earnings-periods{width:100%}.stats-controls .earnings-periods button{flex:1}.stats-customers th,.stats-customers td{padding:11px 5px;font-size:12px}.stats-hero{padding:22px 18px}}
 
 .earnings-head{flex-wrap:wrap}.earnings-head-actions{display:flex;flex-wrap:wrap;gap:8px}
+.earnings-split{display:block;font-style:normal;font-size:12.5px;color:#cfe3ea;margin:-2px 0 4px}
+.scrap-card{margin:0 0 18px}.scrap-actions{display:flex;flex-wrap:wrap;gap:8px;margin:10px 0}.scrap-actions button{flex:1;min-height:48px;min-width:140px}
+.scrap-list{list-style:none;padding:0;margin:10px 0 0}.scrap-list li{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:10px 0;border-bottom:1px solid var(--line);flex-wrap:wrap}
+.scrap-list li span:first-child{overflow-wrap:anywhere}.scrap-list b{color:#77e1bb}.scrap-list button{min-height:40px;padding:6px 10px;margin-left:6px}
+#scrapDialog{color:var(--text,#eaf4fa);background:#092b3c;border:1px solid #49cda1;border-radius:20px;padding:22px;width:min(430px,calc(100vw - 28px));max-height:90vh;overflow:auto;box-sizing:border-box;z-index:6000}
+#scrapDialog::backdrop{background:rgba(0,10,18,.8)}#scrapDialog h2{margin:0 0 10px}#scrapDialog label{display:block;margin:10px 0;font-size:14px;color:var(--muted)}
+#scrapDialog input{display:block;width:100%;box-sizing:border-box;margin-top:5px;min-height:46px;font-size:17px}
+#scrapDialog img{display:block;max-width:100%;max-height:220px;margin:0 auto 8px;border-radius:10px;object-fit:contain}#scrapDialog button{width:100%;margin-top:10px;min-height:48px}

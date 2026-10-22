@@ -128,3 +128,15 @@ export function summarise(entries,today=nzDay()) {
     estimatedDates:entries.filter(e=>e.dateEstimated).length,
     firstDay:entries.find(e=>e.completed&&e.day)?.day||''};
 }
+// Scrap yard payments sit beside pickup work: they add to the money totals but
+// are not jobs, so job counts and per-job stats stay as they were.
+export function scrapSummary(payments,today=nzDay()) {
+  const date=new Date(`${today}T12:00:00Z`),weekday=(date.getUTCDay()+6)%7;
+  date.setUTCDate(date.getUTCDate()-weekday);const week=date.toISOString().slice(0,10);
+  const list=(Array.isArray(payments)?payments:[]).filter(p=>Number.isSafeInteger(p?.cents)&&p.cents>0&&validDay(p.day));
+  const total=filter=>list.filter(filter).reduce((sum,p)=>sum+p.cents,0);
+  return {todayCents:total(p=>p.day===today),weekCents:total(p=>p.day>=week&&p.day<=today),
+    monthCents:total(p=>p.day.slice(0,7)===today.slice(0,7)&&p.day<=today),allTimeCents:total(()=>true),
+    count:list.length,weightKg:list.reduce((sum,p)=>sum+(Number(p.weightKg)||0),0),
+    firstDay:list.map(p=>p.day).sort()[0]||''};
+}

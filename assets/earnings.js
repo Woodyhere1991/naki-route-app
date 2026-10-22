@@ -53,17 +53,18 @@
       return false;
     } finally {if(version===requestVersion)document.getElementById('earningsRefresh').disabled=false;}
   }
-  function groups(list) {
+  function groups(list,scrap=[]) {
     const today=model.nzDay(),monthly=period==='12'||period==='all';
     let start;
     if(monthly){const d=new Date(`${today.slice(0,7)}-01T12:00:00Z`);d.setUTCMonth(d.getUTCMonth()-11);start=period==='all'?(list.find(e=>e.completed&&e.day)?.day.slice(0,7)||today.slice(0,7)):d.toISOString().slice(0,7);}
     else {const d=new Date(`${today}T12:00:00Z`);d.setUTCDate(d.getUTCDate()-Number(period)+1);start=d.toISOString().slice(0,10);}
     const buckets=new Map(),cursor=new Date(`${monthly?start+'-01':start}T12:00:00Z`),end=monthly?today.slice(0,7):today;
     while((monthly?cursor.toISOString().slice(0,7):cursor.toISOString().slice(0,10))<=end&&buckets.size<1200){
-      const key=cursor.toISOString().slice(0,monthly?7:10);buckets.set(key,{key,cents:0,jobs:0});
+      const key=cursor.toISOString().slice(0,monthly?7:10);buckets.set(key,{key,cents:0,jobs:0,scrap:0});
       if(monthly)cursor.setUTCMonth(cursor.getUTCMonth()+1);else cursor.setUTCDate(cursor.getUTCDate()+1);
     }
     for(const row of list){if(!row.completed||!row.day||row.day>today)continue;const b=buckets.get(row.day.slice(0,monthly?7:10));if(b){b.cents+=row.cents;b.jobs++;}}
+    for(const pay of scrap){if(!pay.day||pay.day>today)continue;const b=buckets.get(pay.day.slice(0,monthly?7:10));if(b){b.cents+=pay.cents;b.scrap+=pay.cents;}}
     return [...buckets.values()];
   }
   function label(key) {
@@ -82,8 +83,9 @@
   }
   function paint() {
     if(!ownerToken||!report||!model){clear();return;}
-    const list=entries(),summary=model.summarise(list),buckets=groups(list);
-    const number=(label,value,detail,extra='')=>`<div class="earnings-number ${extra}"><span>${label}</span><strong>${money(value)}</strong><small>${detail}</small></div>`;
+    const list=entries(),summary=model.summarise(list),payments=report.scrap||[],scrap=model.scrapSummary(payments),buckets=groups(list,payments);
+    const split=(pickups,scrapCents)=>scrapCents?`<em class="earnings-split">Pickups ${money(pickups)} · Scrap ${money(scrapCents)}</em>`:'';
+    const number=(label,value,detail,extra='',scrapCents=0)=>`<div class="earnings-number ${extra}"><span>${label}</span><strong>${money(value+scrapCents)}</strong>${split(value,scrapCents)}<small>${detail}</small></div>`;
     const warnings=[];
     if(report.stats?.sources?.unavailable)warnings.push('Historical source snapshot unavailable. These totals contain current saved bookings and receipts only.');
     if(summary.missingPrices)warnings.push(`${summary.missingPrices} completed job${summary.missingPrices===1?' has':'s have'} no usable saved price and ${summary.missingPrices===1?'is':'are'} excluded from the money total.`);
@@ -101,17 +103,107 @@
       return;
     }
     document.getElementById('earningsContent').innerHTML=tabs+`<div class="earnings-grid">
-      ${number('Today',summary.todayCents,'NZ collection day')}${number('This week',summary.weekCents,'Monday to today')}
-      ${number('This month',summary.monthCents,'Month to today')}${number('All-time recorded',summary.allTimeCents,summary.firstDay?'Records from '+label(summary.firstDay):'Available saved history','total')}</div>
+      ${number('Today',summary.todayCents,'NZ collection day','',scrap.todayCents)}${number('This week',summary.weekCents,'Monday to today','',scrap.weekCents)}
+      ${number('This month',summary.monthCents,'Month to today','',scrap.monthCents)}${number('All-time recorded',summary.allTimeCents,summary.firstDay?'Records from '+label(summary.firstDay):'Available saved history','total',scrap.allTimeCents)}</div>
+      ${scrapCard(payments,scrap)}
       <div class="earnings-secondary"><p>Receipted<b>${money(summary.receiptedCents)}</b></p><p>Invoices still owing<b>${money(summary.owingCents)}</b></p></div>
       <p class="earnings-note">Completed work uses each booking’s saved price, or its latest saved receipt amount. A Done booking alone does not confirm payment. Totals are before fuel, disposal and other expenses. Older bookings are counted as collected unless there is evidence otherwise. Historical dates use the saved pickup or submission day when needed.</p>
       ${warnings.length?`<div class="earnings-warning">${warnings.map(esc).join('<br>')}</div>`:''}
       <div class="card"><div class="earnings-chart-title"><h2>Earnings over time</h2><strong>${money(buckets.reduce((s,b)=>s+b.cents,0))}</strong></div>
       <div class="earnings-periods" aria-label="Chart period">${[['7','7 days'],['30','30 days'],['12','12 months'],['all','All-time']].map(([key,text])=>`<button class="ghost" data-earnings-period="${key}" aria-pressed="${period===key}">${text}</button>`).join('')}</div>
-      ${chart(buckets)}<details><summary>See the numbers</summary><table class="earnings-table"><thead><tr><th>Date</th><th>Jobs</th><th>Completed work</th></tr></thead><tbody>${buckets.slice().reverse().map(b=>`<tr><td>${esc(label(b.key))}</td><td>${b.jobs}</td><td>${money(b.cents)}</td></tr>`).join('')}</tbody></table></details></div>`;
+      ${chart(buckets)}<details><summary>See the numbers</summary><table class="earnings-table"><thead><tr><th>Date</th><th>Jobs</th><th>Scrap</th><th>Total</th></tr></thead><tbody>${buckets.slice().reverse().map(b=>`<tr><td>${esc(label(b.key))}</td><td>${b.jobs}</td><td>${b.scrap?money(b.scrap):'—'}</td><td>${money(b.cents)}</td></tr>`).join('')}</tbody></table></details></div>`;
     document.getElementById('earningsContent').hidden=false;
     bindTabs();
     section.querySelectorAll('[data-earnings-period]').forEach(button=>button.onclick=()=>{period=button.dataset.earningsPeriod;paint();});
+    bindScrap();
+  }
+  // ---- Scrap yard receipts: photo -> amount read -> Woody checks it -> saved ----
+  function scrapCard(payments,scrap) {
+    const recent=payments.slice().sort((a,b)=>b.day.localeCompare(a.day)||b.createdAt-a.createdAt).slice(0,8);
+    return `<div class="card scrap-card"><div class="earnings-chart-title"><h2>Scrap money</h2><strong>${money(scrap.allTimeCents)}</strong></div>
+      <p class="earnings-note">Take a photo of your scrap yard docket. The amount is read for you to check before it is added to your totals.</p>
+      <div class="scrap-actions"><button id="scrapScan">📷 Scan scrap receipt</button><button id="scrapManual" class="ghost">Type it in</button></div>
+      ${recent.length?`<ul class="scrap-list">${recent.map(p=>`<li><span><b>${money(p.cents)}</b> ${esc(label(p.day))}${p.yard?' · '+esc(p.yard):''}${p.weightKg?' · '+esc(p.weightKg)+' kg':''}</span><span>${p.photo?`<button class="ghost" data-scrap-photo="${esc(p.id)}">Photo</button>`:''}<button class="ghost" data-scrap-remove="${esc(p.id)}">Remove</button></span></li>`).join('')}</ul>`:'<p class="earnings-empty">No scrap payments added yet.</p>'}</div>`;
+  }
+  const scrapDialog=document.createElement('dialog');scrapDialog.id='scrapDialog';scrapDialog.setAttribute('aria-labelledby','scrapTitle');
+  scrapDialog.innerHTML=`<h2 id="scrapTitle">Scrap payment</h2><img id="scrapPreview" alt="Your scrap receipt photo" hidden>
+    <p id="scrapStatus" role="status" class="earnings-note"></p>
+    <label>Amount paid ($)<input id="scrapAmount" type="number" inputmode="decimal" min="0" step="0.01" required></label>
+    <label>Date<input id="scrapDay" type="date"></label>
+    <label>Scrap yard<input id="scrapYard" type="text" maxlength="80" placeholder="e.g. GMS New Plymouth"></label>
+    <label>Weight (kg, optional)<input id="scrapWeight" type="number" inputmode="decimal" min="0" step="0.1"></label>
+    <button id="scrapSave">Add to earnings</button><button id="scrapCancel" class="ghost">Cancel</button>`;
+  document.body.append(scrapDialog);
+  const scrapFile=document.createElement('input');scrapFile.type='file';scrapFile.accept='image/*';scrapFile.setAttribute('capture','environment');scrapFile.hidden=true;scrapFile.style.display='none';section.append(scrapFile);
+  let scrapImage='',scrapBusy=false;
+  const byId=id=>document.getElementById(id);
+  byId('scrapCancel').onclick=()=>scrapDialog.close();
+  scrapDialog.addEventListener('close',()=>{scrapImage='';byId('scrapPreview').hidden=true;byId('scrapPreview').removeAttribute('src');});
+  function openScrap(image) {
+    scrapImage=image||'';byId('scrapAmount').value='';byId('scrapYard').value='';byId('scrapWeight').value='';
+    byId('scrapDay').value=model.nzDay();byId('scrapDay').max=model.nzDay();
+    byId('scrapPreview').hidden=!image;if(image)byId('scrapPreview').src=image;
+    byId('scrapStatus').textContent=image?'Reading the receipt…':'';byId('scrapSave').disabled=false;
+    if(!scrapDialog.open)scrapDialog.showModal();
+  }
+  // Phone photos are several MB. Shrink to a readable 1600px JPEG before sending.
+  function shrink(file) {
+    return new Promise((resolve,reject)=>{
+      const url=URL.createObjectURL(file),img=new Image();
+      img.onload=()=>{const scale=Math.min(1,1600/Math.max(img.width,img.height)),canvas=document.createElement('canvas');
+        canvas.width=Math.round(img.width*scale);canvas.height=Math.round(img.height*scale);
+        canvas.getContext('2d').drawImage(img,0,0,canvas.width,canvas.height);URL.revokeObjectURL(url);resolve(canvas.toDataURL('image/jpeg',0.82));};
+      img.onerror=()=>{URL.revokeObjectURL(url);reject(Error('That photo could not be opened.'));};
+      img.src=url;
+    });
+  }
+  scrapFile.onchange=async()=>{
+    const file=scrapFile.files[0];scrapFile.value='';if(!file)return;
+    let image;
+    try{image=await shrink(file);}catch(error){openScrap('');byId('scrapStatus').textContent=error.message+' Type the amount in instead.';return;}
+    openScrap(image);
+    try{
+      const res=await ownerActionFetch(`${API}/owner/scrap/read`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({image})});
+      const {read}=await res.json();if(!scrapDialog.open||scrapImage!==image)return;
+      if(read.amount!=null)byId('scrapAmount').value=read.amount.toFixed(2);
+      if(read.day&&read.day<=model.nzDay())byId('scrapDay').value=read.day;
+      if(read.yard)byId('scrapYard').value=read.yard;
+      if(read.weightKg!=null)byId('scrapWeight').value=read.weightKg;
+      byId('scrapStatus').textContent=read.amount!=null?'Check the amount matches your receipt, then add it.':'The amount could not be read. Type it in from the receipt.';
+    }catch(error){if(scrapDialog.open&&scrapImage===image)byId('scrapStatus').textContent=(error.message||'The receipt could not be read.')+' You can still type the amount in.';}
+  };
+  byId('scrapSave').onclick=async()=>{
+    if(scrapBusy)return;
+    const amount=Number(byId('scrapAmount').value);
+    if(!(amount>0)){byId('scrapStatus').textContent='Enter the amount the scrap yard paid you.';byId('scrapAmount').focus();return;}
+    scrapBusy=true;byId('scrapSave').disabled=true;byId('scrapStatus').textContent='Saving…';
+    try{
+      const res=await ownerActionFetch(`${API}/owner/scrap`,{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({amount,day:byId('scrapDay').value,yard:byId('scrapYard').value,weightKg:byId('scrapWeight').value,image:scrapImage||undefined})});
+      const {payment}=await res.json();
+      scrapDialog.close();flash(`✓ Scrap ${money(payment.cents)} added to earnings.`);await load();
+    }catch(error){byId('scrapStatus').textContent=(error.message||'Not saved.')+' Nothing was added. Try again.';byId('scrapSave').disabled=false;}
+    finally{scrapBusy=false;}
+  };
+  function bindScrap() {
+    const scan=byId('scrapScan'),manual=byId('scrapManual');
+    if(scan)scan.onclick=()=>scrapFile.click();
+    if(manual)manual.onclick=()=>openScrap('');
+    section.querySelectorAll('[data-scrap-remove]').forEach(button=>button.onclick=async()=>{
+      const pay=(report?.scrap||[]).find(p=>p.id===button.dataset.scrapRemove);if(!pay)return;
+      if(!confirm(`Remove the ${money(pay.cents)} scrap payment from ${label(pay.day)}? Your totals will go down by that amount.`))return;
+      button.disabled=true;
+      try{await ownerApi(`/owner/scrap/${encodeURIComponent(pay.id)}`,{method:'DELETE'});flash('Scrap payment removed.');await load();}
+      catch(error){button.disabled=false;alert(error.message||'It could not be removed. Try again.');}
+    });
+    section.querySelectorAll('[data-scrap-photo]').forEach(button=>button.onclick=async()=>{
+      button.disabled=true;
+      try{
+        const res=await boundedFetch(`${API}/owner/scrap/${encodeURIComponent(button.dataset.scrapPhoto)}/photo`,{headers:{Authorization:`Bearer ${ownerToken}`}});
+        if(!res.ok)throw Error('The photo could not be loaded.');
+        const url=URL.createObjectURL(await res.blob());window.open(url,'_blank');setTimeout(()=>URL.revokeObjectURL(url),60000);
+      }catch(error){alert(error.message);}finally{button.disabled=false;}
+    });
   }
   function bindTabs(){section.querySelectorAll('[data-earnings-tab]').forEach(button=>button.onclick=()=>{tab=button.dataset.earningsTab;paint();});}
   function pending() {
@@ -128,8 +220,8 @@
     const token=ownerToken,loaded=await load();
     if(!dialog.open||token!==ownerToken||!ownerToken)return;
     if(!loaded){document.getElementById('dayEarningsBody').textContent='Your run is complete. Reconnect and open Earnings for the full day total.';return;}
-    const list=entries(),today=model.nzDay(),todayRows=list.filter(e=>e.completed&&e.day===today),total=todayRows.reduce((sum,e)=>sum+e.cents,0);
-    document.getElementById('dayEarningsBody').innerHTML=`<p>Today’s completed work</p><strong class="day-total">${money(total)}</strong><p>${todayRows.length} job${todayRows.length===1?'':'s'} today · Before expenses</p><p class="earnings-note">Saved booking prices and receipts, counting each job once. Done alone does not confirm payment.</p>${todayRows.some(e=>e.missingPrice)?'<p class="earnings-warning">Some completed jobs have no saved price.</p>':''}`;
+    const list=entries(),today=model.nzDay(),todayRows=list.filter(e=>e.completed&&e.day===today),total=todayRows.reduce((sum,e)=>sum+e.cents,0),scrapToday=model.scrapSummary(report?.scrap||[],today).todayCents;
+    document.getElementById('dayEarningsBody').innerHTML=`<p>Today’s completed work</p><strong class="day-total">${money(total+scrapToday)}</strong><p>${todayRows.length} job${todayRows.length===1?'':'s'} today${scrapToday?` · Scrap ${money(scrapToday)}`:''} · Before expenses</p><p class="earnings-note">Saved booking prices and receipts, counting each job once. Done alone does not confirm payment.</p>${todayRows.some(e=>e.missingPrice)?'<p class="earnings-warning">Some completed jobs have no saved price.</p>':''}`;
   }
   window.nakiEarnings={load,clear,capture,completed,paint};
   window.addEventListener('online',()=>{if(document.body.dataset.view==='earnings')load();});

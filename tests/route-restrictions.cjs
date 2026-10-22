@@ -33,8 +33,11 @@ function urlPoints(url){return new URL(url).pathname.split('/').pop().split(';')
     const safe=await r.safeRoute(points);
     assert(!r.blocked(safe.geometry));assert.equal(safe.legs.length,1,'Bypass legs are folded into the original pickup leg');
     assert.equal(safe.duration,300);assert.equal(safe.detours.length,1);
-    assert.equal(calls.length,3,'Try and validate both bypass directions');
+    assert.equal(calls.length,5,'Try each single waypoint, then both bypass directions');
   }
+  // When one waypoint is enough, Maps gets one extra stop, not two.
+  r=environment(async url=>{const p=urlPoints(url);return response(p.length===3&&coord(p[1])===coord(r.bypass[0])?route(p):route([p[0],p[p.length-1]]));});
+  const single=await r.safeRoute([west,east]);assert(!r.blocked(single.geometry));assert.equal(single.detours[0].via.length,1);
   r=environment(async()=>response(route([west,east])));
   await assert.rejects(()=>r.safeRoute([west,east]),/Could not verify/,'An unsafe candidate is never returned');
   const far=[{lat:-39.2,lng:174.1},{lat:-39.3,lng:174.1}];let count=0;
@@ -57,37 +60,35 @@ function urlPoints(url){return new URL(url).pathname.split('/').pop().split(';')
   for(const [a,b] of [['np','tikorangi'],['inglewood','urenui'],['lepperton','tikorangi'],['stratford','mokau'],['np','urenui'],['tikorangi','westown']])
     assert(r.mightCross(P[a],P[b]),`${a} to ${b} is still checked`);
   assert(r.mightCross({lat:NaN,lng:1},P.np),'Unknown points are always checked');
+  // Same bank of the Waitara River: the trip never crosses it, so no bridge check.
+  Object.assign(P,{waitaraWest:{lat:-39.0,lng:174.21},motunui:{lat:-38.985,lng:174.33},
+    eastBank:{lat:-39.0583,lng:174.3057},patea:{lat:-39.5965,lng:174.282}});
+  assert.equal(r.riverBank(P.np),'south');assert.equal(r.riverBank(P.urenui),'north');assert.equal(r.riverBank(P.tikorangi),'north');
+  assert.equal(r.riverBank(r.bridge),null,'At the river the bank is not decided');
+  assert.equal(r.riverBank(P.mokau),null,'Beyond the upper river the bank is not decided');
+  for(const [a,b] of [['np','waitaraWest'],['np','inglewood'],['lepperton','bellBlock'],['inglewood','waitaraWest'],['urenui','tikorangi'],['motunui','tikorangi']])
+    assert(!r.mightCross(P[a],P[b]),`${a} to ${b} stays on one bank - no bridge check`);
+  // A real route that used the bridge (found 21 Oct 2026), and trips at the river, are still checked.
+  assert(r.mightCross(P.eastBank,P.patea),'East bank to Patea crossed the bridge - still checked');
+  assert(r.mightCross(r.bridge,P.waitaraWest),'Starting at the river is still checked');
   const html=fs.readFileSync('index.html','utf8');
   assert(html.indexOf('await NakiRouting.safeRoute([start,...best')<html.indexOf('state.stops = best.concat(rest)'),'Verify geometry before saving the new order');
   assert(!html.includes('matrix=routeMatrixFallback(points)'),'No unrestricted optimisation fallback');
   assert(html.includes('const r = await NakiRouting.safeRoute(seq)'),'Map uses the same restriction');
-  assert(html.includes("target.searchParams.set('waypoints'"),'Navigation carries the bypass waypoints');
   assert(fs.readFileSync('sw.js','utf8').includes("FILES.push('/assets/route-restrictions.js')"));
-  // Execute the actual Navigate handler: retain the address, force the detour,
-  // block a second tap, and restore controls after GPS/network failures.
-  const navSource=html.slice(html.indexOf('let navRouteBusy=false;'),html.indexOf('// Stops saved before this check existed'));
-  const button={textContent:'Navigate',disabled:false},alerts=[];
-  let resolveGps,checks=0;
-  const stop={id:'one',...east};
-  const context={URL,window:{},document:{querySelectorAll:()=>[button]},findStop:()=>stop,
+  // The bridge only shapes the planned run. Navigate hands Maps the stop alone:
+  // no GPS wait, no route check, no extra stops.
+  const navSource=html.slice(html.indexOf('function navigatePickup(s){'),html.indexOf('function contactNavStop('));
+  let checks=0;const stop={id:'one',...east};
+  const context={window:{},findStop:()=>stop,alert(){},autoCheckPaymentFor(){},stopMoneyState(){},bookingsWithInvoiceState(){return [];},directBookingRows:[],
     mapsDirUrl:()=> 'https://www.google.com/maps/dir/?api=1&destination=Exact%20Address',
-    navigator:{geolocation:{getCurrentPosition:ok=>{resolveGps=ok;}}},
-    NakiRouting:{failure:'No safe route',mightCross:r.mightCross,safeRoute:async()=>{checks++;return {detours:[{via:r.bypass}]};}},
-    location:{href:''},busy(){},alert:message=>alerts.push(message)};
+    NakiRouting:{safeRoute:async()=>{checks++;return {detours:[{via:r.bypass}]};}},location:{href:''}};
   context.NakiMaps={open:url=>{context.location.href=url;return true;}};
   vm.createContext(context);vm.runInContext(navSource,context);
-  const navigating=context.window.navStop('one');
-  assert(button.disabled);assert.equal(await context.window.navStop('one'),false);
-  resolveGps({coords:{latitude:west.lat,longitude:west.lng}});assert.equal(await navigating,true);
+  assert.equal(context.window.navStop('one'),true,'Opens Maps straight away');
   const navUrl=new URL(context.location.href);
-  assert.equal(navUrl.searchParams.get('waypoints'),r.bypass.map(p=>`${p.lat},${p.lng}`).join('|'));
-  assert.equal(navUrl.searchParams.get('destination'),`${east.lat},${east.lng}`);
-  assert.equal(navUrl.searchParams.has('origin'),false,'Navigation starts from the live phone location');
-  assert.equal(checks,1);assert(!button.disabled);assert.equal(button.textContent,'Navigate');
-  context.location.href='';context.navigator.geolocation.getCurrentPosition=(ok,fail)=>fail();
-  assert.equal(await context.window.navStop('one'),false);assert.equal(context.location.href,'');assert(!button.disabled);
-  context.navigator.geolocation.getCurrentPosition=ok=>ok({coords:{latitude:west.lat,longitude:west.lng}});
-  context.NakiRouting.safeRoute=async()=>{throw Error('Routing offline');};
-  assert.equal(await context.window.navStop('one'),false);assert.equal(context.location.href,'');assert(!button.disabled);
+  assert.equal(navUrl.searchParams.has('waypoints'),false,'No bridge stops added to Google Maps');
+  assert.equal(navUrl.searchParams.get('destination'),'Exact Address');
+  assert.equal(checks,0,'No route check when navigating');
   console.log('PASS: bridge geometry, both detours, unsafe/offline rejection, leg timings, matrix and app wiring');
 })().catch(e=>{console.error(e);process.exitCode=1;});

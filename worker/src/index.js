@@ -1,3 +1,6 @@
+import { emptyBin } from "./booking-recovery.js";
+import { scheduledBankRefresh } from "./bank-payments.js";
+import { deliveredKey } from "./mail-delivered.js";
 import {individualBillingBlocked} from './partner-programmes.js';
 import { OWNER_ACTIONS, ownerAction } from "./owner-actions.js";
 import { handleIntegrationApi, purgeApiRequests } from "./integration-api.js";
@@ -1213,12 +1216,28 @@ export async function sendMail(env, msg) {
   // provider after an uncertain first send, which could duplicate the invoice.
   if(msg.kind==='group-invoice')return env.GMAIL_REFRESH_TOKEN?sendGmail(env,msg):sendBrevo(env,msg);
   if (msg.kind === "customer-login" && env.AUTH_EMAIL_FROM) {
-    // Authentication mail must never fall back to the personal Gmail sender.
     const sender = loginSender(env.AUTH_EMAIL_FROM);
+    // Apple (iCloud) holds Brevo code emails back for half an hour or more, so
+    // the code is dead on arrival. Woody chose (21 Oct 2026) to send Apple
+    // addresses their code from Gmail, which Apple accepts at once. Everyone
+    // else still gets it only from the business sender.
+    if (appleMailbox(msg.to) && await sendGmail(env, msg)) return true;
     return sendBrevo(env, { ...msg, sender });
   }
-  if (await sendGmail(env, msg)) return true;
-  return sendBrevo(env, msg);
+  const sent = await sendGmail(env, msg) || await sendBrevo(env, msg);
+  if (sent) await rememberDelivered(env, msg.to);
+  return sent;
+}
+
+function appleMailbox(address) {
+  return /@(icloud|me|mac)\.com$/i.test(String(address || "").trim());
+}
+
+// The booking card's red "email failed" warning clears once a later email to
+// the same customer goes through, so an old one-off failure stops nagging.
+async function rememberDelivered(env, address) {
+  if (!env.REMINDERS || !address) return;
+  try { await env.REMINDERS.put(deliveredKey(address), String(Date.now()), { expirationTtl: 400 * 86400 }); } catch { /* never block a send */ }
 }
 
 function mailConfigured(env) { return Boolean(env.GMAIL_REFRESH_TOKEN || env.BREVO_API_KEY); }
@@ -1480,12 +1499,14 @@ export default {
     ctx.waitUntil(purgeExpiredAuth(env));
     ctx.waitUntil(purgeKidsActivity(env));
     ctx.waitUntil(env.CUSTOMER_DB.prepare("DELETE FROM auth_request_limits WHERE expires_at<?1").bind(Date.now()).run());
+    if (event.cron === "*/15 * * * *") ctx.waitUntil(scheduledBankRefresh(env, event.scheduledTime || Date.now()));
     // Only on the daily trigger - the 15-minute one has other work to do.
     if (event.cron === "0 21 * * *") {
       ctx.waitUntil(purgeApiRequests(env));
       ctx.waitUntil(env.CUSTOMER_DB.prepare('DELETE FROM owner_action_receipts WHERE status IS NOT NULL AND created_at<?1').bind(Date.now()-30*86400000).run());
       ctx.waitUntil(snapshotDatabase(env));
       ctx.waitUntil(purgeOldPhotos(env));
+      ctx.waitUntil(emptyBin(env));
     }
   }
 };

@@ -19,3 +19,7 @@ Activation requires:
 When enabled, a failed Brevo request fails the code send; it never retries via
 personal Gmail. Missing AUTH_EMAIL_FROM retains existing behavior for rollout
 compatibility. The code alone does not activate or verify a sender.
+
+## Apple addresses (21 Oct 2026)
+
+Apple (icloud.com, me.com, mac.com) held Brevo code emails back for about 30 minutes, so codes arrived expired. At Woody's request, codes for those addresses are sent from Gmail first, with the business sender as the fallback. All other addresses still use only the business sender. Codes now last 1 hour.

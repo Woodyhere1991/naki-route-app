@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import {DatabaseSync} from 'node:sqlite';
 import {handlePortalRequest} from '../src/customer.js';
+import {fakeR2} from './fake-r2.mjs';
 const json=(_r,data,status=200)=>Response.json(data,{status});
 async function setup(){
  const db=new DatabaseSync(':memory:');
@@ -12,18 +13,21 @@ async function setup(){
  const hash=Buffer.from(await crypto.subtle.digest('SHA-256',new TextEncoder().encode('delete-test'))).toString('base64url');
  db.prepare("INSERT INTO sessions(token_hash,role,email,created_at,last_seen_at,expires_at) VALUES(?,'owner','owner@example.test',0,0,?)").run(hash,Date.now()+600000);
  const wrap={prepare(sql){const s=db.prepare(sql);return {bind(...args){return {first:async()=>s.get(...args)||null,all:async()=>({results:s.all(...args)}),run:async()=>({meta:{changes:Number(s.run(...args).changes)}})};}};},async batch(statements){db.exec('BEGIN');try{const out=[];for(const s of statements)out.push(await s.run());db.exec('COMMIT');return out;}catch(e){db.exec('ROLLBACK');throw e;}}};
- const env={CUSTOMER_DB:wrap,PHOTOS:{delete:async()=>{throw Error('KV unavailable');}},DOCUMENTS:{delete:async()=>{throw Error('R2 unavailable');}}};
+ const env={CUSTOMER_DB:wrap,PHOTOS:{delete:async()=>{throw Error('KV unavailable');}},DOCUMENTS:fakeR2({failDelete:true})};
  const remove=(id,authorized=true)=>handlePortalRequest({request:new Request('https://test.invalid/owner/bookings/'+id,{method:'DELETE',headers:authorized?{Authorization:'Bearer delete-test'}:{}}),path:'/owner/bookings/'+id,env,json});
- return {db,remove};
+ return {db,remove,env};
 }
 for(const [table,id,extra,values] of [['bookings','WEB-test','customer_id,first_name,last_name,phone,street_address,town,rural_option,items_json',"'customer-test','Test','','','Test','Test','','[]'"],['jotform_bookings','JOTFORM-test','submission_id,form_id',"'test','test'"],['external_bookings','PICKUP-test','external_key,sync_token_hash',"'test','test'"]]){
  test(table+' deletion succeeds with real source schema, attachments, and repeated request',async()=>{
- const {db,remove}=await setup();try{
+ const {db,remove,env}=await setup();try{
  db.exec("INSERT INTO customers(id,email,created_at,updated_at) VALUES('customer-test','test@example.test',0,0)");
  db.exec(`INSERT INTO ${table}(id,email,created_at,updated_at,${extra}) VALUES('${id}','test@example.test',0,0,${values})`);
  if(table==='bookings'){db.exec(`UPDATE bookings SET photo_count=2 WHERE id='${id}'`);db.exec(`INSERT INTO booking_events(id,booking_id,event_type,created_at) VALUES('event','${id}','CREATED',0)`);}
  db.prepare("INSERT INTO booking_documents(id,booking_id,email,kind,created_at,r2_key) VALUES('doc',?,'test@example.test','invoice',0,'pdf')").run(id);
  assert.equal((await remove(id)).status,200);
+ // A full copy waits in the Deleted bin; the stored PDF is kept for it.
+ const binned=JSON.parse(env.DOCUMENTS.store.get(`deleted-bookings/${id}.json`).body);
+ assert.equal(binned.row.id,id);assert.equal(binned.documents[0].r2_key,'pdf');
  assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n,0);
  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM booking_documents').get().n,0);
  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM booking_events').get().n,0);

@@ -34,13 +34,14 @@ const root=path.resolve(__dirname,'..'),origin=process.env.NAKI_PUBLIC_ORIGIN||'
     let captured=await page.evaluate(()=>navLaunches[0]);
     assert(captured.app.startsWith('comgooglemapsurl://'));
     let url=new URL(captured.web);assert.equal(url.searchParams.get('dir_action'),'navigate');assert.equal(url.searchParams.has('origin'),false);
-    assert.equal(url.searchParams.get('destination'),'-39.04736,174.2564');assert(url.searchParams.get('waypoints').includes('|'));
+    assert.equal(url.searchParams.has('waypoints'),false);assert.equal(await page.evaluate(()=>navChecks),0);
     await page.evaluate(()=>{applyAppView('today');render();});
     await page.locator('.nav-action[onclick*="scheduled-nav"]').first().click();await page.waitForFunction(()=>navLaunches.length===2);
-    captured=await page.evaluate(()=>navLaunches[1]);assert(captured.app.startsWith('comgooglemapsurl://'));assert(new URL(captured.web).searchParams.has('waypoints'));
-    const failed=await page.evaluate(async()=>{navFail=true;await navStop('scheduled-nav');return {launches:navLaunches.length,busy:navRouteBusy,disabled:document.querySelector('.nav-action').disabled};});
-    assert.equal(failed.launches,2);assert.equal(failed.busy,false);assert.equal(failed.disabled,false);assert(alerts.some(s=>s.includes('routing failed')));
+    captured=await page.evaluate(()=>navLaunches[1]);assert(captured.app.startsWith('comgooglemapsurl://'));assert.equal(new URL(captured.web).searchParams.has('waypoints'),false);
+    // A routing outage no longer matters to Navigate: Maps still opens.
+    const offline=await page.evaluate(async()=>{navFail=true;await navStop('scheduled-nav');return navLaunches.length;});
+    assert.equal(offline,3);
     assert.deepEqual(errors,[]);await page.close();
   }}finally{await browser.close();}
-  console.log('PASS: booking and scheduled Navigate use app handoff, live-position navigation and bridge waypoints; routing failures stay in app with controls restored');
+  console.log('PASS: booking and scheduled Navigate use app handoff and live-position navigation with no bridge stops; works even when routing is offline');
 })().catch(e=>{console.error(e);process.exitCode=1;});

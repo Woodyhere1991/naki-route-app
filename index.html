@@ -262,7 +262,10 @@
   #contactsWrap input[type="date"]::-webkit-date-and-time-value{text-align:left}
 
   /* Simple phone navigation: one job per screen */
-  body{padding-bottom:88px}
+  /* Room for the fixed bottom bar plus a gap, so the last buttons on a page can
+     scroll clear of it. --nav-h is the bar's measured height (it is taller on an
+     iPhone with a home bar); the calc is the fallback before it is measured. */
+  body{padding-bottom:calc(var(--nav-h, calc(77px + env(safe-area-inset-bottom))) + 20px)}
   .wrap{display:flex;flex-direction:column}
   .view-panel{display:none}
   body[data-view="today"] .view-today,
@@ -351,6 +354,10 @@
   .booking-doc-row .grow{min-width:0}
   .booking-doc-row button{white-space:nowrap}
   .owing-note{margin-top:9px;padding:9px 11px;border-radius:11px;background:#4a1d24;border:1px solid #c0392b;color:#fff}
+  .pay-check{margin-top:8px;padding:9px 11px;border-radius:11px;background:#142a3a;border:1px solid #3a6d8f;color:#fff}
+  .pay-check.found{background:#163a24;border-color:#2e9e5b}
+  .paid-chip{display:inline-block;background:#2e9e5b;color:#fff;border-radius:8px;padding:1px 7px;font-size:12px;font-weight:800;letter-spacing:.3px;margin-left:6px;white-space:nowrap}
+  .pay-check ul{margin:6px 0;padding-left:18px}.pay-check li{margin:4px 0}
   /* A customer's whole paperwork history, folded away until it's wanted. */
   .customer-docs{padding:0}
   .customer-docs>summary{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:9px 10px;cursor:pointer;list-style:none}
@@ -373,11 +380,17 @@
   .filter-chip button{flex:0 0 auto}
   /* Stage filter for the bookings list. Deliberately NOT class "tabs" - that one
      has a global handler wired to the Add-pickups panes and would hijack these. */
-  .stage-tabs{display:flex;gap:6px;margin-bottom:8px}
+  .stage-tabs{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px}
   .stage-tabs button{flex:1 1 0;min-height:44px;background:#113a54;color:var(--txt);
     border:1px solid var(--line);font-size:13px;padding:5px 4px;line-height:1.15}
+  /* Six tabs: two rows of three on a phone, so no word gets broken up. */
+  @media(max-width:560px){.stage-tabs button{flex:1 1 calc(33.333% - 6px)}}
   .stage-tabs button.on{background:var(--accent);border-color:var(--accent);color:#fff}
   .stage-tabs .n{display:block;font-size:11px;font-weight:800;opacity:.75}
+  #deletedBinOpen{width:100%;margin-top:10px}
+  .deleted-head{display:flex;justify-content:space-between;align-items:center;gap:8px}
+  .deleted-row{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px 0;border-top:1px solid var(--line)}
+  .deleted-row>div{min-width:0;overflow-wrap:anywhere}.deleted-row button{flex:none}
   .stage-tabs button.on .n{opacity:1}
   /* Unpaid money is the one count worth spotting from across the cab. */
   .stage-tabs .n.owing{opacity:1;font-size:13px;color:#ffb3ac}
@@ -667,6 +680,8 @@
     <div id="programmeGroups" class="card" hidden></div>
     <div id="directBookingList"></div>
     <button class="ghost" id="bookingLoadMore" hidden>Load more bookings</button>
+    <button class="ghost" id="deletedBinOpen" hidden>🗑 Deleted bookings</button>
+    <div id="deletedBin" class="card" hidden></div>
   </section>
 
   <!-- CUSTOMER PROFILES -->
@@ -952,6 +967,8 @@ let pendingInvoices = {};   // stop id -> built invoice PDF, waiting for the Sen
 // show "Invoice preview" instead of "Send invoice" while one is waiting.
 const pendingBookingInvoices = {};
 const pendingBookingReceipts = {};
+// Bank look-ups for owing invoices, by booking id: {busy} | {result} | {error}.
+const paymentChecks = {};
 const bookingReceiptBuildBusy = new Set(), receiptSendBusy = new Set();
 let ownerToken = localStorage.getItem(OWNER_TOKEN_KEY) || "";
 let directBookingRows = [];
@@ -1335,6 +1352,10 @@ document.querySelectorAll("[data-view-button]").forEach(btn=>btn.onclick=()=>set
 (function keepBottomNavPinned(){
   const nav = document.querySelector(".bottom-nav");
   if (!nav) return;
+  const measure = () => document.documentElement.style.setProperty("--nav-h", `${Math.ceil(nav.getBoundingClientRect().height)}px`);
+  measure();
+  if (window.ResizeObserver) new ResizeObserver(measure).observe(nav, {box: "border-box"});
+  window.addEventListener("resize", measure);
   let timer = 0;
   const repin = () => {
     clearTimeout(timer);
@@ -1487,13 +1508,16 @@ function bookingCollected(b){
 // jobs of work, so it now sits under both until each one is finished.
 function stagesOfBooking(b){
   if (!b.invoiceOwing){
-    if (["COMPLETED","DECLINED","CANCELLED"].includes(b.status)) return ["done"];
+    if (b.status==="COMPLETED") return ["done"];
+    // Cancelled and declined are not finished work, so they get their own tab
+    // and no longer pad the Done count.
+    if (["DECLINED","CANCELLED"].includes(b.status)) return ["cancelled"];
     return [runContainingBooking(b.id) ? "scheduled" : "new"];
   }
   if (bookingCollected(b)) return ["owing"];
   return ["owing", runContainingBooking(b.id) ? "scheduled" : "new"];
 }
-const BOOKING_STAGES=[["all","All"],["new","New"],["scheduled","Scheduled"],["owing","Owing"],["done","Done"]];
+const BOOKING_STAGES=[["all","All"],["new","New"],["scheduled","Scheduled"],["owing","Owing"],["done","Done"],["cancelled","Cancelled"]];
 // The card and the buttons above it have to say the same word about the same job,
 // so both come from here. Cancelled and declined keep their own words - they are
 // not one of the four stages, and calling either of them "Done" would read wrong.
@@ -1504,7 +1528,15 @@ function bookingStatusWord(b){
   if (b.status==="CANCELLED") return "Cancelled";
   if (b.status==="DECLINED") return "Declined";
   if (b.status==="COMPLETED") return "Done";
-  return runContainingBooking(b.id) ? "Scheduled" : "New";
+  const stage=runContainingBooking(b.id) ? "Scheduled" : "New";
+  return bookingPaidInfo(b) ? `${stage} · paid` : stage;
+}
+// Paid but no receipt yet. Paid is money only: the job stays New or Scheduled
+// until the receipt goes out after pickup, and the receipt is what marks it done.
+function bookingPaidInfo(b){
+  if (b.invoicePaid) return b.invoicePaid;
+  const unpaid=b._unpaidStopId ? findStop(b._unpaidStopId) : null;
+  return unpaid && unpaid.paid && !unpaid.receiptSent ? {at:unpaid.paidAt||0, amount:unpaid.invoiceAmount??null} : null;
 }
 function hideBookingStageTabs(){
   const wrap=$("#bookingStageTabs"); if (wrap){ wrap.style.display="none"; wrap.innerHTML=""; }
@@ -1697,7 +1729,8 @@ function unpaidStopForBooking(booking){
   if (!emailKey || !streetKey) return null;
   const bookingTown=townKey(booking.town||"");
   return (state.unpaid||[]).find(stop=>{
-    if (stop.paid) return false;
+    // Paid but not yet receipted is still this booking's copy (paid is not done).
+    if (stop.paid && (stop.receiptSent || stop.status==="DONE" || stop.historyStatus==="COMPLETED")) return false;
     if (String(stop.email||"").trim().toLowerCase()!==emailKey) return false;
     if (normKey(stop.street||"")!==streetKey) return false;
     if (bookingTown && stop.town && townKey(stop.town)!==bookingTown) return false;
@@ -1711,12 +1744,14 @@ function bookingsWithInvoiceState(rows){
     const unpaid=unpaidStopForBooking(booking);
     return {
       ...booking,
-      invoiceOwing:unpaid ? !unpaid.paid : (!invoiceOwingIsDismissed(booking.id) && Boolean(booking.invoiceOwing)),
+      invoiceOwing:unpaid ? (!unpaid.paid && !booking.invoicePaid) : (!invoiceOwingIsDismissed(booking.id) && Boolean(booking.invoiceOwing)),
       _unpaidStopId:unpaid ? unpaid.id : ""
     };
   });
   const matched=new Set(enriched.map(booking=>booking._unpaidStopId).filter(Boolean));
-  (state.unpaid||[]).filter(stop=>!stop.paid && !matched.has(stop.id)).forEach(stop=>{
+  // Paid but not receipted is still a pickup to do, so it keeps its card until the
+  // receipt goes out. Old paid entries were marked done at the time and stay hidden.
+  (state.unpaid||[]).filter(stop=>!matched.has(stop.id) && (!stop.paid || (!stop.receiptSent && stop.status!=="DONE" && stop.historyStatus!=="COMPLETED"))).forEach(stop=>{
     const created=stop.invoicedAt && /^\d{4}-\d{2}-\d{2}$/.test(stop.invoicedAt)
       ? `${stop.invoicedAt}T12:00:00`
       : new Date(Number(stop.historyCreatedAt||Date.now())).toISOString();
@@ -1728,7 +1763,7 @@ function bookingsWithInvoiceState(rows){
       additionalInfo:stop.additional_info||stop.note||"", total:Number(stop.invoiceAmount||stop.amount||0),
       quotedPrice:stop.invoiceAmount!=null?Number(stop.invoiceAmount):null, quoteRequired:false,
       pickupDate:stop.confirmedPickupDate||"", pickupWindow:"", source:"LOCAL_INVOICE", sheetSyncStatus:"PICKUP_RUN",
-      createdAt:created, documents:[], invoiceOwing:true, _unpaidStopId:stop.id, _localOnly:true
+      createdAt:created, documents:[], invoiceOwing:!stop.paid, _unpaidStopId:stop.id, _localOnly:true
     });
   });
   return enriched;
@@ -1752,7 +1787,9 @@ function renderDirectBookings(){
   const fresh = bookingRows.filter(b=>stagesOfBooking(b).includes("new")).length;
   const count=$("#bookingCount");
   count.textContent=String(fresh); count.style.display=fresh ? "inline-grid" : "none";
+  $("#deletedBinOpen").hidden=!ownerToken;
   if (!ownerToken){
+    $("#deletedBin").hidden=true; $("#deletedBin").innerHTML="";
     clearBookingFocus(); paintBookingFilterChip(); hideBookingStageTabs();
     list.innerHTML="";
     directStatus("Sign in to see customer bookings.");
@@ -1860,9 +1897,9 @@ function renderDirectBookings(){
         : isCollected(unpaid) ? ""
         : `<button class="good sm" onclick="addUnpaidToRun('${unpaid.id}')">↩ Add to active run</button>`;
     const unpaidMoneyActions=!unpaid ? "" : unpaid.paid
-      ? `<button class="ghost sm" onclick="receiptStop('${unpaid.id}')">🧾 Send receipt again</button>`
+      ? `<button class="${unpaid.receiptSent?"ghost":"good"} sm" onclick="receiptStop('${unpaid.id}')">🧾 ${unpaid.receiptSent?"Send receipt again":"Send receipt"}</button>`
       : `<button class="good sm" onclick="receiptStop('${unpaid.id}')">🧾 Send receipt</button>
-      <button class="ghost sm" title="Only if no receipt is needed — sending a receipt marks it paid on its own" onclick="markPaid('${unpaid.id}')">💰 Mark paid</button>
+      <button class="ghost sm" title="The money is in. The booking stays as it is until you send the receipt after pickup." onclick="markPaid('${unpaid.id}')">💰 Mark paid</button>
       <button class="ghost sm" onclick="invoiceStop('${unpaid.id}')">📄 Invoice again</button>`;
     // The stop in the ledger knows best; a booking billed straight off its card
     // has no stop, so fall back to what was saved when the invoice went out.
@@ -1912,8 +1949,16 @@ function renderDirectBookings(){
       b.phone?`<a class="ghost sm" href="sms:${esc(smsPhoneNumber(b.phone))}${pickupDay?`?body=${smsText}`:""}">💬 ${pickupDay?"Text details":"Text"}</a>`:"",
       navAddress?`<button class="ghost sm nav-action" data-navigate-booking="${esc(b.id)}">🧭 Navigate</button>`:""
     ].filter(Boolean).join("");
+    const paymentCheckAction=(b.invoiceOwing && !programmePickup(b))
+      ? `<button class="ghost sm" title="Look in the business bank account for this customer's payment" data-payment-check="${esc(b.id)}" ${paymentChecks[b.id]?.busy?"disabled":""}>🏦 Check payment</button>`
+      : "";
+    const markPaidAction=(b.invoiceOwing && !unpaid && !programmePickup(b) && (b.documents||[]).some(document=>document.kind==="INVOICE"))
+      ? `<button class="ghost sm" title="The money is in. The booking stays as it is until you send the receipt after pickup." data-mark-paid="${esc(b.id)}" ${paidSaveBusy.has(b.id)?"disabled":""}>💰 Mark paid</button>`
+      : "";
     const moneyActions=[
+      paymentCheckAction,
       unpaidMoneyActions,
+      markPaidAction,
       receiptAction,
       invoiceAction,
       remindAction,
@@ -1943,6 +1988,8 @@ function renderDirectBookings(){
       ${b.emailFailed ? `<div class="small" style="color:var(--bad)">⚠ An email for this booking failed to send — check they know.</div>` : ""}
       ${confirmed}
       ${owingBox}
+      ${paidNote(b)}
+      ${paymentCheckBox(b)}
       ${documentBox}
       ${actionGroup("Get in touch", contactActions)}
       ${actionGroup("Money", moneyActions)}
@@ -1957,9 +2004,10 @@ function renderDirectBookings(){
            title="${b.photoCount} photo${b.photoCount===1?"":"s"} attached — tap to view"
            aria-label="${b.photoCount} photo${b.photoCount===1?"":"s"} attached">📷${b.photoCount>1?`<span>${b.photoCount}</span>`:""}</span>`
       : "";
+    const paidChip=(!b.invoiceOwing && bookingPaidInfo(b) && !["CANCELLED","DECLINED"].includes(b.status)) ? `<span class="paid-chip">✅ PAID</span>` : "";
     if (!bookingCompact){
       return `<article class="card ${classes}" data-booking-id="${esc(b.id)}">
-      ${programmeBadge(b)}<div class="direct-head"><h3>${name}</h3>${photoChip}<b>${esc(price)}</b></div>
+      ${programmeBadge(b)}<div class="direct-head"><h3>${name}${paidChip}</h3>${photoChip}<b>${esc(price)}</b></div>
       ${body}
     </article>`;
     }
@@ -1974,7 +2022,7 @@ function renderDirectBookings(){
       <summary>
         <span class="mini-dot ${dot}"></span>
         <span class="mini-main">
-          <span class="mini-name">${name||"(No name)"}</span>${programmeBadge(b)}
+          <span class="mini-name">${name||"(No name)"}</span>${paidChip}${programmeBadge(b)}
           <span class="mini-sub">${esc(sub)}</span>
         </span>
         ${photoChip}
@@ -2017,8 +2065,13 @@ function renderDirectBookings(){
       : "";
     html += `<details class="town-group"${openAttr}><summary>${hasFresh?"🆕 ":"📍 "}${esc(group.label)} (${group.rows.length})<span class="chev">›</span></summary>${bulkAction}${group.rows.map(bookingCard).join("")}</details>`;
   });
-  if (previousRows.length){
-    html += `<details class="town-group"${openWhenSearching}><summary>✅ Done (${previousRows.length})<span class="chev">›</span></summary>${previousRows.map(bookingCard).join("")}</details>`;
+  // Finished work and called-off work are kept apart, matching the two tabs.
+  const doneRows=previousRows.filter(b=>b.status==="COMPLETED"), cancelledRows=previousRows.filter(b=>b.status!=="COMPLETED");
+  if (doneRows.length){
+    html += `<details class="town-group"${openWhenSearching}><summary>✅ Done (${doneRows.length})<span class="chev">›</span></summary>${doneRows.map(bookingCard).join("")}</details>`;
+  }
+  if (cancelledRows.length){
+    html += `<details class="town-group"${openWhenSearching}><summary>✖ Cancelled (${cancelledRows.length})<span class="chev">›</span></summary>${cancelledRows.map(bookingCard).join("")}</details>`;
   }
   list.innerHTML = html;
   list.querySelectorAll("[data-add-direct]").forEach(button=>{
@@ -2048,6 +2101,19 @@ function renderDirectBookings(){
   list.querySelectorAll("[data-owner-document]").forEach(button=>button.onclick=()=>openOwnerDocument(button.dataset.ownerDocument));
   list.querySelectorAll("[data-invoice-direct]").forEach(button=>button.onclick=()=>invoiceDirectBooking(button.dataset.invoiceDirect));
   list.querySelectorAll("[data-receipt-direct]").forEach(button=>button.onclick=()=>receiptDirectBooking(button.dataset.receiptDirect));
+  list.querySelectorAll("[data-payment-check]").forEach(button=>button.onclick=()=>checkBookingPayment(button.dataset.paymentCheck));
+  list.querySelectorAll("[data-mark-paid]").forEach(button=>button.onclick=()=>markBookingPaid(button.dataset.markPaid));
+  list.querySelectorAll("[data-payment-paid]").forEach(button=>button.onclick=()=>markBookingPaid(button.dataset.paymentPaid,true));
+  list.querySelectorAll("[data-payment-receipt]").forEach(button=>button.onclick=async()=>{
+    const b=bookingCardRow(button.dataset.paymentReceipt);
+    if(!b)return;
+    const ok=await openEditForm({title:`🧾 Receipt for ${[b.firstName,b.lastName].filter(Boolean).join(" ")||"this customer"}?`,
+      note:"Only once it's picked up. Sending the receipt marks the booking paid and done. You'll see the receipt before it sends.",
+      fields:[],saveLabel:"Yes, make the receipt"});
+    if(!ok)return;
+    const unpaid=b?._unpaidStopId?findStop(b._unpaidStopId):null;
+    if(unpaid)receiptStop(unpaid.id);else if(b)receiptDirectBooking(b.id);
+  });
   list.querySelectorAll("[data-invoice-cancel]").forEach(button=>button.onclick=()=>{
     delete pendingBookingInvoices[button.dataset.invoiceCancel];
     renderDirectBookings();
@@ -2065,6 +2131,179 @@ function renderDirectBookings(){
 // build the PDF, show it in the same preview with Change amount / Send - so the
 // invoice is never emailed without being looked at first. Passing the booking's
 // own id is what files it against this booking instead of leaving it floating.
+// Look in the business bank account (cleared and pending) for this invoice's
+// payment. It only reports what the bank shows - marking it paid is still the
+// receipt, so nothing here can claim money arrived that didn't.
+// The row as the card shows it: with its ledger stop attached, including
+// invoices that only live on this phone.
+function bookingCardRow(id){ return bookingsWithInvoiceState(directBookingRows).find(row=>row.id===id) || null; }
+async function checkBookingPayment(id, auto=false){
+  const b=bookingCardRow(id);
+  if(!b || paymentChecks[id]?.busy) return;
+  const unpaid=b._unpaidStopId ? findStop(b._unpaidStopId) : null;
+  const invoice=(b.documents||[]).find(document=>document.kind==="INVOICE");
+  const amount=unpaid && unpaid.invoiceAmount!=null ? Number(unpaid.invoiceAmount) :
+    Number((invoice||{}).amount||b.quotedPrice||b.total||0);
+  paymentChecks[id]={busy:true}; renderDirectBookings();
+  try{
+    const result=await ownerApi("/owner/payment-check",{method:"POST",body:JSON.stringify({
+      amount,
+      firstName:b.firstName||unpaid?.first_name||"",
+      lastName:b.lastName||unpaid?.last_name||"",
+      street:b.streetAddress||unpaid?.street||"",
+      since:[invoice?.createdAt,unpaid?.invoiceAt,b.createdAt].map(v=>typeof v==="string"?Date.parse(v):Number(v)).find(Number.isFinite)||Date.now()
+    })});
+    paymentChecks[id]={result:{...result,amount},checkedAt:Date.now()};
+  }catch(error){
+    paymentChecks[id]={error:error.status===401?"Sign in again on Bookings, then check again.":error.message||"Couldn't check the bank just now.",checkedAt:Date.now()};
+  }
+  if (!auto) bookingCardsOpen.add(id);
+  renderDirectBookings(); renderList();
+  const found=paymentChecks[id].result;
+  if (auto && (found?.exact?.length || found?.combined?.length))
+    flash(`💰 ${[b.firstName,b.lastName].filter(Boolean).join(" ")||"They"} paid — tap Mark as paid on the stop`);
+}
+// Tapping Navigate to a pickup with an invoice owing checks the bank on the way,
+// so Woody knows before he gets there. Not again if a payment was already found,
+// or it was checked in the last 10 minutes. Never blocks Maps opening.
+function autoCheckPaymentFor(row){
+  if (!row || !row.invoiceOwing || !ownerToken || programmePickup(row)) return;
+  const last=paymentChecks[row.id];
+  if (last?.busy || last?.result?.exact?.length || last?.result?.combined?.length) return;
+  if (last?.checkedAt && Date.now()-last.checkedAt<10*60000) return;
+  void checkBookingPayment(row.id, true);
+}
+// Which booking a run stop is, and where its money stands: paid (not yet
+// receipted), owing, or nothing to say.
+function stopMoneyState(s, rows){
+  if (isUnload(s) || programmePickup(s) || s.receiptSent) return null;
+  const twins=invoiceTwinsOf(s);
+  const ids=new Set([s.id, s.unpaidSourceId, ...twins.map(t=>t.id)].filter(Boolean));
+  const row=rows.find(r=>stopBelongsToBooking(s,r) || (r._unpaidStopId && ids.has(r._unpaidStopId))) || null;
+  const paidCopy=[s,...twins].find(x=>x.paid && !x.receiptSent);
+  const paid=(row && !row.invoiceOwing && bookingPaidInfo(row)) || (paidCopy ? {at:paidCopy.paidAt||0, amount:paidCopy.invoiceAmount??null} : null);
+  if (paid) return {paid,row};
+  const owing=row ? row.invoiceOwing : (s.invoiceSent && !s.paid && !s.invoiceCleared);
+  return owing ? {owing:true,row} : null;
+}
+function stopMoneyBox(money){
+  if (!money) return "";
+  const day=at=>new Date(at).toLocaleDateString("en-NZ",{weekday:"short",day:"numeric",month:"short"});
+  if (money.paid){
+    const amount=money.paid.amount!=null ? ` $${Number(money.paid.amount).toFixed(2)}` : "";
+    return `<div class="pay-check found small"><b>✅ PAID${amount}${money.paid.at?" on "+esc(day(money.paid.at)):""}</b> — just collect it. Send the receipt once it's picked up.</div>`;
+  }
+  const row=money.row;
+  if (!row) return "";
+  const id=esc(jsString(row.id)), check=paymentChecks[row.id], r=check?.result;
+  const again=`<button class="ghost sm" onclick="checkBookingPayment('${id}')">🏦 ${check?"Check again":"Check payment"}</button>`;
+  if (check?.busy) return `<div class="pay-check small">🏦 Checking the bank…</div>`;
+  if (check?.error) return `<div class="pay-check small">⚠️ ${esc(check.error)} ${again}</div>`;
+  const hit=r?.exact?.[0]||null, parts=r?.combined||[];
+  if (hit || parts.length){
+    const line=hit ? `$${Number(hit.amount).toFixed(2)} · ${esc(day(hit.date))} · ${hit.pending?"pending":"cleared"}`
+      : `${parts.length} payments adding up to $${Number(r.amount).toFixed(2)}`;
+    return `<div class="pay-check found small"><b>🏦 Bank shows they've paid</b><div>${line}</div>
+      <button class="good sm" onclick="markBookingPaid('${id}',true)" ${paidSaveBusy.has(row.id)?"disabled":""}>💰 Mark as paid</button></div>`;
+  }
+  if (r) return `<div class="pay-check small"><b>💰 Invoice owing</b> · no payment in the bank under their name yet ${again}${bankDataNote(r)}${sameAmountList(r)}</div>`;
+  return `<div class="pay-check small"><b>💰 Invoice owing</b> ${again}</div>`;
+}
+// The bank link's copy lags the banking app by up to a few hours. Say how old
+// it is, so "not found" is never read as "not paid".
+function bankDataNote(r){
+  if (!r?.bankDataAt) return "";
+  const at=new Date(r.bankDataAt);if (!Number.isFinite(at.getTime())) return "";
+  const when=at.toLocaleString("en-NZ",{weekday:"short",hour:"numeric",minute:"2-digit"});
+  return `<div class="muted">Bank data last updated ${esc(when)}.${r.refreshRequested?" Asked the bank for an update — check again in a few minutes.":""}</div>`;
+}
+// Same amount, different name - often a partner or a business paying.
+function sameAmountList(r){
+  if (!r?.sameAmount?.length) return "";
+  const when=p=>new Date(p.date).toLocaleDateString("en-NZ",{weekday:"short",day:"numeric",month:"short"});
+  return `<div style="margin-top:6px"><b>Same amount from another name</b> — could be them, check before marking paid:</div>
+    <ul>${r.sameAmount.map(p=>`<li><b>$${Number(p.amount).toFixed(2)}</b> · ${esc(when(p))} · ${p.pending?"pending":"cleared"}<br><span class="muted">“${esc(p.payer)}”</span></li>`).join("")}</ul>`;
+}
+const paidSaveBusy=new Set();
+// A proper Yes / Cancel box (not a one-tap slip) before anything is marked paid.
+function confirmPaid(title, lead=""){
+  return openEditForm({title, note:lead+"The booking stays New or Scheduled. Send the receipt after pickup to mark it done.",
+    fields:[], saveLabel:"Yes, mark paid"}).then(Boolean);
+}
+function paidNote(b){
+  const paid=bookingPaidInfo(b);
+  if (!paid || b.invoiceOwing || ["CANCELLED","DECLINED"].includes(b.status)) return "";
+  const when=paid.at ? " on "+new Date(paid.at).toLocaleDateString("en-NZ",{weekday:"short",day:"numeric",month:"short"}) : "";
+  const amount=paid.amount!=null ? ` $${Number(paid.amount).toFixed(2)}` : "";
+  const next=b.status==="COMPLETED" ? "Send the receipt to finish." : "Not picked up yet — send the receipt after pickup, that marks it done.";
+  return `<div class="pay-check found small"><b>✅ Paid${amount}${esc(when)}</b><div>${next}</div></div>`;
+}
+// Money in, job not finished. Saves the payment against the invoice (so every
+// phone and Earnings see it), cancels the reminder, and leaves the booking's
+// status alone. Nothing changes here unless the save worked.
+async function markBookingPaid(id, fromBank=false){
+  const b=bookingCardRow(id);
+  if (!b || paidSaveBusy.has(id)) return;
+  if (programmePickup(b)) return directStatus("This is billed through the spring clean organiser. Do not mark an individual household as paid.",true);
+  const unpaid=b._unpaidStopId ? findStop(b._unpaidStopId) : null;
+  const match=fromBank ? (paymentChecks[id]?.result?.exact?.[0] || paymentChecks[id]?.result?.combined?.[0] || null) : null;
+  const who=[b.firstName,b.lastName].filter(Boolean).join(" ")||"this booking";
+  const parts=paymentChecks[id]?.result?.exact?.length ? 0 : (paymentChecks[id]?.result?.combined?.length||0);
+  const seen=parts ? `Bank shows ${parts} payments adding up to $${Number(paymentChecks[id].result.amount).toFixed(2)}. ` : match ? `Bank shows $${Number(match.amount).toFixed(2)} on ${new Date(match.date).toLocaleDateString("en-NZ",{weekday:"short",day:"numeric",month:"short"})}${match.pending?" (pending)":""}. ` : "";
+  if (!await confirmPaid(`💰 Mark ${who} as paid?`, seen)) return;
+  paidSaveBusy.add(id); renderDirectBookings();
+  try{ await markInvoicePaid({booking:b, stop:unpaid, bank:match}); }
+  catch(error){ directStatus("Couldn't save the payment: "+(error.message||"try again."),true); }
+  finally{ paidSaveBusy.delete(id); renderDirectBookings(); }
+}
+async function markInvoicePaid({booking=null, stop=null, bank=null}){
+  const documents=booking?.documents||[];
+  const invoice=documents.find(document=>document.kind==="INVOICE");
+  const receipt=documents.find(document=>document.kind==="RECEIPT");
+  const amount=stop && stop.invoiceAmount!=null ? Number(stop.invoiceAmount) : Number(invoice?.amount||0) || null;
+  if (invoice && !booking._localOnly && !invoice.paidAt && (!receipt || invoice.createdAt>receipt.createdAt)){
+    await ownerApi("/owner/payments",{method:"POST",body:JSON.stringify({invoiceId:invoice.id,amount:amount||undefined,
+      method:bank?"bank":"manual",bankDate:bank?.date||"",pending:Boolean(bank?.pending)})});
+  }
+  const paidAt=Date.now();
+  const pool=allRunStates().flatMap(data=>(data.stops||[]).concat(data.bad||[])).concat(state.unpaid||[]);
+  const copies=new Set([stop, ...(stop?invoiceTwinsOf(stop):[]), ...(booking&&!booking._localOnly?pool.filter(x=>stopBelongsToBooking(x,booking)):[])].filter(Boolean));
+  for (const copy of copies){
+    copy.paid=true; copy.paidAt=copy.paidAt||paidAt;
+    await cancelReminderFor(copy);
+  }
+  if (booking && !booking._localOnly){
+    const meta=bookingInvoiceStore()[booking.id];
+    if (meta?.reminderId) await cancelReminderFor(meta);
+    rememberBookingInvoice(booking.id,{reminderId:"",reminderDate:"",reminderRepeat:0});
+    for (const row of [booking, directBookingRows.find(row=>row.id===booking.id)].filter(Boolean)){
+      row.invoiceOwing=false; row.invoicePaid={at:paidAt, amount};
+    }
+  }
+  save(); render(); renderDirectBookings();
+  const collected=booking ? (booking.status==="COMPLETED" || bookingCollected(booking)) : isCollected(stop);
+  flash(collected ? "✓ Marked paid. Send the receipt to finish." : "✓ Marked paid — still to pick up.");
+  if (ownerToken) await loadDirectBookings(false);
+}
+function paymentCheckBox(b){
+  const check=paymentChecks[b.id];
+  if (!check || !b.invoiceOwing) return "";
+  if (check.busy) return `<div class="pay-check small">🏦 Checking the bank…</div>`;
+  if (check.error) return `<div class="pay-check small">⚠️ ${esc(check.error)}</div>`;
+  const r=check.result;
+  const when=p=>new Date(p.date).toLocaleDateString("en-NZ",{weekday:"short",day:"numeric",month:"short"});
+  const row=p=>`<li><b>$${Number(p.amount).toFixed(2)}</b> · ${esc(when(p))} · ${p.pending?"<b>pending</b> (not cleared yet)":"cleared"}
+    <br><span class="muted">“${esc(p.payer)}”</span>${p.matchedOn?.includes("name")&&p.matchedOn?.includes("address")?"":`<br><span class="muted">Matched on ${p.matchedOn?.includes("address")?"address":"name"} only — check it's them.</span>`}</li>`;
+  const from=new Date(r.checkedFrom).toLocaleDateString("en-NZ",{day:"numeric",month:"short"});
+  const receiptButton=`<button class="good sm" data-payment-paid="${esc(b.id)}" ${paidSaveBusy.has(b.id)?"disabled":""}>💰 Mark as paid</button>
+    <button class="ghost sm" title="Only once it's picked up" data-payment-receipt="${esc(b.id)}">🧾 Send receipt (paid and done)</button>`;
+  const others=r.otherAmounts?.length
+    ? `<div style="margin-top:6px">Payments from them for a different amount:</div><ul>${r.otherAmounts.map(row).join("")}</ul>` : "";
+  if (r.exact?.length) return `<div class="pay-check found small"><b>✓ Payment found</b><ul>${r.exact.map(row).join("")}</ul>${receiptButton}${others}</div>`;
+  if (r.combined?.length) return `<div class="pay-check found small"><b>✓ Paid in ${r.combined.length} parts adding up to $${Number(r.amount).toFixed(2)}</b><ul>${r.combined.map(row).join("")}</ul>${receiptButton}${others}</div>`;
+  return `<div class="pay-check small"><b>No payment found under their name yet.</b>
+    <div class="muted">Looked for $${Number(r.amount).toFixed(2)} in the business account since ${esc(from)}, including pending.</div>${bankDataNote(r)}${others}${sameAmountList(r)}</div>`;
+}
 async function receiptDirectBooking(id, askAmount=false){
   if(programmePickup(directBookingRows.find(row=>row.id===id)))return directStatus("This is a spring clean group pickup. Use the organiser invoice; no individual receipt or payment.",true);
   const b=directBookingRows.find(row=>row.id===id);
@@ -2579,16 +2818,44 @@ async function completeDirectBooking(id){
 async function restoreDirectBooking(id){
   const b=directBookingRows.find(row=>row.id===id); if(!b) return;
   try{
-    const data=await ownerApi(`/owner/bookings/${encodeURIComponent(id)}`,{
-      method:"PATCH",
-      body:JSON.stringify({status:"NEW",pickupDate:"",pickupWindow:"",customerNote:""})
-    });
+    const data=await ownerApi(`/owner/bookings/${encodeURIComponent(id)}/restore`,{method:"POST",body:"{}"});
     const index=directBookingRows.findIndex(row=>row.id===id);
     if(index>=0) directBookingRows[index]=data.booking;
     renderDirectBookings();
     flash(`${b.firstName||"Booking"} restored`);
   }catch(e){ directStatus(e.message,true); }
 }
+// Deleted bookings wait 30 days on the server before going for good.
+async function openDeletedBin(){
+  const box=$("#deletedBin"); box.hidden=false;
+  if (!box.innerHTML) box.innerHTML='<p class="small muted">Loading deleted bookings…</p>';
+  try{ paintDeletedBin(await ownerApi("/owner/deleted-bookings")); }
+  catch(e){ box.innerHTML=`<p class="small" style="color:var(--bad)">${esc(e.message||"Deleted bookings could not be loaded.")}</p><button class="ghost sm" id="deletedBinClose">Close</button>`; $("#deletedBinClose").onclick=closeDeletedBin; }
+}
+function closeDeletedBin(){ const box=$("#deletedBin"); box.hidden=true; box.innerHTML=""; }
+function paintDeletedBin(data){
+  const box=$("#deletedBin"), rows=data.bookings||[];
+  const day=iso=>new Date(iso).toLocaleDateString("en-NZ",{day:"numeric",month:"short"});
+  box.innerHTML=`<div class="deleted-head"><b>🗑 Deleted bookings</b><button class="ghost sm" id="deletedBinClose">Close</button></div>
+    <p class="small muted">Kept for ${Number(data.days)||30} days after deleting, then removed for good.</p>
+    ${rows.length?rows.map(r=>`<div class="deleted-row"><div><b>${esc([r.firstName,r.lastName].filter(Boolean).join(" ")||"(No name)")}</b>
+      <div class="small">${esc([r.streetAddress,r.town].filter(Boolean).join(", "))}${r.items?.length?` · ${esc(groupItems(r.items).join(", "))}`:""}</div>
+      <div class="small muted">Deleted ${esc(day(r.deletedAt))} · gone for good ${esc(day(r.emptiesAt))}</div></div>
+      <button class="good sm" data-bin-restore="${esc(r.id)}">↺ Restore</button></div>`).join(""):'<p class="small">Nothing deleted in the last 30 days.</p>'}`;
+  $("#deletedBinClose").onclick=closeDeletedBin;
+  box.querySelectorAll("[data-bin-restore]").forEach(button=>button.onclick=()=>restoreDeletedBooking(button.dataset.binRestore,button));
+}
+async function restoreDeletedBooking(id,button){
+  button.disabled=true; button.textContent="Restoring…";
+  try{
+    const data=await ownerApi(`/owner/deleted-bookings/${encodeURIComponent(id)}/restore`,{method:"POST",body:"{}"});
+    directBookingRows=[data.booking,...directBookingRows.filter(row=>row.id!==id)];
+    renderDirectBookings();
+    flash(`✓ ${data.booking.firstName||"Booking"} restored to Bookings`);
+    await openDeletedBin();
+  }catch(e){ button.disabled=false; button.textContent="↺ Restore"; alert(e.message||"It could not be restored. Try again."); }
+}
+$("#deletedBinOpen").onclick=()=>$("#deletedBin").hidden ? openDeletedBin() : closeDeletedBin();
 async function uncompleteDirectBooking(id){
   const b=directBookingRows.find(row=>row.id===id); if(!b) return;
   try{
@@ -2600,7 +2867,7 @@ async function uncompleteDirectBooking(id){
 async function deleteDirectBooking(id){
   const b=directBookingRows.find(row=>row.id===id);
   const name=b ? [b.firstName,b.lastName].filter(Boolean).join(" ") || "this booking" : "this booking";
-  if (!confirm(`Delete ${name}? This removes the booking for good — it can't be undone.`)) return;
+  if (!confirm(`Delete ${name}? It moves to "Deleted bookings" at the bottom of Bookings, where you can restore it for 30 days.`)) return;
   const buttons=[...document.querySelectorAll("[data-delete-direct]")].filter(button=>button.dataset.deleteDirect===id);
   buttons.forEach(button=>{ button.disabled=true; button.textContent="Deleting…"; });
   try{
@@ -2621,7 +2888,8 @@ async function deleteDirectBooking(id){
     save(); render(); if (typeof drawRoute==="function") drawRoute();
     directBookingRows=directBookingRows.filter(row=>row.id!==id);
     renderDirectBookings();
-    flash(`✓ ${name} deleted`);
+    flash(`✓ ${name} moved to Deleted bookings`);
+    if (!$("#deletedBin").hidden) openDeletedBin();
   }catch(e){
     buttons.forEach(button=>{ button.disabled=false; button.textContent="✕ Delete booking"; });
     directStatus(e.message,true);
@@ -4585,24 +4853,25 @@ function greedyRoadOrder(nodes,matrix,startIndex,firstNode){
   });
   return order;
 }
-function improveRoadOrder(seed,priorityCount,matrix,startIndex,endIndex){
-  let best=seed.slice(), bestCost=routeSequenceCost(best,matrix,startIndex,endIndex);
+function improveRoadOrder(seed,priorityCount,matrix,startIndex,endIndex,costOf){
+  const cost=costOf||(order=>routeSequenceCost(order,matrix,startIndex,endIndex));
+  let best=seed.slice(), bestCost=cost(best);
   const blocks=priorityCount&&priorityCount<best.length ? [[0,priorityCount],[priorityCount,best.length]] : [[0,best.length]];
   for(let round=0;round<40;round++){
     let winner=null,winnerCost=bestCost;
     for(const [from,to] of blocks){
       for(let i=from;i<to;i++) for(let j=i+1;j<to;j++){
         const reversed=best.slice();reversed.splice(i,j-i+1,...reversed.slice(i,j+1).reverse());
-        const reverseCost=routeSequenceCost(reversed,matrix,startIndex,endIndex);
+        const reverseCost=cost(reversed);
         if(reverseCost+0.5<winnerCost){winner=reversed;winnerCost=reverseCost;}
         const swapped=best.slice();[swapped[i],swapped[j]]=[swapped[j],swapped[i]];
-        const swapCost=routeSequenceCost(swapped,matrix,startIndex,endIndex);
+        const swapCost=cost(swapped);
         if(swapCost+0.5<winnerCost){winner=swapped;winnerCost=swapCost;}
       }
       for(let i=from;i<to;i++) for(let j=from;j<to;j++){
         if(i===j) continue;
         const moved=best.slice(), [node]=moved.splice(i,1);moved.splice(j,0,node);
-        const movedCost=routeSequenceCost(moved,matrix,startIndex,endIndex);
+        const movedCost=cost(moved);
         if(movedCost+0.5<winnerCost){winner=moved;winnerCost=movedCost;}
       }
     }
@@ -4664,28 +4933,36 @@ function smartestRoadOrder(all,matrix,startIndex,endIndex,columns){
   });
   return pick(winner?.order||nodes.map(n=>n.index));
 }
-// Split the run at every unload stop and order each leg on its own, chaining
-// start -> leg -> yard -> leg -> ... -> end. Without this the optimiser would
-// move the drop-off to wherever it saved the most driving, which is the one
-// thing it must not do: the point of the yard trip is that it happens after a
-// particular batch of pickups, not at the tidiest moment.
+// A GMS unload keeps its place in the count - it still comes after the same
+// number of pickups, because that is when the trailer is full - but Optimise
+// is free to choose WHICH pickups go before it. Locking every pickup to its
+// side of the yard (the old way) meant a hand-arranged run with a GMS stop in
+// it barely moved when Woody pressed Optimise.
 function orderRunAroundUnloads(all,matrix,startIndex,endIndex){
   if(!all.some(isUnload)) return smartestRoadOrder(all,matrix,startIndex,endIndex);
-  const columnOf=new Map(all.map((stop,i)=>[stop.id,i+1]));
-  const legs=[[]], yards=[];
-  all.forEach(stop=>{
-    if(isUnload(stop)){ yards.push(stop); legs.push([]); }
-    else legs[legs.length-1].push(stop);
-  });
-  const ordered=[];
-  let from=startIndex;
-  legs.forEach((leg,i)=>{
-    const yard=yards[i]||null;                    // the drop-off this leg ends at, if any
-    const to=yard ? columnOf.get(yard.id) : endIndex;
-    if(leg.length) ordered.push(...smartestRoadOrder(leg,matrix,from,to,leg.map(s=>columnOf.get(s.id))));
-    if(yard){ ordered.push(yard); from=columnOf.get(yard.id); }
-  });
-  return ordered;
+  const columnOf=new Map(all.map((stop,i)=>[stop.id,i+1])), stopOf=new Map(all.map((stop,i)=>[i+1,stop]));
+  const pickups=all.filter(stop=>!isUnload(stop)), yards=[];
+  let seen=0;
+  all.forEach(stop=>{ if(isUnload(stop)) yards.push({column:columnOf.get(stop.id),after:seen}); else seen++; });
+  const withYards=order=>{
+    const out=[];let y=0;
+    while(y<yards.length&&yards[y].after===0) out.push(yards[y++].column);
+    order.forEach((column,i)=>{ out.push(column); while(y<yards.length&&yards[y].after===i+1) out.push(yards[y++].column); });
+    while(y<yards.length) out.push(yards[y++].column);
+    return out;
+  };
+  const costOf=order=>routeSequenceCost(withYards(order),matrix,startIndex,endIndex);
+  const columns=pickups.map(stop=>columnOf.get(stop.id));
+  const priorityCount=pickups.filter(stop=>stop.priority).length;
+  const priorityFirst=order=>order.slice(0,priorityCount).every(column=>stopOf.get(column).priority);
+  // Seeds: the best order ignoring the yard, and the order the run is in now.
+  const seeds=[smartestRoadOrder(pickups,matrix,startIndex,endIndex,columns).map(stop=>columnOf.get(stop.id)),columns].filter(priorityFirst);
+  let winner=null;
+  for(const seed of seeds){
+    const improved=improveRoadOrder(seed,priorityCount,matrix,startIndex,endIndex,costOf);
+    if(!winner||improved.cost<winner.cost) winner=improved;
+  }
+  return withYards(winner?winner.order:columns).map(column=>stopOf.get(column));
 }
 function setRouteOptimiseBusy(isBusy,message=""){
   routeOptimiseBusy=isBusy;
@@ -5134,6 +5411,7 @@ function renderList(){
   const nextId = (pending.find(s => s.lat!=null) || pending[0] || {}).id;
 
   let order = 0;
+  const payRows = ownerToken ? bookingsWithInvoiceState(directBookingRows) : [];
   const card = (s, isDone) => {
     if (!isDone && s.lat!=null) order++;
     const num = isDone ? "✓" : (s.lat!=null ? order : "!");
@@ -5165,7 +5443,9 @@ function renderList(){
       ? `<span class="asaptag" style="background:var(--warn);color:#16212a" title="This address has no street number">NO NUMBER</span>` : "";
     const unconfirmedAddress = !isDone && s.street && /\d/.test(s.street) && !s.geoLabel
       ? `<div class="addr" style="color:#ffd08a">⚠️ Exact map pin not confirmed — check the address before driving</div>` : "";
-    const invoicedTag = s.unpaidSourceId ? `<span class="asaptag" style="background:#c0392b">INVOICE SENT</span>` : "";
+    const money = stopMoneyState(s, payRows);
+    const invoicedTag = money?.paid ? `<span class="paid-chip">✅ PAID</span>`
+      : s.unpaidSourceId ? `<span class="asaptag" style="background:#c0392b">INVOICE SENT</span>` : "";
     const apps = (s.appliances||[]).map(a=>`<span class="chip">${esc(a)}</span>`).join("");
     const callFirst = /call|text|phone|ring|txt/i.test(s.additional_info||"");
     const formNote = s.additional_info ? `<div class="note${callFirst?' callfirst':''}">${callFirst?'📞':'📝'} ${esc(s.additional_info)}</div>` : "";
@@ -5219,6 +5499,7 @@ function renderList(){
         ${apps?`<div class="apps">${apps}</div>`:""}
         ${formNote}
         ${userNote}
+        ${isDone ? "" : stopMoneyBox(money)}
         ${btns}
       </div>
     </div>`;
@@ -7196,7 +7477,8 @@ function invoiceTwinsOf(s){
 // Bookings held the card in Owing after the receipt went out — it never reached
 // Done — and the auto-reminder carried on chasing them for money already paid.
 async function settleInvoiceTwins(s){
-  const twins=invoiceTwinsOf(s).filter(x=>!x.paid || x.reminderId);
+  // Paid is no longer done, so a paid copy still needs finishing by the receipt.
+  const twins=invoiceTwinsOf(s).filter(x=>!x.paid || !x.receiptSent || x.reminderId);
   if (!twins.length) return 0;
   for (const twin of twins){
     twin.paid=true;
@@ -7210,32 +7492,21 @@ async function settleInvoiceTwins(s){
   save();
   return twins.length;
 }
-// Paid up without a receipt: cancel any waiting auto-reminder and move the card
-// to Completed. Sending a receipt already does this on its own.
+// Paid up: cancel any waiting auto-reminder and record the money. The job keeps
+// its status - only sending the receipt after pickup marks it done.
 window.markPaid = async id => {
   const s = findStop(id); if(!s) return;
   if(programmePickup(s))return alert('This is billed through the spring clean organiser. Do not mark an individual household as paid.');
-  if (!confirm(`Mark ${fullName(s)||"this pickup"} as paid?`)) return;
-  await cancelReminderFor(s);
-  await settleAsPaid(s);
-  flash("✓ Marked paid.");
+  if (!await confirmPaid(`💰 Mark ${fullName(s)||"this pickup"} as paid?`)) return;
+  try{ await settleAsPaid(s); }
+  catch(error){ alert("Couldn't save the payment: "+(error.message||"try again.")); }
 };
-// Paid means the job is finished, so push it up as COMPLETED — that's what moves
-// it out of Owing and down into Done in Bookings.
-async function settleAsPaid(s){
-  const earningsBefore=window.nakiEarnings?.capture();
-  s.paid = true;
-  s.status = "DONE";
-  s.historyStatus = "COMPLETED";
-  s.collectedAt = s.collectedAt || Date.now();
-  save(); render(); renderDirectBookings();
-  if (s.src==="direct" && s.submission_id){
-    queueDirectCompletion(s.submission_id);
-    await flushDirectCompletions();
-  }else await syncExternalBooking(s);
-  renderDirectBookings();
-  if (ownerToken) await loadDirectBookings(false);
-  void window.nakiEarnings?.completed(earningsBefore);
+// Paid is money only. It used to push the job to COMPLETED as well, which put a
+// pickup nobody had collected yet into Done. Woody (20 Oct 2026): marking paid
+// leaves it New or Scheduled; the receipt after pickup is what marks it done.
+async function settleAsPaid(s, bank=null){
+  const booking=bookingsWithInvoiceState(directBookingRows).find(row=>row._unpaidStopId===s.id || stopBelongsToBooking(s,row)) || null;
+  await markInvoicePaid({booking, stop:s, bank});
 }
 // Take an entry off the unpaid ledger (cancels its auto-reminder too).
 window.removeUnpaid = async id => {
@@ -7457,68 +7728,37 @@ function mapsDirUrl(s){
                     : (isFinite(s.lat) && isFinite(s.lng) ? `${s.lat},${s.lng}` : "");
   return dest ? `https://www.google.com/maps/dir/?api=1&travelmode=driving&dir_action=navigate&destination=${dest}` : "";
 }
-let navRouteBusy=false;
-async function navigatePickup(s,isCurrent){
-  if(navRouteBusy)return false;
+// Navigate goes straight to Google Maps with no extra stops. Bertrand Road
+// Bridge only counts when the app plans the run order (Optimise / route
+// timings); Woody chooses the road himself once he is driving.
+function navigatePickup(s){
   if(!s)return false;
-  const url = mapsDirUrl(s); if (!url) return;
-  navRouteBusy=true;
-  const buttons=[...document.querySelectorAll('.nav-action')];
-  const labels=buttons.map(b=>b.textContent);
-  buttons.forEach(b=>{b.disabled=true;b.textContent='Checking safe route…';});
-  busy('Opening directions…');
-  try{
-    if(!navigator.geolocation)throw Error('Enable location to check a route avoiding Bertrand Road Bridge.');
-    // A fix from the last two minutes is plenty to tell whether the bridge is
-    // anywhere near this trip, and comes back instantly instead of waiting on GPS.
-    const position=await new Promise((resolve,reject)=>navigator.geolocation.getCurrentPosition(resolve,
-      ()=>reject(Error('Location is needed to check the bridge detour. Enable location and retry.')),
-      {enableHighAccuracy:true,timeout:10000,maximumAge:120000}));
-    const from={lat:position.coords.latitude,lng:position.coords.longitude};
-    let to=s;
-    if(!Number.isFinite(to.lat)||!Number.isFinite(to.lng))to=await geocode(navAddress(s));
-    if(!to)throw Error('Could not confirm this pickup location. Please check its address.');
-    // Nowhere near Bertrand Road Bridge: go straight to Maps, no route server wait.
-    const route=NakiRouting.mightCross(from,to)?await NakiRouting.safeRoute([from,to]):{detours:[]};
-    if(!isCurrent())throw Error('This pickup changed while checking. Please tap Navigate again.');
-    const target=new URL(url);
-    // Let Maps start from the phone's live position rather than treating the
-    // checked GPS sample as a fixed route-preview origin.
-    target.searchParams.delete('origin');
-    if(route.detours.length){
-      target.searchParams.set('waypoints',route.detours[0].via.map(p=>`${p.lat},${p.lng}`).join('|'));
-      // Keep the verified destination pin for the bridge-sensitive handoff.
-      target.searchParams.set('destination',`${to.lat},${to.lng}`);
-    }
-    return NakiMaps.open(target.href);
-  }catch(e){alert(e.message||NakiRouting.failure);return false;}
-  finally{
-    navRouteBusy=false;busy('');
-    buttons.forEach((b,i)=>{b.disabled=false;b.textContent=labels[i];});
-  }
+  const url=mapsDirUrl(s);
+  if(!url){alert('This pickup has no address to navigate to. Please check its address.');return false;}
+  return NakiMaps.open(url);
 }
 window.navStop = id => {
   const stop=findStop(id);
-  return navigatePickup(stop,()=>findStop(id)===stop);
+  if (stop) { try{ autoCheckPaymentFor(stopMoneyState(stop, bookingsWithInvoiceState(directBookingRows))?.row); }catch(e){} }
+  return navigatePickup(stop);
 };
 function contactNavStop(row){
-  return {id:row.id,street:row.streetAddress,town:row.town,area:row.area,geoLabel:bookingNavAddress(row)};
+  const stop={id:row.id,street:row.streetAddress,town:row.town,area:row.area,geoLabel:bookingNavAddress(row)};
+  // A booking already on a run has the same confirmed map pin the Scheduled card
+  // uses. Borrow it (only while the street still matches) so no lookup is needed.
+  const twin=allRunStates().flatMap(data=>(data.stops||[]).concat(data.bad||[])).concat(state.unpaid||[])
+    .find(x=>stopBelongsToBooking(x,row)&&Number.isFinite(x.lat)&&Number.isFinite(x.lng)&&normKey(x.street||"")===normKey(row.streetAddress||""));
+  if(twin){stop.lat=twin.lat;stop.lng=twin.lng;}
+  return stop;
 }
 window.navBooking = id => {
   const booking=directBookingRows.find(b=>String(b.id)===String(id));if(!booking)return false;
-  const address=bookingNavAddress(booking);
-  return navigatePickup(contactNavStop(booking),()=>{
-    const current=directBookingRows.find(b=>String(b.id)===String(id));
-    return !!current&&bookingNavAddress(current)===address;
-  });
+  try{ autoCheckPaymentFor(bookingCardRow(booking.id)); }catch(e){}
+  return navigatePickup(contactNavStop(booking));
 };
 window.navCustomer = id => {
   const customer=customerRows.find(c=>String(c.id)===String(id));if(!customer)return false;
-  const address=bookingNavAddress(customer);
-  return navigatePickup(contactNavStop(customer),()=>{
-    const current=customerRows.find(c=>String(c.id)===String(id));
-    return !!current&&bookingNavAddress(current)===address;
-  });
+  return navigatePickup(contactNavStop(customer));
 };
 // Stops saved before this check existed carry no confirmed address, so the card
 // couldn't show where Navigate would really take Woody. Fill them in quietly.

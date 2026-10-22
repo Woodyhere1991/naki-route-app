@@ -126,3 +126,45 @@ One pre-existing failure is expected and unrelated: `voice-assistant.test.mjs`
 ("the session is built with GPT-Live…") fails because `text_booking_link` is in
 the implementation but not the test's expected tool list. It is not caused by
 booking work. Do not "fix" it by deleting the tool.
+
+## Check payment (bank look-up)
+
+`🏦 Check payment` on an owing booking calls `POST /owner/payment-check`
+(`worker/src/bank-payments.js`). The Worker reads the ANZ "Business Current
+Account" through Akahu, cleared **and pending** (same-day payments only show as
+pending), from 14 days before the invoice. It matches the invoice amount plus the
+customer's name or street number + street name, shows split payments and other
+amounts, and ignores Woody's own transfers. It never marks anything paid: the
+result's button opens the usual receipt. Owner sign-in only; bot keys get 403.
+Secrets `AKAHU_APP_TOKEN` / `AKAHU_USER_TOKEN` are Worker secrets (set 20 Oct 2026
+from `OneDrive\Desktop\bank managment\akahu.env`); never put them in code or the app.
+
+## Paid is not done (20 Oct 2026, Woody's rule)
+
+"Mark paid" records money only. It never sets COMPLETED/DONE and never sends a receipt;
+the booking stays New or Scheduled and shows a green PAID tag. Sending the receipt after
+pickup is the step that marks it done. Server record: `POST /owner/payments` (owner only)
+writes the invoice id to R2 `owner-analytics/invoice-payments-v1.json`
+(`worker/src/invoice-payments.js`); `paidDocuments()` then treats that invoice as not
+owing in Bookings, the customer page and Earnings. A later invoice is owing again.
+On the phone, a paid-but-unreceipted ledger stop keeps its card until the receipt goes out.
+Tapping Navigate on a stop with an owing invoice runs the bank check in the background
+(not again within 10 minutes or once a payment is found) and the stop card shows the result.
+
+## Navigate speed and the Bertrand Road Bridge check (21 Oct 2026)
+
+- `NakiRouting.mightCross` now skips the route-server bridge check when both ends are on the
+  same bank of the Waitara River (`riverBank()`, river line from OpenStreetMap relation 12336327,
+  simplified to 50 m). Near the river (500 m), east of the upper river, or opposite banks: the
+  full check still runs. On real customer trips the check now runs on about 12% of trips, down
+  from 63%. Validated: 250 same-bank OSRM routes, none used the bridge; every bridge route found
+  (5) is still checked. Re-validate if the river line or the bridge location ever changes.
+- Opening a booking card warms Navigate (address lookup, GPS fix, bridge check) so the tap is quick.
+- Mark paid and the receipt shortcut from a bank match ask first in the app's own Yes/Cancel box.
+
+## Cancelled, rebooked and deleted bookings (21 Oct 2026)
+
+- Cancelled and declined bookings have their own **Cancelled** tab in Bookings; they no longer count under Done. **Restore** calls `POST /owner/bookings/:id/restore` (back to New, no day, cancel reason and time cleared).
+- Customers see a **Cancelled pickups** list on their account with **Rebook this pickup** (`POST /customer/bookings/:id/rebook`, Woody is emailed) and **Remove from my list** (`POST /customer/bookings/:id/remove`). Remove only hides it from that customer (KV `custhide:<customerId>`); Woody keeps the record.
+- Owner **Delete** now copies the booking, its events, documents and owner note to R2 `deleted-bookings/<id>.json` *before* deleting the rows. If that copy fails, nothing is deleted. Photos and PDFs are kept. **Deleted bookings** (bottom of Bookings) lists and restores them. The daily cron (`emptyBin`) removes entries older than 30 days together with their photos and PDFs.
+- All of this is in `worker/src/booking-recovery.js`; no schema change. Tests: `worker/tests/booking-recovery.test.mjs`, `tests/cancelled-deleted-browser.cjs`, `customer-site/tests/cancelled-rebook-browser.cjs`.

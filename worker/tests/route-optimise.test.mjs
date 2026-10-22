@@ -46,15 +46,33 @@ test("a crossed Taranaki run is uncrossed, north towns before Hawera", () => {
   assert.equal(best.join(","), "bell,waitara,hawera");
 });
 
-test("a GMS unload stays where Woody put it, and only that leg is reordered", () => {
+test("a GMS unload still comes after the same number of pickups, but pickups can move across it", () => {
+  // Hand-arranged Hawera, Waitara, GMS, Bell Block: Bell Block belongs before the
+  // yard and Hawera after it. The old optimiser could never swap them.
   const all = [hawera, waitara, yard, bell];
   const matrix = context.routeMatrixFallback([inglewood, ...all]);
   const best = context.orderRunAroundUnloads(all, matrix, 0, null).map(s => s.id);
   assert.equal(best[2], "gms");
-  assert.equal([...best.slice(0, 2)].sort().join(","), "hawera,waitara");
-  assert.equal(best[3], "bell");
-  assert.ok(best.indexOf("waitara") < best.indexOf("gms"));
-  assert.ok(best.indexOf("hawera") < best.indexOf("gms"));
+  assert.equal(best.length, 4);
+  assert.equal(best[3], "hawera");
+  const cost = order => context.routeSequenceCost(order.map(id => all.findIndex(s => s.id === id) + 1), matrix, 0, null);
+  assert.ok(cost(best) < cost(all.map(s => s.id)), "the optimised run is shorter than the hand-arranged one");
+});
+
+test("ASAP stops still go first when a GMS unload is in the run", () => {
+  const urgentHawera = { ...hawera, priority: true };
+  const all = [waitara, bell, yard, urgentHawera];
+  const matrix = context.routeMatrixFallback([inglewood, ...all]);
+  const best = context.orderRunAroundUnloads(all, matrix, 0, null).map(s => s.id);
+  assert.equal(best[0], "hawera");
+  assert.equal(best[2], "gms");
+});
+
+test("GMS at the very start or end of a run stays there", () => {
+  const first = context.orderRunAroundUnloads([yard, hawera, waitara], context.routeMatrixFallback([inglewood, yard, hawera, waitara]), 0, null).map(s => s.id);
+  assert.equal(first[0], "gms");
+  const last = context.orderRunAroundUnloads([hawera, waitara, yard], context.routeMatrixFallback([inglewood, hawera, waitara, yard]), 0, null).map(s => s.id);
+  assert.equal(last[2], "gms");
 });
 
 test("a later lookup cannot drag a Taranaki pin to another city's street of the same name", () => {

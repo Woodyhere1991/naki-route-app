@@ -48,3 +48,23 @@ test('other messages and unconfigured deployments preserve existing delivery', a
   assert.equal(await h.send({}, msg), true);
   assert.deepEqual(h.calls, ['gmail', 'gmail', 'gmail']);
 });
+
+test('iCloud, me.com and mac.com codes go by Gmail, falling back to the business sender', async () => {
+  for (const to of ['someone@icloud.com', 'Someone@ME.com ', 'a@mac.com']) {
+    const h = mailHarness();
+    assert.equal(await h.send(env, { ...msg, to }), true);
+    assert.deepEqual(h.calls, ['gmail']);
+  }
+  const h = mailHarness();
+  h.calls.length = 0;
+  const failing = { loginSender, sendGmail: async () => { h.calls.push('gmail'); return false; },
+    fetch: async (url, options) => { h.calls.push({ url, payload: JSON.parse(options.body) }); return { ok: true }; } };
+  vm.runInNewContext(source.slice(start, end), failing);
+  assert.equal(await failing.sendMail(env, { ...msg, to: 'someone@icloud.com' }), true);
+  assert.equal(h.calls[0], 'gmail');
+  assert.equal(h.calls[1].payload.sender.email, env.AUTH_EMAIL_FROM);
+  // Look-alike domains are not Apple.
+  const other = mailHarness();
+  assert.equal(await other.send(env, { ...msg, to: 'x@noticloud.com' }), true);
+  assert.equal(other.calls[0].payload.sender.email, env.AUTH_EMAIL_FROM);
+});
