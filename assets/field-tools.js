@@ -188,7 +188,6 @@ async function loadRunWeather(force=false) {
 }
 
 function fieldBoot() {
-  document.getElementById('bookingLoadMore').onclick=()=>loadDirectBookings(true,true);
   document.getElementById('fieldSave')?.addEventListener('click',()=>{if(!ownerToken)setAppView('bookings');else retryFieldSync();});
   window.addEventListener('online',()=>{retryFieldSync();refreshOwnerData();refreshWeather(true);});
   window.addEventListener('offline',()=>{paintCloudState('Saved on phone · offline, waiting to sync',true);renderWeather();});
@@ -201,6 +200,21 @@ function fieldBoot() {
 
 const ownerPages={};
 let ownerSearchTimer;
+// Bookings are paged on the server (300 at a time). Follow every page here so
+// the list cannot hide the rest behind a button.
+async function loadAllBookings(search) {
+  const rows=new Map();
+  let offset=0,page;
+  for(;;){
+    page=await ownerApi(`/owner/bookings?q=${encodeURIComponent(search)}&offset=${offset}`);
+    if(!Array.isArray(page.bookings)) throw Error('Could not load bookings. Please refresh.');
+    for(const row of page.bookings) rows.set(row.id,row);
+    if(!page.hasMore) return {...page,bookings:[...rows.values()],hasMore:false};
+    const next=Number(page.nextOffset);
+    if(!Number.isSafeInteger(next)||next<=offset||next>100000) throw Error('Could not load all bookings. Please refresh.');
+    offset=next;
+  }
+}
 function queueOwnerSearch(kind) {
   clearTimeout(ownerSearchTimer);
   ownerSearchTimer=setTimeout(()=>kind==='bookings'?loadDirectBookings(true):loadCustomers(true),400);
@@ -210,7 +224,7 @@ async function loadOwnerCollection(kind,search,more=false) {
   let page=ownerPages[kind];
   if(!page||page.search!==search) page=ownerPages[kind]={search,rows:[],nextOffset:0,hasMore:false,version:0};
   const version=++page.version,offset=more?page.nextOffset:0;
-  button.disabled=true;
+  if(button) button.disabled=true;
   try {
     const data=await ownerApi(`/owner/${kind}?q=${encodeURIComponent(search)}&offset=${offset}`);
     if(ownerPages[kind]!==page||version!==page.version) throw Error('Search updated — loading the latest results.');
@@ -221,11 +235,11 @@ async function loadOwnerCollection(kind,search,more=false) {
     (data[kind]||[]).forEach(r=>rows.set(r.id,r));page.rows=[...rows.values()];
     if(offset===0)page.firstIds=new Set((data[kind]||[]).map(r=>r.id));
     if(offset===0&&!more&&page.nextOffset<=(data.pageSize||100) || more) {page.nextOffset=data.nextOffset||page.rows.length;page.hasMore=Boolean(data.hasMore);}
-    button.hidden=!page.hasMore;
+    if(button) button.hidden=!page.hasMore;
     const hint=document.getElementById(kind==='bookings'?'bookingPageHint':'customerPageHint');
     if(hint)hint.hidden=!page.hasMore;
     return {...data,[kind]:page.rows};
-  } finally {button.disabled=false;}
+  } finally {if(button) button.disabled=false;}
 }
 
 // Customer totals and local word-by-word search need the complete directory.

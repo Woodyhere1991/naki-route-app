@@ -48,9 +48,13 @@ export async function handleApiKeys({request, env, path, json}) {
     return json(request, {keys: rows.results.map(publicKey)});
   }
   if (path === '/owner/api-keys/activity' && request.method === 'GET') {
+    const url = new URL(request.url);
+    const offset = Math.max(0, Math.min(100000, parseInt(url.searchParams.get('offset'), 10) || 0));
+    const limit = 100;
     const rows = await db.prepare(`SELECT r.method,r.path,r.status,r.created_at AS createdAt,k.name AS keyName
-      FROM bot_api_requests r JOIN bot_api_keys k ON k.id=r.key_id ORDER BY r.created_at DESC LIMIT 50`).all();
-    return json(request, {activity: rows.results});
+      FROM bot_api_requests r JOIN bot_api_keys k ON k.id=r.key_id ORDER BY r.created_at DESC, r.id DESC LIMIT ?1 OFFSET ?2`).bind(limit + 1, offset).all();
+    const activity = (rows.results || []).slice(0, limit);
+    return json(request, {activity, hasMore: (rows.results || []).length > limit, nextOffset: offset + activity.length, pageSize: limit});
   }
   if (path === '/owner/api-keys' && request.method === 'POST') {
     let body;
