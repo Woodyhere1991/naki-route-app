@@ -168,7 +168,7 @@ test('atomic version predicate stops a change made between read and update',asyn
 test('runs expose only run data, and expired replay bodies never allow duplicate execution',async t=>{
   const {state,api,env,db}=await setup(t);
   state.saved={savedAt:123,data:{naki_owner_token_v1:'never-return',naki_pickup_runs_v1:JSON.stringify({runs:[{id:'run-1',name:'Tuesday',state:{stops:[{name:'Example',historySyncToken:'never-return',profileInviteUrl:'never-return'}]}}],shared:{secret:'excluded'}})}};
-  const runs=await(await api('/runs')).json();assert.equal(runs.savedAt,123);assert.deepEqual(runs.runs,[{id:'run-1',name:'Tuesday',state:{stops:[{name:'Example'}]}}]);assert.ok(!JSON.stringify(runs).includes('never-return'));
+  const response=await api('/runs');const runs=await response.json();assert.equal(response.headers.get('ETag'),'"123"');assert.equal(runs.readOnly,false);assert.equal(runs.savedAt,123);assert.deepEqual(runs.runs,[{id:'run-1',name:'Tuesday',state:{stops:[{name:'Example'}]}}]);assert.ok(!JSON.stringify(runs).includes('never-return'));
   await api('/bookings','POST',sample,{'Idempotency-Key':'old-response'});
   db.prepare('UPDATE bot_api_requests SET created_at=0').run();await purgeApiRequests(env);
   assert.equal((await api('/bookings','POST',sample,{'Idempotency-Key':'old-response'})).status,409);

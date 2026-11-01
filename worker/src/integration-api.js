@@ -1,7 +1,11 @@
-import { readRunBackup } from "./run-backup.js";
 import {apiBody, apiDigest} from './api-keys.js';
 import {handlePortalRequest, bookingFrom, profileFrom, ITEM_PRICES, LEGACY_ITEMS, RURAL_PRICES, OWNER_EMAIL} from './customer.js';
+import {ownerNotesFor} from './owner-booking-notes.js';
+import {earningsReport} from './earnings.js';
+import {listBin, BIN_DAYS} from './booking-recovery.js';
+import {readRunBackup} from './run-backup.js';
 import {apiSchema} from './integration-schema.js';
+import {presentRuns, presentContacts, previewMessages, sendMessages, mutateRuns, mutateContacts, deleteBooking, restoreBooking, restoreDeleted, saveOwnerNote, activityPage} from './integration-runs.js';
 
 const BASE = '/api/v1';
 const statuses = ['NEW', 'ADDED_TO_RUN', 'CONTACTED', 'CONFIRMED', 'COMPLETED', 'DECLINED', 'CANCELLED'];
@@ -20,15 +24,6 @@ const etag = row => '"' + row.updated_at + '"';
 function bookingTable(id) { return id.startsWith('JOTFORM-') ? 'jotform_bookings' : id.startsWith('PICKUP-') ? 'external_bookings' : 'bookings'; }
 function bookingView(row) {
   return {...bookingFrom({...row, booking_source: row.id.startsWith('JOTFORM-') ? 'JOTFORM' : row.id.startsWith('PICKUP-') ? 'PICKUP_RUN' : 'WEBSITE'}), updatedAt: row.updated_at};
-}
-function safeRunCopy(value) {
-  if (Array.isArray(value)) return value.map(safeRunCopy);
-  if (!value || typeof value !== 'object') return value;
-  // Run stops contain historySyncToken/profileInviteUrl credentials. A read-only
-  // bot must never receive a token it could use to write through another route.
-  return Object.fromEntries(Object.entries(value)
-    .filter(([name]) => !/token|secret|password|authorization|inviteurl|apikey|credential/i.test(name))
-    .map(([name, child]) => [name, safeRunCopy(child)]));
 }
 function validate(body, fields) {
   if (!Object.keys(body).length) fail('Provide at least one field to change.');
@@ -88,6 +83,37 @@ async function writeOnce(request, env, key, path, body, run) {
   return response;
 }
 
+function runWrite(path, method) {
+  if (method === 'POST' && path === '/runs') return {kind: 'create-run'};
+  const patterns = [
+    ['/^\\/runs\\/([A-Za-z0-9_.:-]{1,120})$/', 'PATCH', 'patch-run', false],
+    ['/^\\/runs\\/([A-Za-z0-9_.:-]{1,120})\\/delete$/', 'POST', 'delete-run', true],
+    ['/^\\/runs\\/([A-Za-z0-9_.:-]{1,120})\\/merge$/', 'POST', 'merge', true],
+    ['/^\\/runs\\/([A-Za-z0-9_.:-]{1,120})\\/return-bookings$/', 'POST', 'return', true],
+    ['/^\\/runs\\/([A-Za-z0-9_.:-]{1,120})\\/clear-completed$/', 'POST', 'clear-completed', true],
+    ['/^\\/runs\\/([A-Za-z0-9_.:-]{1,120})\\/stops$/', 'POST', 'add-stop', false],
+    ['/^\\/runs\\/([A-Za-z0-9_.:-]{1,120})\\/stops\\/reorder$/', 'POST', 'reorder', false],
+    ['/^\\/runs\\/([A-Za-z0-9_.:-]{1,120})\\/stops\\/([A-Za-z0-9_.:-]{1,120})$/', 'PATCH', 'patch-stop', false],
+    ['/^\\/runs\\/([A-Za-z0-9_.:-]{1,120})\\/stops\\/([A-Za-z0-9_.:-]{1,120})\\/move$/', 'POST', 'move', false],
+    ['/^\\/runs\\/([A-Za-z0-9_.:-]{1,120})\\/stops\\/([A-Za-z0-9_.:-]{1,120})\\/done$/', 'POST', 'done', false],
+    ['/^\\/runs\\/([A-Za-z0-9_.:-]{1,120})\\/stops\\/([A-Za-z0-9_.:-]{1,120})\\/remove$/', 'POST', 'remove', true]
+  ];
+  for (const [source, verb, kind, confirm] of patterns) {
+    if (method !== verb) continue;
+    const found = path.match(new RegExp(source.slice(1, -1)));
+    if (found) return {kind, confirm, runId: found[1], stopId: found[2]};
+  }
+  return null;
+}
+function contactWrite(path, method) {
+  if (method === 'POST' && path === '/contacts') return {kind: 'create-contact'};
+  const found = path.match(/^\/contacts\/(CONTACT-[A-Za-z0-9-]{1,80})(\/delete)?$/);
+  if (!found) return null;
+  if (found[2] && method === 'POST') return {kind: 'delete-contact', confirm: true, contactId: found[1]};
+  if (!found[2] && method === 'PATCH') return {kind: 'patch-contact', contactId: found[1]};
+  return null;
+}
+
 export async function handleIntegrationApi(request, environment, {sendMail = null} = {}) {
   try {
     const url = new URL(request.url), path = url.pathname.slice(BASE.length);
@@ -121,17 +147,47 @@ export async function handleIntegrationApi(request, environment, {sendMail = nul
         const table = kind === 'bookings' ? bookingTable(id) : 'customers';
         const row = await env.CUSTOMER_DB.prepare(`SELECT * FROM ${table} WHERE id=?1`).bind(id).first();
         if (!row) fail('Record not found.', 404);
-        return reply({[kind === 'bookings' ? 'booking' : 'customer']: kind === 'bookings' ? bookingView(row) : {id: row.id, ...profileFrom(row), updatedAt: row.updated_at}}, 200, {ETag: etag(row)});
+        const notes = kind === 'bookings' ? await ownerNotesFor(env.CUSTOMER_DB, [id]) : null;
+        const record = kind === 'bookings' ? {...bookingView(row), ownerNote: notes.get(id) || ''} : {id: row.id, ...profileFrom(row), updatedAt: row.updated_at};
+        return reply({[kind === 'bookings' ? 'booking' : 'customer']: record}, 200, {ETag: etag(row)});
       }
-      if (path === '/runs') {
-        const saved = await readRunBackup(env, 'backup:' + OWNER_EMAIL);
-        let store = {};
-        if (saved?.data?.naki_pickup_runs_v1) {
-          try { store = JSON.parse(saved.data.naki_pickup_runs_v1); } catch { fail('The saved run copy could not be read.', 503); }
-        }
-        return reply({savedAt: saved?.savedAt || null, source: 'Last account backup; unsynced phone changes are not included.', readOnly: true, runs: safeRunCopy(store.runs || [])});
+      if (path === '/runs' || /^\/runs\/[A-Za-z0-9_.:-]{1,120}(?:\/stops\/[A-Za-z0-9_.:-]{1,120})?$/.test(path)) {
+        const presented = await presentRuns(env, url, path);
+        return reply(presented.body, 200, presented.headers);
       }
+      if (path === '/contacts') { const presented = await presentContacts(env); return reply(presented.body, 200, presented.headers); }
+      if (path === '/activity') return reply(await activityPage(env, url, key));
+      if (path === '/earnings') return reply(await earningsReport(env, await readRunBackup(env, 'backup:' + OWNER_EMAIL)));
+      if (path === '/dropoffs' || path === '/insights') return portal('/owner' + path);
+      if (path === '/deleted-bookings') return reply({bookings: await listBin(env), days: BIN_DAYS});
+      const photos = path.match(/^\/bookings\/([A-Za-z0-9_-]{1,120})\/photos$/);
+      if (photos) return portal('/owner/bookings/' + photos[1] + '/photos');
+      const document = path.match(/^\/documents\/([A-Za-z0-9_-]{1,120})$/);
+      if (document) return portal('/owner/documents/' + document[1] + '/pdf');
       fail('Endpoint not found. See /api/v1/openapi.json.', 404);
+    }
+    const runAction = runWrite(path, request.method);
+    const contactAction = contactWrite(path, request.method);
+    const noted = (request.method === 'PUT' || request.method === 'POST') && path.match(/^\/bookings\/([A-Za-z0-9_-]{1,120})\/note$/);
+    const restoring = request.method === 'POST' && path.match(/^\/bookings\/([A-Za-z0-9_-]{1,120})\/restore$/);
+    const deleting = request.method === 'POST' && path.match(/^\/bookings\/([A-Za-z0-9_-]{1,120})\/delete$/);
+    const restoringBin = request.method === 'POST' && path.match(/^\/deleted-bookings\/([A-Za-z0-9_-]{1,120})\/restore$/);
+    const sending = request.method === 'POST' && path === '/messages/send';
+    if (request.method === 'POST' && path === '/messages/preview') return reply(await previewMessages(env, await apiBody(request)));
+    if (runAction || contactAction || noted || restoring || deleting || restoringBin || sending) {
+      const body = await apiBody(request);
+      const needsConfirm = sending || deleting || restoring || restoringBin || runAction?.confirm || contactAction?.confirm;
+      if (needsConfirm && body.confirm !== true) fail('This change requires {"confirm":true}. Nothing was changed.', 400);
+      return await writeOnce(request, env, key, path, body, async () => {
+        const result = sending ? await sendMessages(env, request, portal, sendMail, body)
+          : runAction ? await mutateRuns(env, request, portal, runAction, body)
+          : contactAction ? await mutateContacts(env, request, contactAction, body)
+          : noted ? await saveOwnerNote(env, request, noted[1], body)
+          : restoring ? await restoreBooking(env, request, restoring[1])
+          : deleting ? await deleteBooking(env, request, deleting[1])
+          : await restoreDeleted(env, request, restoringBin[1]);
+        return reply(result, 200, result?.etag ? {ETag: result.etag} : {});
+      });
     }
     const creating = request.method === 'POST' && path === '/bookings';
     const patching = request.method === 'PATCH' && match;

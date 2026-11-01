@@ -4181,7 +4181,7 @@ export async function handlePortalRequest({ request, env, path, json, sendMail, 
 
 // Exported only for the focused permission-policy test; the Worker routes
 // above remain the public API.
-export { arcadeContactAllowed, directChatAllowed, handleJotformSubmission, jotformAddress, bookingFrom, profileFrom };
+export { arcadeContactAllowed, directChatAllowed, handleJotformSubmission, jotformAddress, bookingFrom, profileFrom, pickupConfirmationText, pickupDateText };
 
 async function ownerListPage(request, env, query, kind) {
   const url=new URL(request.url), search=clean(url.searchParams.get("q"),120).toLowerCase();

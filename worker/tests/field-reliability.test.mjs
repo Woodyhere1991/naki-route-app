@@ -123,6 +123,35 @@ test('server search finds an old booking and its paperwork beyond the old list l
 });
 
 
+test('bookings load every page and the load-more button is gone',async()=>{
+  assert.equal(html.includes('Load more bookings'),false);
+  assert.equal(html.includes('loadAllBookings(bookingSearchText)'),true);
+  let seen=0;
+  const context={ownerApi:async path=>{
+    const offset=Number(new URL('https://local.invalid'+path).searchParams.get('offset'));
+    assert.equal(offset,seen);
+    if(offset===0){seen=300;return {bookings:[{id:'a'}],hasMore:true,nextOffset:300,invoiceClearance:{stopIds:[]}};}
+    return {bookings:[{id:'b'}],hasMore:false,nextOffset:301,invoiceClearance:{stopIds:['kept']}};
+  }};
+  vm.runInNewContext(section(helpers,'async function loadAllBookings(','function queueOwnerSearch'),context);
+  const data=await context.loadAllBookings('archive');
+  assert.deepEqual(Array.from(data.bookings, row => row.id), ['a','b']);
+  assert.equal(data.hasMore,false);
+  assert.deepEqual(data.invoiceClearance.stopIds,['kept']);
+});
+
+test('an open phone pulls the account runs before it refreshes bookings',async()=>{
+  const order=[];
+  const context={ownerToken:'yes',ownerRefreshBusy:false,bulkSendBusy:false,runChangeBusy:false,importBusy:false,cloudBackupBusy:false,ownerBookingsAt:0,ownerCustomersAt:Date.now(),
+    document:{visibilityState:'visible',activeElement:null,body:{dataset:{view:'bookings'}},getElementById:()=>null,querySelector:()=>null},navigator:{onLine:true},
+    syncFromCloud:async()=>{order.push('sync');return false;},loadDirectBookings:async()=>{order.push('bookings');},loadCustomers:async()=>{order.push('customers');}};
+  vm.runInNewContext(section(html,'async function refreshOwnerData(){','function setFileStatus'),context);
+  await context.refreshOwnerData();
+  assert.deepEqual(order,['sync','bookings']);
+  order.length=0;context.syncFromCloud=async()=>true;await context.refreshOwnerData();
+  assert.deepEqual(order,[]);
+});
+
 test('refresh replaces removed rows without losing older loaded pages',async()=>{
   let reply={bookings:[{id:'a'},{id:'b'}],pageSize:2,nextOffset:2,hasMore:true};
   const button={};const context={document:{getElementById:()=>button},setTimeout,clearTimeout,ownerApi:async()=>reply};

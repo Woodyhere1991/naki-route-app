@@ -90,6 +90,7 @@ function summary(snapshot) {
     id: row.id, status: row.status || "", firstName: row.first_name || "", lastName: row.last_name || "",
     streetAddress: row.street_address || "", town: row.town || "", items,
     pickupDate: row.pickup_date || "",
+    updatedAt: row.updated_at || 0,
     deletedAt: new Date(snapshot.deletedAt).toISOString(),
     emptiesAt: new Date(snapshot.deletedAt + BIN_DAYS * DAY).toISOString()
   };
@@ -122,9 +123,12 @@ function insertFor(env, table, columns, row, orIgnore = false) {
   return env.CUSTOMER_DB.prepare(`INSERT ${orIgnore ? "OR IGNORE " : ""}INTO ${table} (${names.join(", ")}) VALUES (${marks})`)
     .bind(...names.map(name => row[name] ?? null));
 }
-export async function restoreFromBin(env, id) {
+export async function restoreFromBin(env, id, expectedUpdatedAt = null) {
   const snapshot = await readBin(env, id);
   if (!snapshot) return { error: "That booking is no longer in the Deleted bin.", status: 404 };
+  if (expectedUpdatedAt != null && String(snapshot.row.updated_at || 0) !== String(expectedUpdatedAt)) {
+    return { error: "This deleted booking changed. Read it again.", status: 412 };
+  }
   const table = snapshot.table;
   const clash = await env.CUSTOMER_DB.prepare(`SELECT id FROM ${table} WHERE id=?1`).bind(id).first();
   if (clash) return { error: "A booking with this ID is already in Bookings.", status: 409 };
