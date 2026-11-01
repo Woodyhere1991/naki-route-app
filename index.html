@@ -8137,13 +8137,17 @@ const SYNC_KEY="naki_cloud_sync_v1";
 // Fingerprints of saves this phone sent but never heard back about. Private to
 // this phone for the same reason as SYNC_KEY.
 const CLOUD_ATTEMPTS_KEY="naki_cloud_attempts_v1";
+// Screen settings and drafts belong to this phone only. Syncing them made a tap
+// on a town group count as "unsynced work", which paused every pull from the
+// account, so bot edits never arrived.
+const LOCAL_ONLY_KEYS=new Set(["naki_booking_group_open_v1","naki_customer_group_open_v1","naki_booking_compact_v1","naki_customer_compact_v1","naki_booking_stage_v1","naki_booking_note_drafts_v1","naki_gms_notice_v1"]);
 function nakiStorageKeys(){
   // The geocode cache is deliberately excluded. It is a derived cache that can be
   // rebuilt by looking the address up again, and it grows with every address ever
   // searched. Including it meant the cloud backup crept towards the server's 4 MB
   // limit, and past it every save was refused — so the account copy silently
   // stopped updating while the app only ever said "waiting to sync".
-  return Object.keys(localStorage).filter(key=>key.startsWith("naki_") && !key.startsWith("naki_action_") && key!=="naki_weather_cache_v1" && key!==GEO && key!==OWNER_TOKEN_KEY && key!==SYNC_KEY && key!==CLOUD_ATTEMPTS_KEY && key!=="naki_pre_pull_snapshot_v1" && !key.startsWith("naki_recovery_"));
+  return Object.keys(localStorage).filter(key=>key.startsWith("naki_") && !key.startsWith("naki_action_") && key!=="naki_weather_cache_v1" && key!==GEO && key!==OWNER_TOKEN_KEY && key!==SYNC_KEY && key!==CLOUD_ATTEMPTS_KEY && key!=="naki_pre_pull_snapshot_v1" && !LOCAL_ONLY_KEYS.has(key) && !key.startsWith("naki_recovery_"));
 }
 $("#backupSave").onclick=()=>{
   try{
@@ -8268,7 +8272,12 @@ async function pushCloudBackup(quiet=true){
     // failure. Say what is actually wrong.
     if (/newer runs/i.test(e.message||"") && await adoptLostCloudSave().catch(()=>false)){
       adopted=true;                                   // it was ours - save again on top of it
-    }else if (/newer runs|needs refreshing/i.test(e.message||"")){
+    }else if (/newer runs/i.test(e.message||"")){
+      // The account moved on (a bot edit, say). The server refused to overwrite it;
+      // merge its changes in, then save on top.
+      paintCloudState("Bringing in newer changes from your account…",true);
+      setTimeout(()=>syncFromCloud(true),0);
+    }else if (/needs refreshing/i.test(e.message||"")){
       paintCloudState(e.message,true);
       backupStatus(e.message,true);
     }else if (/too big/i.test(e.message||"")){
@@ -8336,11 +8345,55 @@ window.restorePrePullSnapshot = () => {
 async function applyCloudBackup(saved){
   // Snapshot first, so an automatic pull can always be undone.
   snapshotBeforePull();
-  Object.entries(saved.data||{}).forEach(([key,value])=>{ if (typeof value==="string" && key!==PRE_PULL_KEY && key!==SYNC_KEY && key!==OWNER_TOKEN_KEY && !key.startsWith("naki_recovery_")) localStorage.setItem(key,value); });
+  Object.entries(saved.data||{}).forEach(([key,value])=>{ if (typeof value==="string" && key!==PRE_PULL_KEY && key!==SYNC_KEY && key!==OWNER_TOKEN_KEY && !LOCAL_ONLY_KEYS.has(key) && !key.startsWith("naki_recovery_")) localStorage.setItem(key,value); });
   // Stamped from what actually landed, so the next check sees a settled phone.
   setSyncMark(saved.savedAt, JSON.stringify(backupPayload()));
   backupStatus("Brought your runs down from your account. Reloading…");
   setTimeout(()=>location.reload(), 700);
+}
+/* Both this phone and the account moved on (for example the bot added stops
+   while this phone edited another run). Merge per run against the copy we last
+   agreed on: a run only the account changed comes down, a run only this phone
+   changed stays, new runs from either side are kept. If the same run changed on
+   both sides the phone's version stays and the account's is kept as a copy. */
+function mergeRunStores(base, local, server, stamp){
+  const same=(a,b)=>JSON.stringify(a)===JSON.stringify(b);
+  const byId=store=>new Map(((store&&store.runs)||[]).map(run=>[run.id,run]));
+  const B=byId(base), L=byId(local), S=byId(server);
+  const runs=[], conflicts=[];
+  for (const id of [...L.keys(), ...[...S.keys()].filter(id=>!L.has(id))]){
+    const b=B.get(id), l=L.get(id), s=S.get(id);
+    if (same(l,b)){ if (s) runs.push(s); continue; }          // phone untouched: account wins
+    if (same(s,b) || same(l,s)){ if (l) runs.push(l); continue; } // only the phone changed it
+    if (!l){ runs.push(s); continue; }                          // phone removed it, account edited it: keep it
+    runs.push(l);
+    if (s){
+      runs.push({...s, id:`${s.id}-account-${stamp}`, name:`${s.name||"Run"} (account copy)`});
+      conflicts.push(l.name||id);
+    }
+  }
+  const store={...(server||{}), ...(local||{}), runs};
+  if (!runs.some(run=>run.id===store.activeRunId)) store.activeRunId=runs[0]?.id;
+  return {store, conflicts};
+}
+const SYNC_NOTICE_KEY="naki_sync_notice";
+async function mergeCloudBackup(saved, mark){
+  const parse=text=>{ try{ return JSON.parse(text||"{}")||{}; }catch{ return {}; } };
+  const baseData=parse(mark.payload).data||{}, local=backupPayload().data, server=saved.data||{};
+  const {store,conflicts}=mergeRunStores(parse(baseData[RUNS_LS]), parse(local[RUNS_LS]), parse(server[RUNS_LS]), saved.savedAt);
+  snapshotBeforePull();
+  // Other synced keys (contacts and so on): take the account's unless this phone changed it.
+  Object.entries(server).forEach(([key,value])=>{
+    if (key===RUNS_LS || typeof value!=="string" || key===PRE_PULL_KEY || key===SYNC_KEY || key===OWNER_TOKEN_KEY || LOCAL_ONLY_KEYS.has(key) || key.startsWith("naki_recovery_")) return;
+    if (local[key]===baseData[key] || local[key]==null) localStorage.setItem(key,value);
+  });
+  localStorage.setItem(RUNS_LS, JSON.stringify(store));
+  // The account is now our base; anything kept from this phone goes up on top of it.
+  setSyncMark(saved.savedAt, JSON.stringify({runCount:saved.runCount, data:server}));
+  if (conflicts.length) try{ sessionStorage.setItem(SYNC_NOTICE_KEY, `Kept both copies of ${conflicts.join(", ")}: yours, plus the account's as "(account copy)".`); }catch{}
+  if (JSON.stringify(backupPayload())!==syncMark().payload) await pushCloudBackup(true);
+  setTimeout(()=>location.reload(), 300);
+  return conflicts;
 }
 let cloudPullAt=0;
 async function syncFromCloud(force=false){
@@ -8360,9 +8413,7 @@ async function syncFromCloud(force=false){
       else scheduleCloudBackup();
       return;
     }
-    paintCloudState("Your account has newer runs. Both copies are kept. Export this phone copy before restoring from account.",true);
-    backupStatus("Sync paused to protect both copies. Use Add & setup → My runs on other phones to export and restore.",true);
-    return;
+    try{ await mergeCloudBackup(await ownerApi("/owner/backup"), mark); return true; }catch(e){ return; }
   }
   try{ await applyCloudBackup(await ownerApi("/owner/backup")); return true; }catch(e){ /* offline — try again later */ }
 }
@@ -8728,6 +8779,7 @@ renderDirectBookings();
 if (ownerToken) refreshOwnerData();
 if (ownerToken) setTimeout(syncPastBulkBookingDates, 1800);
 refreshCloudBackupInfo();
+try{ const notice=sessionStorage.getItem(SYNC_NOTICE_KEY); if (notice){ sessionStorage.removeItem(SYNC_NOTICE_KEY); setTimeout(()=>{ paintCloudState(notice); flash(notice); }, 1500); } }catch{}
 if (ownerToken) setTimeout(offerCloudRestoreIfEmpty, 2500);
 // Pull down anything the other phone did while this one was closed.
 if (ownerToken) setTimeout(()=>syncFromCloud(true), 1200);

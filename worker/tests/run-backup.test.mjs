@@ -40,7 +40,7 @@ test('a browser with local edits never pushes over a newer account copy',async()
  vm.runInNewContext(section('async function syncFromCloud(','// A fresh or wiped phone'),context);await context.syncFromCloud(true);assert.equal(writes,0);assert.equal(pulls,0);
 });
 test('restore retains the local undo copy instead of importing another devices undo',async()=>{
- const entries=new Map();const context={snapshotBeforePull:()=>entries.set('undo','local'),PRE_PULL_KEY:'undo',SYNC_KEY:'sync',OWNER_TOKEN_KEY:'auth',localStorage:{setItem:(k,v)=>entries.set(k,v)},setSyncMark(){},backupPayload:()=>({}),backupStatus(){},setTimeout(){}};
+ const entries=new Map();const context={snapshotBeforePull:()=>entries.set('undo','local'),PRE_PULL_KEY:'undo',SYNC_KEY:'sync',LOCAL_ONLY_KEYS:new Set(),OWNER_TOKEN_KEY:'auth',localStorage:{setItem:(k,v)=>entries.set(k,v)},setSyncMark(){},backupPayload:()=>({}),backupStatus(){},setTimeout(){}};
  vm.runInNewContext(section('async function applyCloudBackup(','let cloudPullAt='),context);await context.applyCloudBackup({savedAt:200,data:{undo:'foreign',runs:'new',auth:'secret'}});assert.equal(entries.get('undo'),'local');assert.equal(entries.get('runs'),'new');assert.equal(entries.has('auth'),false);
 });
 test('browser sends the version it actually read with its save',async()=>{
@@ -72,10 +72,10 @@ test('a lost save reply followed by more edits keeps saving on the same phone',a
  assert.ok(!phone.painted.some(([text])=>/newer runs/i.test(text)));
  assert.match(phone.painted.at(-1)[0],/Saved to your account/);
 });
-test('another device\'s newer copy still pauses sync instead of being overwritten',async t=>{
+test('another device\'s newer copy is never overwritten; the phone merges it in instead',async t=>{
  const phone=lostReplyPhone(t);
  assert.ok((await writeRunBackup(phone.env,phone.key,{baseSavedAt:100,runCount:3,data:{runs:'other phone'}})).savedAt);
  phone.edit('this phone');await phone.context.pushCloudBackup(true);
  assert.equal((await readRunBackup(phone.env,phone.key)).data.runs,'other phone');
- assert.match(phone.painted.at(-1)[0],/newer runs/i);
+ assert.match(phone.painted.at(-1)[0],/Bringing in newer changes/i);
 });
